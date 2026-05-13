@@ -3,6 +3,9 @@
 // the app (no separate build step). Styling is Tailwind via CDN; light
 // interactivity uses HTMX.
 
+import { DateTime } from 'luxon';
+import { adminContextStorage } from './context.js';
+
 const NAV_ITEMS: Array<{ href: string; label: string }> = [
   { href: '/admin', label: 'Dashboard' },
   { href: '/admin/customers', label: 'Customers' },
@@ -14,6 +17,7 @@ const NAV_ITEMS: Array<{ href: string; label: string }> = [
   { href: '/admin/billable-metrics', label: 'Billable metrics' },
   { href: '/admin/add-ons', label: 'Add-ons' },
   { href: '/admin/taxes', label: 'Taxes' },
+  { href: '/admin/settings', label: 'Settings' },
 ];
 
 export function escapeHtml(value: unknown): string {
@@ -32,18 +36,27 @@ export function fmtMoney(amountCents: number, currency: string): string {
   return `${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
 }
 
+// Returns the display timezone for the current admin request. Falls back
+// to `UTC` so unit tests don't blow up if invoked outside a request.
+function currentTz(): string {
+  return adminContextStorage.getStore()?.displayTz ?? 'UTC';
+}
+
 export function fmtDate(d: Date | string | null | undefined): string {
   if (!d) return '—';
   const date = typeof d === 'string' ? new Date(d) : d;
   if (Number.isNaN(date.getTime())) return String(d);
-  return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const tz = currentTz();
+  const dt = DateTime.fromJSDate(date, { zone: 'utc' }).setZone(tz);
+  // Format: "2026-05-13 14:15:26 CST" (short tz abbreviation).
+  return dt.toFormat("yyyy-LL-dd HH:mm:ss") + ' ' + (dt.offsetNameShort ?? dt.zoneName ?? tz);
 }
 
 export function fmtDateOnly(d: Date | string | null | undefined): string {
   if (!d) return '—';
   const date = typeof d === 'string' ? new Date(d) : d;
   if (Number.isNaN(date.getTime())) return String(d);
-  return date.toISOString().slice(0, 10);
+  return DateTime.fromJSDate(date, { zone: 'utc' }).setZone(currentTz()).toFormat('yyyy-LL-dd');
 }
 
 export function badge(text: string, tone: 'green' | 'yellow' | 'red' | 'gray' | 'blue' = 'gray'): string {
@@ -115,6 +128,9 @@ export function layout(options: {
     <div class="mb-6">
       <div class="text-xl font-bold">mini-Lago</div>
       <div class="text-xs text-gray-400 mt-1">${escapeHtml(options.orgSlug)}</div>
+      <a href="/admin/settings" class="text-xs text-gray-400 hover:text-white mt-1 inline-block">
+        tz: <code>${escapeHtml(currentTz())}</code> ✎
+      </a>
     </div>
     <nav class="space-y-1">${nav}</nav>
   </aside>

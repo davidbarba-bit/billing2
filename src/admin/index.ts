@@ -14,6 +14,8 @@ import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { seedNumaris } from './seed.js';
 import { resetOrganizationData } from '../services/reset.js';
 import { buildSignatureHeader } from '../services/hmac.js';
+import { isValidIanaTimezone } from '../services/tz.js';
+import { adminContextStorage } from './context.js';
 import {
   badge,
   btn,
@@ -101,6 +103,39 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   });
 
   const { prisma } = deps;
+
+  // Cache the org's timezone so the per-request hook can resolve display
+  // tz synchronously (AsyncLocalStorage.enterWith propagation breaks when
+  // there's an `await` before the call).
+  let cachedOrgTz = 'UTC';
+  void (async () => {
+    const org = await getOrg(prisma);
+    if (org) cachedOrgTz = org.timezone;
+  })();
+
+  // Resolve display timezone for the admin UI from cookie (`admin_display_tz`)
+  // with fallback to the org's timezone. Stored in AsyncLocalStorage so
+  // template helpers like `fmtDate` can read it without explicit threading.
+  app.addHook('onRequest', (request, _reply, done) => {
+    if (!request.url.startsWith('/admin')) return done();
+    const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies ?? {};
+    let tz = cookies.admin_display_tz;
+    if (!tz || !isValidIanaTimezone(tz)) tz = cachedOrgTz;
+    adminContextStorage.enterWith({ displayTz: tz });
+    done();
+  });
+
+  // When the settings page changes the cookie, refresh the cache too so the
+  // "Org timezone" line stays accurate without restarting.
+  void (async () => {
+    const refresh = async (): Promise<void> => {
+      const org = await getOrg(prisma);
+      if (org) cachedOrgTz = org.timezone;
+    };
+    // Refresh once per minute. Cheap (one row read) and lets ops change the
+    // org timezone in psql without restarting the server.
+    setInterval(() => { void refresh(); }, 60_000).unref();
+  })();
 
   // ------------------------------------------------------------------
   // Dashboard.
@@ -1221,6 +1256,98 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       setFlash(reply, 'success', `CN confirmada con folio ${body.folio}`);
     }
     reply.redirect(`/admin/credit-notes/${lagoId}`);
+  });
+
+  // ------------------------------------------------------------------
+  // Settings — display timezone preference + other per-admin knobs.
+  // ------------------------------------------------------------------
+  app.get('/admin/settings', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies ?? {};
+    const currentCookie = cookies.admin_display_tz ?? '';
+    const effective = adminContextStorage.getStore()?.displayTz ?? 'UTC';
+    // Common IANA zones the admin will likely pick. Keep small + ordered.
+    const commonTz = [
+      'UTC',
+      'America/Mexico_City',
+      'America/New_York',
+      'America/Los_Angeles',
+      'America/Chicago',
+      'America/Bogota',
+      'America/Lima',
+      'America/Buenos_Aires',
+      'America/Sao_Paulo',
+      'America/Toronto',
+      'Europe/Madrid',
+      'Europe/London',
+      'Europe/Paris',
+      'Europe/Berlin',
+      'Asia/Tokyo',
+      'Asia/Shanghai',
+    ];
+    const optionsHtml = commonTz.map((tz) =>
+      `<option value="${escapeHtml(tz)}" ${tz === currentCookie ? 'selected' : ''}>${escapeHtml(tz)}</option>`,
+    ).join('');
+    const form = `
+      <form method="post" action="/admin/settings" class="space-y-4 max-w-2xl">
+        <div>
+          <label class="block">
+            <span class="text-sm text-gray-700">Display timezone (IANA)</span>
+            <select name="display_tz" class="mt-1 block w-full rounded border-gray-300 shadow-sm">
+              <option value="">— usar tz de la org (${escapeHtml(org.timezone)})</option>
+              ${optionsHtml}
+            </select>
+          </label>
+          <p class="text-xs text-gray-500 mt-1">¿No ves tu zona? Escríbela manualmente abajo (cualquier IANA válida).</p>
+        </div>
+        <label class="block">
+          <span class="text-sm text-gray-700">O zona custom</span>
+          <input name="display_tz_custom" placeholder="ej. America/Tijuana" class="mt-1 block w-full rounded border-gray-300 shadow-sm font-mono text-sm">
+        </label>
+        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Guardar preferencia</button>
+      </form>
+    `;
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: 'Settings',
+      active: '/admin/settings',
+      orgSlug: org.slug,
+      flash,
+      body: pageHeader('Settings')
+        + card('Display timezone', `
+          <p class="text-sm text-gray-600 mb-3">Las fechas/horas mostradas en el admin se renderizan en esta zona. <b>Las respuestas de la API siguen en UTC</b> (es contrato del spec — no cambia).</p>
+          ${kv([
+            ['Efectiva ahora', `<code>${escapeHtml(effective)}</code>`],
+            ['Cookie actual', currentCookie ? `<code>${escapeHtml(currentCookie)}</code>` : '<span class="text-gray-400">(sin set; fallback a org.timezone)</span>'],
+            ['Org timezone', `<code>${escapeHtml(org.timezone)}</code>`],
+          ])}
+          <div class="mt-4">${form}</div>
+        `),
+    }));
+  });
+
+  app.post('/admin/settings', async (request, reply) => {
+    const body = (request.body ?? {}) as { display_tz?: string; display_tz_custom?: string };
+    const candidate = (body.display_tz_custom?.trim() || body.display_tz || '').trim();
+    if (candidate === '') {
+      // Clearing — fall back to org tz.
+      reply.clearCookie('admin_display_tz', { path: '/' });
+      setFlash(reply, 'success', 'Preferencia limpiada. Volviendo a usar la tz de la organización.');
+      return reply.redirect('/admin/settings');
+    }
+    if (!isValidIanaTimezone(candidate)) {
+      setFlash(reply, 'error', `"${candidate}" no es una zona IANA válida.`);
+      return reply.redirect('/admin/settings');
+    }
+    reply.setCookie('admin_display_tz', candidate, {
+      path: '/',
+      httpOnly: false,
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 24 * 365, // 1 año
+    });
+    setFlash(reply, 'success', `Timezone actualizada a ${candidate}.`);
+    reply.redirect('/admin/settings');
   });
 }
 
