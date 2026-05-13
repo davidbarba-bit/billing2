@@ -1,8 +1,14 @@
 # Deploy a Railway
 
 mini-Lago corre como un único servicio Node + Postgres en Railway. El
-build es Nixpacks (auto-detección Node 20) y la migración Prisma se
-aplica al iniciar.
+build usa el `Dockerfile` del repo (multi-stage Node 20 Alpine) y la
+migración Prisma se aplica al iniciar (`CMD ["sh", "-c", "npx prisma
+migrate deploy && node dist/server.js"]`).
+
+> **Nota sobre Nixpacks.** Una versión anterior usaba Nixpacks, pero
+> Railway's npm cache mount entra en conflicto con la limpieza de
+> `node_modules/.cache` durante el build (`EBUSY: resource busy`). El
+> Dockerfile lo evita.
 
 ## Prerequisitos
 
@@ -15,7 +21,7 @@ aplica al iniciar.
 
 1. https://railway.app/new → **Deploy from GitHub repo** → selecciona
    `davidbarba-bit/billing2`.
-2. Railway detecta `nixpacks.toml` y arranca el build automáticamente.
+2. Railway detecta `Dockerfile` (via `railway.toml`) y arranca el build.
 3. En el proyecto, click **+ New → Database → Add PostgreSQL**.
 4. Railway crea la variable `DATABASE_URL` y la conecta al servicio web
    automáticamente. No necesitas tocarla.
