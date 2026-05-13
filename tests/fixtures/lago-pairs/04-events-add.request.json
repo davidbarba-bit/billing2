@@ -1,0 +1,14 @@
+{
+  "event": {
+    "transaction_id": "tmp-capture-add-001",
+    "external_subscription_id": "tmp-capture-anniversary-001",
+    "code": "bm-carga-express-mx-combustible-7be0a53d",
+    "timestamp": 1747080000,
+    "properties": {
+      "unit_external_id": "unit-capture-001",
+      "unit_label": "Camion 001",
+      "kind": "monthly-ping",
+      "operation_type": "add"
+    }
+  }
+}

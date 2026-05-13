@@ -1,0 +1,56 @@
+{
+  "plan": {
+    "lago_id": "d16d1270-0c06-4267-bbcb-ea4eab932fbc",
+    "name": "Combustible (carga-express-mx)",
+    "invoice_display_name": null,
+    "created_at": "2026-05-08T17:33:56Z",
+    "code": "plan-carga-express-mx-combustible-79844679",
+    "interval": "monthly",
+    "description": "Servicio Combustible — MX$450.00 por unidad activa / mes + setup MX$1200.00 por instalación",
+    "amount_cents": 0,
+    "amount_currency": "MXN",
+    "trial_period": null,
+    "pay_in_advance": false,
+    "bill_charges_monthly": null,
+    "customers_count": 1,
+    "active_subscriptions_count": 1,
+    "draft_invoices_count": 0,
+    "parent_id": null,
+    "charges": [
+      {
+        "lago_id": "aba1de69-7a76-4956-ab87-c0b1b4f0bef1",
+        "lago_billable_metric_id": "58275c2e-c670-4f1a-9059-c1f1d26a997f",
+        "invoice_display_name": "Servicio Combustible",
+        "billable_metric_code": "bm-carga-express-mx-combustible-7be0a53d",
+        "created_at": "2026-05-08T17:33:56Z",
+        "charge_model": "standard",
+        "invoiceable": true,
+        "regroup_paid_fees": null,
+        "pay_in_advance": false,
+        "prorated": true,
+        "min_amount_cents": 0,
+        "properties": { "amount": "450.00" },
+        "filters": [],
+        "taxes": []
+      },
+      {
+        "lago_id": "bc54f5d2-9151-4ea7-aa80-e09193980b08",
+        "lago_billable_metric_id": "0234704f-186c-4071-89b9-898bd3ec6930",
+        "invoice_display_name": "Setup Combustible",
+        "billable_metric_code": "bm-setup-carga-express-mx-combustible-0c46b355",
+        "created_at": "2026-05-08T17:33:56Z",
+        "charge_model": "standard",
+        "invoiceable": true,
+        "regroup_paid_fees": null,
+        "pay_in_advance": false,
+        "prorated": false,
+        "min_amount_cents": 0,
+        "properties": { "amount": "1200.00" },
+        "filters": [],
+        "taxes": []
+      }
+    ],
+    "usage_thresholds": [],
+    "taxes": []
+  }
+}

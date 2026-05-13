@@ -1,0 +1,2 @@
+GET /api/v1/customers/carga-express-mx/current_usage?external_subscription_id=sub-carga-express-mx-combustible-a681d853&apply_taxes=false
+Authorization: Bearer <API_KEY>

@@ -1,0 +1,25 @@
+{
+  "invoice": {
+    "lago_id": "6ea751cd-f0fe-4ab5-8dcc-ca071bcb8c95",
+    "status": "finalized",
+    "external_dispatch_status": "confirmed",
+    "number": "A-2026-000142",
+    "external_invoice": {
+      "folio": "A-2026-000142",
+      "uuid_cfdi": "1A2B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D",
+      "system": "netsuite",
+      "netsuite_internal_id": "rec-12345678",
+      "pdf_url": "https://app.netsuite.com/core/media/media.nl?id=foo&c=bar&h=baz",
+      "xml_url": "https://app.netsuite.com/core/media/media.nl?id=foo&c=bar&h=baz&type=xml",
+      "issued_at": "2026-05-12T22:21:14Z",
+      "confirmed_at": "2026-05-12T22:21:15Z"
+    },
+    "payment_status": "pending",
+    "payment_due_date": "2026-06-11",
+    "currency": "MXN",
+    "total_amount_cents": 273907,
+    "taxes_amount_cents": 37780,
+    "fees_amount_cents": 236127,
+    "updated_at": "2026-05-12T22:21:15Z"
+  }
+}

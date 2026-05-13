@@ -1,0 +1,9 @@
+{
+  "subscription": {
+    "external_customer_id": "carga-express-mx",
+    "plan_code": "plan-carga-express-mx-combustible-79844679",
+    "external_id": "sub-carga-express-mx-combustible-a681d853",
+    "name": "Servicio Combustible",
+    "billing_time": "calendar"
+  }
+}

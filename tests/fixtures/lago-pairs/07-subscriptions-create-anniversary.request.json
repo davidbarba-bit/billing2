@@ -1,0 +1,10 @@
+{
+  "subscription": {
+    "external_customer_id": "carga-express-mx",
+    "plan_code": "plan-carga-express-mx-combustible-79844679",
+    "external_id": "tmp-capture-anniversary-001",
+    "name": "Captura anniversary (TEMPORAL)",
+    "billing_time": "anniversary",
+    "subscription_at": "2026-06-15T06:00:00.000Z"
+  }
+}

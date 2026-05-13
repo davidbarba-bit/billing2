@@ -1,0 +1,9 @@
+{
+  "add_on": {
+    "name": "Setup Servicio Combustible — Carga Express MX",
+    "code": "setup-carga-express-mx-combustible",
+    "description": "Cobro one-off de instalación / setup del servicio Combustible para Carga Express MX.",
+    "amount_cents": 120000,
+    "amount_currency": "MXN"
+  }
+}

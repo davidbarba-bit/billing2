@@ -1,0 +1,52 @@
+{
+  "customer_usage": {
+    "from_datetime": "2026-05-08T17:33:56Z",
+    "to_datetime": "2026-05-31T23:59:59Z",
+    "issuing_date": "2026-05-31",
+    "currency": "MXN",
+    "amount_cents": 0,
+    "total_amount_cents": 0,
+    "taxes_amount_cents": 0,
+    "lago_invoice_id": null,
+    "charges_usage": [
+      {
+        "units": "0.0",
+        "events_count": 0,
+        "amount_cents": 0,
+        "amount_currency": "MXN",
+        "charge": {
+          "lago_id": "bc54f5d2-9151-4ea7-aa80-e09193980b08",
+          "charge_model": "standard",
+          "invoice_display_name": "Setup Combustible"
+        },
+        "billable_metric": {
+          "lago_id": "0234704f-186c-4071-89b9-898bd3ec6930",
+          "name": "Instalaciones nuevas — Combustible",
+          "code": "bm-setup-carga-express-mx-combustible-0c46b355",
+          "aggregation_type": "unique_count_agg"
+        },
+        "filters": [],
+        "grouped_usage": []
+      },
+      {
+        "units": "0.0",
+        "events_count": 0,
+        "amount_cents": 0,
+        "amount_currency": "MXN",
+        "charge": {
+          "lago_id": "aba1de69-7a76-4956-ab87-c0b1b4f0bef1",
+          "charge_model": "standard",
+          "invoice_display_name": "Servicio Combustible"
+        },
+        "billable_metric": {
+          "lago_id": "58275c2e-c670-4f1a-9059-c1f1d26a997f",
+          "name": "Unidades activas — Combustible",
+          "code": "bm-carga-express-mx-combustible-7be0a53d",
+          "aggregation_type": "unique_count_agg"
+        },
+        "filters": [],
+        "grouped_usage": []
+      }
+    ]
+  }
+}

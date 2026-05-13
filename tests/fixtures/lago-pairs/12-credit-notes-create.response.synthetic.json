@@ -1,0 +1,79 @@
+{
+  "credit_note": {
+    "lago_id": "cn-synthetic-7f3e9a12-4b5c-4d6e-9f8a-1b2c3d4e5f60",
+    "sequential_id": 1,
+    "number": null,
+    "external_credit_note": null,
+    "status": "calculated",
+    "external_dispatch_status": "pending",
+    "lago_invoice_id": "6ea751cd-f0fe-4ab5-8dcc-ca071bcb8c95",
+    "invoice_number": "A-2026-000142",
+    "issuing_date": "2026-05-12",
+    "credit_status": "available",
+    "refund_status": null,
+    "reason": "other",
+    "description": "SLA conectividad 80.00% < 95% — 6/30 días sin señal (Camión 001) [idem:unit-camion-001:2026-05]",
+    "currency": "MXN",
+    "total_amount_cents": 58000,
+    "taxes_amount_cents": 8000,
+    "sub_total_excluding_taxes_amount_cents": 50000,
+    "balance_amount_cents": 58000,
+    "credit_amount_cents": 58000,
+    "refund_amount_cents": 0,
+    "coupons_adjustment_amount_cents": 0,
+    "taxes_rate": 16.0,
+    "created_at": "2026-05-12T22:30:00Z",
+    "updated_at": "2026-05-12T22:30:00Z",
+    "file_url": null,
+    "customer": {
+      "lago_id": "e91b24fd-7904-4b26-b87b-ccd22031fe4b",
+      "external_id": "carga-express-mx",
+      "name": "Carga Express MX",
+      "email": null,
+      "currency": "MXN"
+    },
+    "invoice": {
+      "lago_id": "6ea751cd-f0fe-4ab5-8dcc-ca071bcb8c95",
+      "payment_status": "pending",
+      "status": "finalized",
+      "external_dispatch_status": "confirmed",
+      "number": "A-2026-000142"
+    },
+    "items": [
+      {
+        "lago_id": "cni-synthetic-9a8b7c6d-5e4f-3a2b-1c9d-8e7f6a5b4c3d",
+        "amount_cents": 50000,
+        "amount_currency": "MXN",
+        "fee": {
+          "lago_id": "2ff0a12f-4a9b-4919-849e-ce452fd3c03a",
+          "amount_cents": 116127,
+          "amount_currency": "MXN",
+          "taxes_amount_cents": 18580,
+          "total_amount_cents": 134707,
+          "units": "2.5806",
+          "events_count": null,
+          "payment_status": "pending",
+          "item": {
+            "type": "add_on",
+            "code": "cobro-carga-express-mx-combustible",
+            "name": "Cobro mensual Servicio Combustible — Carga Express MX"
+          }
+        }
+      }
+    ],
+    "applied_taxes": [
+      {
+        "lago_id": "cnt-synthetic-aabbccdd-0011-2233-4455-66778899aabb",
+        "lago_tax_id": "862f693f-1735-47ca-a237-46ce3423e9eb",
+        "tax_name": "IVA México",
+        "tax_code": "iva-mx-16",
+        "tax_rate": 16.0,
+        "tax_description": "Impuesto al Valor Agregado (México) 16%",
+        "amount_cents": 8000,
+        "amount_currency": "MXN",
+        "base_amount_cents": 50000,
+        "created_at": "2026-05-12T22:30:00Z"
+      }
+    ]
+  }
+}

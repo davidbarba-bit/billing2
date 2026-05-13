@@ -1,0 +1,11 @@
+{
+  "customer": {
+    "external_id": "carga-express-mx",
+    "name": "Carga Express MX",
+    "tax_identification_number": "CEM250101AAA",
+    "currency": "MXN",
+    "country": "MX",
+    "timezone": "America/Mexico_City",
+    "tax_codes": ["iva-mx-16"]
+  }
+}

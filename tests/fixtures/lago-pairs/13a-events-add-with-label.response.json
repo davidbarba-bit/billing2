@@ -1,0 +1,19 @@
+{
+  "event": {
+    "lago_id": "d928b6f1-b1e6-4407-baed-6663d3af4bf2",
+    "transaction_id": "sub-carga-express-mx-combustible-a681d853-monthly-unit-camion-001-2026-05",
+    "lago_customer_id": null,
+    "code": "bm-carga-express-mx-combustible-7be0a53d",
+    "timestamp": "2025-05-12T20:00:00.000Z",
+    "precise_total_amount_cents": null,
+    "properties": {
+      "unit_external_id": "unit-camion-001",
+      "unit_label": "Camión 001 — Placas ABC-123",
+      "kind": "monthly-ping",
+      "operation_type": "add"
+    },
+    "lago_subscription_id": null,
+    "external_subscription_id": "sub-carga-express-mx-combustible-a681d853",
+    "created_at": "2026-05-12T20:12:22Z"
+  }
+}

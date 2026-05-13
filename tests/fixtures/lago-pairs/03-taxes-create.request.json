@@ -1,0 +1,9 @@
+{
+  "tax": {
+    "name": "IVA México",
+    "code": "iva-mx-16",
+    "description": "Impuesto al Valor Agregado (México) 16%",
+    "rate": "16",
+    "applied_to_organization": false
+  }
+}

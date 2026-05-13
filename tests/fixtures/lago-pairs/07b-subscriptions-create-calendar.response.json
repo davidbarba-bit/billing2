@@ -1,0 +1,24 @@
+{
+  "subscription": {
+    "lago_id": "e8c76434-9eaa-44ca-a5a1-a4ad6fbb0203",
+    "external_id": "sub-carga-express-mx-combustible-a681d853",
+    "lago_customer_id": "e91b24fd-7904-4b26-b87b-ccd22031fe4b",
+    "external_customer_id": "carga-express-mx",
+    "name": "Servicio Combustible",
+    "plan_code": "plan-carga-express-mx-combustible-79844679",
+    "status": "active",
+    "billing_time": "calendar",
+    "subscription_at": "2026-05-08T17:33:56Z",
+    "started_at": "2026-05-08T17:33:56Z",
+    "trial_ended_at": null,
+    "ending_at": null,
+    "terminated_at": null,
+    "canceled_at": null,
+    "created_at": "2026-05-08T17:33:56Z",
+    "previous_plan_code": null,
+    "next_plan_code": null,
+    "downgrade_plan_date": null,
+    "current_billing_period_started_at": "2026-05-08T17:33:56Z",
+    "current_billing_period_ending_at": "2026-05-31T23:59:59Z"
+  }
+}
