@@ -1,0 +1,95 @@
+# Continuous Integration for mini-Lago.
+#
+# Runs on every push and PR. Spins up Postgres 16 as a service container,
+# applies Prisma migrations, runs typecheck + the full Vitest suite (50
+# tests).
+#
+# Time budget: ~2 min per run. GitHub Free includes 2000 min/month for
+# private repos and unlimited for public ones.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+# Cancel older runs on the same branch when a new push lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + tests
+    runs-on: ubuntu-latest
+
+    # Postgres service container — Actions exposes it on localhost:5432.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: minilago
+          POSTGRES_PASSWORD: minilago
+          POSTGRES_DB: minilago_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U minilago"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://minilago:minilago@localhost:5432/minilago_test?schema=public
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+  build:
+    name: docker build smoke
+    runs-on: ubuntu-latest
+    # Build only on main / Claude branches to avoid wasting minutes on
+    # experimental PRs. Adjust as needed.
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: minilago:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

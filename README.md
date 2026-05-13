@@ -1,5 +1,7 @@
 # mini-Lago
 
+![CI](https://github.com/davidbarba-bit/billing2/actions/workflows/ci.yml/badge.svg)
+
 Motor de cálculo de facturación por uso real + dispatcher hacia NetSuite,
 construido contra el spec `mini-lago-handoff/mini-lago-spec.md`.
 
@@ -83,7 +85,7 @@ PUT `/api/v1/customers/:external_id` responde `404 resource_not_found` (invarian
 ## Tests
 
 ```
-npm test               # 49 tests (golden + behavior + unit)
+npm test               # 50 tests (golden + behavior + unit)
 npm run test:golden    # solo golden contract
 npm run test:behavior  # solo comportamiento
 npm run typecheck
@@ -93,8 +95,25 @@ Cobertura actual:
 
 - 8 golden tests sobre fixtures literales (customers, taxes, events, plans, add-ons).
 - 4 golden tests sobre fixtures sintéticos (invoices, external-confirm, credit-notes, CN external-confirm) — shape match más comportamiento dispatch + folio.
-- 22 behavior tests sobre invariantes y D-decisions.
+- 23 behavior tests sobre invariantes y D-decisions (incluye regresión del bug `isEventForCharge`).
 - 13 unit tests sobre rounding, tz y hmac.
+
+## CI (GitHub Actions)
+
+Workflow en `.github/workflows/ci.yml` corre en cada push y PR:
+
+- **Job `test`**: levanta Postgres 16 como service container, aplica las
+  migraciones (`prisma migrate deploy`), corre `npm run typecheck` y los
+  50 tests. Tiempo total: ~2 min.
+- **Job `build`**: smoke-test del `Dockerfile` (build sin push) con
+  cache de capas vía GitHub Actions cache. Asegura que el deploy a
+  Railway no se rompa por cambios al Dockerfile.
+
+Resultados en https://github.com/davidbarba-bit/billing2/actions. El
+badge arriba pasa a 🟢 cuando todo está verde en la branch indicada.
+
+Costo: 0 en repos públicos; en privados, 2000 min/mes incluidos en el
+Free Tier (cada run consume ~3 min, así que alcanza para ~600 pushes/mes).
 
 ## Setup local
 
