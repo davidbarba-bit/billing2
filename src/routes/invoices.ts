@@ -173,6 +173,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, prisma: PrismaClient
         events: events.map((e) => ({
           timestamp: e.timestamp,
           externalSubscriptionId: e.externalSubscriptionId,
+          code: e.code,
           properties: e.properties as Record<string, unknown> & {
             unit_external_id?: string;
             unit_label?: string;

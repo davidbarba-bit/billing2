@@ -181,11 +181,10 @@ function isEventForCharge(
   event: EventLite,
   charge: Charge & { billableMetric: BillableMetric },
 ): boolean {
-  // Filtering by BM code on the event payload was already done in the caller;
-  // here we narrow by `kind` to disambiguate when one subscription has both
-  // recurring and setup charges over different BMs.
-  return charge.billableMetric.code === (event as unknown as { code?: string }).code
-    || true;
+  // The fee belongs to a single billable metric. Only events whose `code`
+  // matches that BM's code participate in the proration math — otherwise a
+  // unit's setup event would double-count it on the recurring fee.
+  return event.code === charge.billableMetric.code;
 }
 
 function findChargeForAddOn(

@@ -92,6 +92,7 @@ export function registerUsageRoutes(app: FastifyInstance, prisma: PrismaClient):
           .map((e) => ({
             timestamp: e.timestamp,
             externalSubscriptionId: e.externalSubscriptionId,
+            code: e.code,
             properties: (e.properties ?? {}) as Record<string, unknown>,
           })),
         labelMap,
@@ -132,7 +133,7 @@ export function registerUsageRoutes(app: FastifyInstance, prisma: PrismaClient):
 
 function buildChargeUsage(args: {
   charge: Charge & { billableMetric: BillableMetric };
-  events: Array<{ timestamp: Date; externalSubscriptionId: string; properties: Record<string, unknown> }>;
+  events: Array<{ timestamp: Date; externalSubscriptionId: string; code: string; properties: Record<string, unknown> }>;
   labelMap: Map<string, string | null>;
   period: { start: Date; end: Date; daysInPeriod: number };
   tz: string;
@@ -146,6 +147,7 @@ function buildChargeUsage(args: {
     events.map((e) => ({
       timestamp: e.timestamp,
       externalSubscriptionId: e.externalSubscriptionId,
+      code: e.code,
       properties: e.properties as Record<string, unknown> & {
         operation_type?: 'add' | 'remove';
         unit_external_id?: string;

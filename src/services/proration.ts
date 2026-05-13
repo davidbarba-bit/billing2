@@ -18,6 +18,10 @@ import { isoUtc } from './tz.js';
 export type EventLite = {
   timestamp: Date;
   externalSubscriptionId: string;
+  // BM code emitted by the cliente: used to filter events back to the
+  // charge they belong to (a customer's subscription can have both a
+  // recurring BM and a setup BM at the same time).
+  code: string;
   properties: {
     unit_external_id?: string;
     unit_label?: string;
