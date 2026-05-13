@@ -1,0 +1,13 @@
+# Railway configuration. Railway auto-detects Node via Nixpacks but we
+# pin the build/start commands and a health check so deploys are predictable.
+
+[build]
+builder = "NIXPACKS"
+buildCommand = "npm ci && npm run build"
+
+[deploy]
+startCommand = "npm run start"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+healthcheckPath = "/health"
+healthcheckTimeout = 30
