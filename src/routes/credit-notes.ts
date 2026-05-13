@@ -212,6 +212,67 @@ export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaCli
       });
     },
   });
+
+  // GET /api/v1/credit_notes (global paginated list, Lago-compat).
+  app.route({
+    method: 'GET',
+    url: '/api/v1/credit_notes',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const q = request.query as { per_page?: string; page?: string };
+      const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
+      const page = Math.max(1, Number(q.page ?? 1));
+      const [rows, totalCount] = await Promise.all([
+        prisma.creditNote.findMany({
+          where: { organizationId: org.id },
+          orderBy: { createdAt: 'desc' },
+          take: perPage,
+          skip: (page - 1) * perPage,
+          include: {
+            customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+            invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
+            items: { include: { fee: true } },
+            appliedTaxes: true,
+          },
+        }),
+        prisma.creditNote.count({ where: { organizationId: org.id } }),
+      ]);
+      const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+      reply.send({
+        credit_notes: rows.map((cn) => serializeCreditNote(cn as unknown as Parameters<typeof serializeCreditNote>[0]).credit_note),
+        meta: {
+          current_page: page,
+          next_page: page < totalPages ? page + 1 : null,
+          prev_page: page > 1 ? page - 1 : null,
+          total_pages: totalPages,
+          total_count: totalCount,
+        },
+      });
+    },
+  });
+
+  // GET /api/v1/credit_notes/:lago_id (single read, Lago-compat).
+  app.route({
+    method: 'GET',
+    url: '/api/v1/credit_notes/:lagoId',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { lagoId } = request.params as { lagoId: string };
+      const cn = await prisma.creditNote.findFirst({
+        where: { id: lagoId, organizationId: org.id },
+        include: {
+          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+          invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
+          items: { include: { fee: true } },
+          appliedTaxes: true,
+        },
+      });
+      if (!cn) throw notFound('credit_note');
+      reply.send(serializeCreditNote(cn as unknown as Parameters<typeof serializeCreditNote>[0]));
+    },
+  });
 }
 
 function parseIdemMarker(description: string): string | null {

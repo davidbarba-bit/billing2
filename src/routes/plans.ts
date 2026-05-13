@@ -7,7 +7,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
-import { validation } from '../errors.js';
+import { notFound, validation } from '../errors.js';
 import { serializePlan, type PlanWithCharges } from '../serializers/plan.js';
 
 type ChargePayload = {
@@ -141,6 +141,92 @@ export function registerPlanRoutes(app: FastifyInstance, prisma: PrismaClient): 
           draft_invoices_count: draftInvoicesCount,
         }),
       );
+    },
+  });
+
+  app.route({
+    method: 'GET',
+    url: '/api/v1/plans',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const q = request.query as { per_page?: string; page?: string };
+      const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
+      const page = Math.max(1, Number(q.page ?? 1));
+      const [items, totalCount] = await Promise.all([
+        prisma.plan.findMany({
+          where: { organizationId: org.id },
+          orderBy: { createdAt: 'desc' },
+          take: perPage,
+          skip: (page - 1) * perPage,
+          include: { charges: { include: { billableMetric: true }, orderBy: { createdAt: 'asc' } } },
+        }),
+        prisma.plan.count({ where: { organizationId: org.id } }),
+      ]);
+      const planIds = items.map((p) => p.id);
+      const [subscribersByPlan, activeSubsByPlan, draftCount] = await Promise.all([
+        prisma.subscription.findMany({
+          where: { planId: { in: planIds } },
+          select: { planId: true, customerId: true },
+          distinct: ['planId', 'customerId'],
+        }),
+        prisma.subscription.groupBy({
+          by: ['planId'],
+          where: { planId: { in: planIds }, status: 'active' },
+          _count: { planId: true },
+        }),
+        prisma.invoice.count({ where: { organizationId: org.id, status: 'calculated' } }),
+      ]);
+      const customersCountByPlan = new Map<string, number>();
+      for (const r of subscribersByPlan) {
+        customersCountByPlan.set(r.planId, (customersCountByPlan.get(r.planId) ?? 0) + 1);
+      }
+      const activeSubsCountByPlan = new Map<string, number>();
+      for (const r of activeSubsByPlan) {
+        activeSubsCountByPlan.set(r.planId, r._count.planId);
+      }
+      const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+      reply.send({
+        plans: items.map((p) => serializePlan(p, {
+          customers_count: customersCountByPlan.get(p.id) ?? 0,
+          active_subscriptions_count: activeSubsCountByPlan.get(p.id) ?? 0,
+          draft_invoices_count: draftCount,
+        }).plan),
+        meta: {
+          current_page: page,
+          next_page: page < totalPages ? page + 1 : null,
+          prev_page: page > 1 ? page - 1 : null,
+          total_pages: totalPages,
+          total_count: totalCount,
+        },
+      });
+    },
+  });
+
+  app.route({
+    method: 'GET',
+    url: '/api/v1/plans/:code',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { code } = request.params as { code: string };
+      const plan = await prisma.plan.findUnique({
+        where: { organizationId_code: { organizationId: org.id, code } },
+      });
+      if (!plan) throw notFound('plan');
+      const hydrated = await loadPlanWithCharges(prisma, plan.id);
+      const [customersCount, activeSubsCount, draftInvoicesCount] = await Promise.all([
+        prisma.subscription
+          .findMany({ where: { planId: plan.id }, select: { customerId: true }, distinct: ['customerId'] })
+          .then((rows) => rows.length),
+        prisma.subscription.count({ where: { planId: plan.id, status: 'active' } }),
+        prisma.invoice.count({ where: { organizationId: org.id, status: 'calculated' } }),
+      ]);
+      reply.send(serializePlan(hydrated, {
+        customers_count: customersCount,
+        active_subscriptions_count: activeSubsCount,
+        draft_invoices_count: draftInvoicesCount,
+      }));
     },
   });
 }

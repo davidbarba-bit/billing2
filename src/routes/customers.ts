@@ -146,6 +146,41 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
 
   app.route({
     method: 'GET',
+    url: '/api/v1/customers',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const q = request.query as { per_page?: string; page?: string };
+      const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
+      const page = Math.max(1, Number(q.page ?? 1));
+      const [items, totalCount] = await Promise.all([
+        prisma.customer.findMany({
+          where: { organizationId: org.id },
+          orderBy: { createdAt: 'desc' },
+          take: perPage,
+          skip: (page - 1) * perPage,
+          include: { organization: true, taxLinks: { include: { tax: true } } },
+        }),
+        prisma.customer.count({ where: { organizationId: org.id } }),
+      ]);
+      const allTaxIds = Array.from(new Set(items.flatMap((c) => c.taxLinks.map(({ tax }) => tax.id))));
+      const counters = await loadTaxCounters(prisma, allTaxIds);
+      const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+      reply.send({
+        customers: items.map((c) => serializeCustomer(c as CustomerWithLinks, counters).customer),
+        meta: {
+          current_page: page,
+          next_page: page < totalPages ? page + 1 : null,
+          prev_page: page > 1 ? page - 1 : null,
+          total_pages: totalPages,
+          total_count: totalCount,
+        },
+      });
+    },
+  });
+
+  app.route({
+    method: 'GET',
     url: '/api/v1/customers/:externalId',
     preHandler: authenticate,
     handler: async (request, reply) => {

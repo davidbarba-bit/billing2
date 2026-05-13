@@ -36,7 +36,34 @@ tests/
   unit/                   # rounding, tz, hmac
 ```
 
-## Endpoints implementados (21 = 16 baseline + 5 extensiones)
+## Contrato público (OpenAPI)
+
+La API expone su contrato sin auth en tres formas:
+
+- **`GET /openapi.json`** — OpenAPI 3.1 completo (35 operations, 28 schemas).
+- **`GET /docs`** — Swagger UI navegable, importa `/openapi.json`.
+- **`GET /api/v1`** — discovery JSON liviano con lista plana de endpoints +
+  método + path + summary + tipo de auth. Útil cuando un consumidor solo
+  necesita "qué endpoints existen" sin parsear OpenAPI completo.
+
+Apunta tu generador de cliente a `https://<tu-host>/openapi.json` (openapi-generator,
+heyapi, openapi-typescript, etc.) para autogenerar SDK.
+
+## Endpoints implementados (35 total)
+
+**Baseline mini-Lago (21 del spec)** — 16 endpoints + 5 extensiones
+(PATCH/DELETE add-ons, findAll, void invoice, CN external-confirm).
+
+**Extensiones Lago-compat (14 adicionales)** — list + read paginados sobre
+todas las entidades + POST billable_metrics, para que consumidores estilo
+Lago JS client funcionen sin cambios:
+
+- `GET /api/v1/customers` (paginado)
+- `GET /api/v1/plans` + `GET /api/v1/plans/:code`
+- `GET /api/v1/subscriptions` (filtros: external_customer_id, status) + `GET /api/v1/subscriptions/:external_id`
+- `POST /api/v1/billable_metrics` + `GET /api/v1/billable_metrics` + `GET /api/v1/billable_metrics/:code`
+- `GET /api/v1/invoices` (filtros: external_customer_id, status) + `GET /api/v1/invoices/:lago_id`
+- `GET /api/v1/credit_notes` + `GET /api/v1/credit_notes/:lago_id`
 
 | # | Método | Path |
 | --- | --- | --- |

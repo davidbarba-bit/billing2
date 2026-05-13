@@ -31,8 +31,10 @@ RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# Bring in the prisma schema + the generated client + the compiled JS.
+# Bring in the prisma schema + the generated client + the compiled JS +
+# the OpenAPI contract served at /openapi.json /docs.
 COPY prisma ./prisma
+COPY docs ./docs
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/dist ./dist
 

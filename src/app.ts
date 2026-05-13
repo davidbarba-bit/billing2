@@ -10,12 +10,14 @@ import { registerCustomerRoutes } from './routes/customers.js';
 import { registerTaxRoutes } from './routes/taxes.js';
 import { registerEventRoutes } from './routes/events.js';
 import { registerPlanRoutes } from './routes/plans.js';
+import { registerBillableMetricRoutes } from './routes/billable-metrics.js';
 import { registerSubscriptionRoutes } from './routes/subscriptions.js';
 import { registerAddOnRoutes } from './routes/addons.js';
 import { registerUsageRoutes } from './routes/usage.js';
 import { registerInvoiceRoutes } from './routes/invoices.js';
 import { registerCreditNoteRoutes } from './routes/credit-notes.js';
 import { registerExternalConfirmRoutes } from './routes/external-confirm.js';
+import { registerDiscoveryRoutes } from './routes/discovery.js';
 import { FakeNetSuiteDispatcher, RealNetSuiteDispatcher, type NetSuiteDispatcher } from './services/netsuite-dispatcher.js';
 import type { PrismaClient } from '@prisma/client';
 import { registerAdmin } from './admin/index.js';
@@ -96,6 +98,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // Health.
   app.get('/health', async () => ({ status: 'ok' }));
 
+  // Public API contract (no auth).
+  registerDiscoveryRoutes(app);
+
   // Admin back-office must be registered BEFORE other routes so its
   // `preHandler` hook for Basic Auth fires for /admin/*.
   await registerAdmin(app, { config: deps.config, prisma, dispatcher, callbackBaseUrl });
@@ -104,6 +109,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   registerTaxRoutes(app, prisma);
   registerEventRoutes(app, prisma);
   registerPlanRoutes(app, prisma);
+  registerBillableMetricRoutes(app, prisma);
   registerSubscriptionRoutes(app, prisma);
   registerAddOnRoutes(app, prisma);
   registerUsageRoutes(app, prisma);

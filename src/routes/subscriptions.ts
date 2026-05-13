@@ -141,6 +141,89 @@ export function registerSubscriptionRoutes(app: FastifyInstance, prisma: PrismaC
     },
   });
 
+  app.route({
+    method: 'GET',
+    url: '/api/v1/subscriptions',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const q = request.query as { per_page?: string; page?: string; external_customer_id?: string; status?: string };
+      const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
+      const page = Math.max(1, Number(q.page ?? 1));
+      const where: import('@prisma/client').Prisma.SubscriptionWhereInput = { organizationId: org.id };
+      if (q.external_customer_id) {
+        const customer = await prisma.customer.findUnique({
+          where: { organizationId_externalId: { organizationId: org.id, externalId: q.external_customer_id } },
+        });
+        if (!customer) {
+          reply.send({ subscriptions: [], meta: { current_page: page, next_page: null, prev_page: null, total_pages: 1, total_count: 0 } });
+          return;
+        }
+        where.customerId = customer.id;
+      }
+      if (q.status) where.status = q.status;
+      const [items, totalCount] = await Promise.all([
+        prisma.subscription.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          take: perPage,
+          skip: (page - 1) * perPage,
+          include: { customer: true, plan: true },
+        }),
+        prisma.subscription.count({ where }),
+      ]);
+      const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+      reply.send({
+        subscriptions: items.map((s) => serializeSubscription(s, {
+          customerExternalId: s.customer.externalId,
+          planCode: s.plan.code,
+          plan: null,
+          planCounters: null,
+        }).subscription),
+        meta: {
+          current_page: page,
+          next_page: page < totalPages ? page + 1 : null,
+          prev_page: page > 1 ? page - 1 : null,
+          total_pages: totalPages,
+          total_count: totalCount,
+        },
+      });
+    },
+  });
+
+  app.route({
+    method: 'GET',
+    url: '/api/v1/subscriptions/:externalId',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { externalId } = request.params as { externalId: string };
+      const sub = await prisma.subscription.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId } },
+        include: { customer: true, plan: true },
+      });
+      if (!sub) throw notFound('subscription');
+      const hydratedPlan = await loadPlanWithCharges(prisma, sub.plan.id);
+      const [customersCount, activeSubsCount, draftInvoicesCount] = await Promise.all([
+        prisma.subscription
+          .findMany({ where: { planId: sub.plan.id }, select: { customerId: true }, distinct: ['customerId'] })
+          .then((rows) => rows.length),
+        prisma.subscription.count({ where: { planId: sub.plan.id, status: 'active' } }),
+        prisma.invoice.count({ where: { organizationId: org.id, status: 'calculated' } }),
+      ]);
+      reply.send(serializeSubscription(sub, {
+        customerExternalId: sub.customer.externalId,
+        planCode: sub.plan.code,
+        plan: hydratedPlan,
+        planCounters: {
+          customers_count: customersCount,
+          active_subscriptions_count: activeSubsCount,
+          draft_invoices_count: draftInvoicesCount,
+        },
+      }));
+    },
+  });
+
   // DELETE pending sub (invariant #8).
   app.route({
     method: 'DELETE',

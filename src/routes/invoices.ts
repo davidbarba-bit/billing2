@@ -370,6 +370,73 @@ export function registerInvoiceRoutes(app: FastifyInstance, prisma: PrismaClient
       reply.send(serializeInvoice(hydrated));
     },
   });
+
+  // GET /api/v1/invoices (paginated list, Lago-compat).
+  app.route({
+    method: 'GET',
+    url: '/api/v1/invoices',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const q = request.query as { per_page?: string; page?: string; external_customer_id?: string; status?: string };
+      const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
+      const page = Math.max(1, Number(q.page ?? 1));
+      const where: import('@prisma/client').Prisma.InvoiceWhereInput = { organizationId: org.id };
+      if (q.external_customer_id) {
+        const customer = await prisma.customer.findUnique({
+          where: { organizationId_externalId: { organizationId: org.id, externalId: q.external_customer_id } },
+        });
+        if (!customer) {
+          reply.send({ invoices: [], meta: { current_page: page, next_page: null, prev_page: null, total_pages: 1, total_count: 0 } });
+          return;
+        }
+        where.customerId = customer.id;
+      }
+      if (q.status) where.status = q.status;
+      const [items, totalCount] = await Promise.all([
+        prisma.invoice.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          take: perPage,
+          skip: (page - 1) * perPage,
+          include: {
+            customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+            fees: true,
+            appliedTaxes: true,
+          },
+        }),
+        prisma.invoice.count({ where }),
+      ]);
+      const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+      reply.send({
+        invoices: items.map((i) => serializeInvoice(i).invoice),
+        meta: {
+          current_page: page,
+          next_page: page < totalPages ? page + 1 : null,
+          prev_page: page > 1 ? page - 1 : null,
+          total_pages: totalPages,
+          total_count: totalCount,
+        },
+      });
+    },
+  });
+
+  // GET /api/v1/invoices/:lago_id (single read, Lago-compat).
+  app.route({
+    method: 'GET',
+    url: '/api/v1/invoices/:lagoId',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { lagoId } = request.params as { lagoId: string };
+      const invoice = await prisma.invoice.findFirst({
+        where: { id: lagoId, organizationId: org.id },
+      });
+      if (!invoice) throw notFound('invoice');
+      const hydrated = await loadInvoice(prisma, invoice.id);
+      reply.send(serializeInvoice(hydrated));
+    },
+  });
 }
 
 async function loadInvoice(prisma: PrismaClient, id: string) {
