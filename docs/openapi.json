@@ -815,6 +815,66 @@
           "409": { "description": "conflict_folio_changed" }
         }
       }
+    },
+    "/api/v1/admin/reset": {
+      "post": {
+        "summary": "Hard reset de la organización autenticada — borrado total destructivo.",
+        "description": "Wipea TODA la data scoped a la org (customers, taxes, BMs, plans, add-ons, subs, events, invoices, fees, credit notes, idempotency records, unit labels). Preserva la org row + api_key + credenciales NetSuite. Counters (customer/invoice/credit_note sequential_id) regresan a 0.\n\n**Auth en tres capas** (defensa en profundidad):\n1. `Authorization: Bearer <API_KEY>` — scope automático a la org del key.\n2. `X-Admin-Reset-Token` — debe coincidir timing-safe con env `ADMIN_RESET_TOKEN`. Si la env no está set, devuelve 403 `admin_reset_disabled` (fail-closed).\n3. Body `{ confirm: \"<org_slug>\" }` — debe coincidir exactamente con el slug de la org autenticada. Evita wipes accidentales contra el environment equivocado.",
+        "tags": ["admin"],
+        "parameters": [
+          { "name": "X-Admin-Reset-Token", "in": "header", "required": true, "schema": { "type": "string" }, "description": "Token configurado en env `ADMIN_RESET_TOKEN`." }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["confirm"],
+                "properties": {
+                  "confirm": { "type": "string", "description": "Debe coincidir con `organization.slug` de la org autenticada." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reset OK — el body lista contadores de filas borradas por tabla.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "reset": { "type": "boolean", "example": true },
+                    "organization_slug": { "type": "string" },
+                    "cleared": {
+                      "type": "object",
+                      "properties": {
+                        "customers": { "type": "integer" },
+                        "taxes": { "type": "integer" },
+                        "billable_metrics": { "type": "integer" },
+                        "plans": { "type": "integer" },
+                        "add_ons": { "type": "integer" },
+                        "subscriptions": { "type": "integer" },
+                        "events": { "type": "integer" },
+                        "invoices": { "type": "integer" },
+                        "fees": { "type": "integer" },
+                        "credit_notes": { "type": "integer" },
+                        "idempotency_records": { "type": "integer" },
+                        "unit_labels": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Bearer faltante o inválido." },
+          "403": { "description": "`admin_reset_disabled` (env no set) o `invalid_reset_token`." },
+          "422": { "description": "`confirm` no coincide con el slug de la org." }
+        }
+      }
     }
   }
 }

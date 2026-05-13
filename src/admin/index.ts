@@ -12,6 +12,7 @@ import type { Organization, PrismaClient } from '@prisma/client';
 import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { seedNumaris } from './seed.js';
+import { resetOrganizationData } from '../services/reset.js';
 import { buildSignatureHeader } from '../services/hmac.js';
 import {
   badge,
@@ -147,6 +148,19 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     `;
     const seedAction = postButton('/admin/seed', 'Seed Numaris (3 camiones)', 'primary');
     const flash = readFlash(request, reply);
+    const resetForm = `
+      <details class="mt-2">
+        <summary class="cursor-pointer text-sm text-red-700 font-medium">Hard reset (borrar TODA la data de esta org)</summary>
+        <form method="post" action="/admin/reset" class="mt-3 space-y-2 p-3 border border-red-200 rounded bg-red-50">
+          <p class="text-sm text-gray-700">Esto borra customers, plans, BMs, add-ons, subs, events, invoices y credit notes para <b>${escapeHtml(org.slug)}</b>. La org y su API key se preservan. <b>No se puede deshacer.</b></p>
+          <label class="block">
+            <span class="text-xs text-gray-700">Escribe <code class="font-mono">${escapeHtml(org.slug)}</code> para confirmar:</span>
+            <input required name="confirm" autocomplete="off" class="mt-1 block w-full rounded border-red-300 shadow-sm font-mono text-sm">
+          </label>
+          <button type="submit" class="px-3 py-1.5 rounded text-sm font-medium bg-red-600 text-white hover:bg-red-700">Reset definitivo</button>
+        </form>
+      </details>
+    `;
     reply.type('text/html').send(layout({
       title: 'Dashboard',
       active: '/admin',
@@ -159,8 +173,25 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         ['API key', `<code>${escapeHtml(org.apiKey)}</code>`],
         ['NetSuite callback secret', org.netsuiteCallbackSecret ? '<span class="text-green-700">configurado</span>' : '<span class="text-yellow-700">no configurado</span>'],
         ['NetSuite dispatch flag', deps.config.featureNetsuiteDispatchEnabled ? badge('on', 'green') : badge('off', 'yellow')],
-      ])),
+      ])) + card('Zona peligrosa', resetForm),
     }));
+  });
+
+  app.post('/admin/reset', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const body = (request.body ?? {}) as { confirm?: string };
+    if (body.confirm !== org.slug) {
+      setFlash(reply, 'error', `Confirmación incorrecta. Esperaba "${org.slug}".`);
+      return reply.redirect('/admin');
+    }
+    const summary = await resetOrganizationData(prisma, org.id);
+    const cleared = Object.entries(summary.cleared)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k}=${n}`)
+      .join(', ');
+    setFlash(reply, 'success', `Reset completo. Borrado: ${cleared || 'nada (ya estaba vacío)'}.`);
+    reply.redirect('/admin');
   });
 
   app.post('/admin/seed', async (request, reply) => {

@@ -41,11 +41,16 @@ SEED_DEFAULT_ORG_TIMEZONE=America/Mexico_City
 SEED_DEFAULT_API_KEY=mlk_<32-bytes-random>
 ADMIN_USER=admin
 ADMIN_PASSWORD=<24-bytes-random>
+ADMIN_RESET_TOKEN=<32-bytes-random>
 FEATURE_NETSUITE_DISPATCH_ENABLED=false
 FEATURE_NETSUITE_CALLBACK_MTLS=false
 NETSUITE_CALLBACK_IP_ALLOWLIST=
 PERIOD_ROLLOVER_ENABLED=true
 ```
+
+`ADMIN_RESET_TOKEN` habilita `POST /api/v1/admin/reset` (hard wipe de la
+org autenticada). Si lo dejas en blanco, el endpoint responde 403
+`admin_reset_disabled` — útil en prod donde no quieres exponerlo.
 
 > `PORT` y `DATABASE_URL` los inyecta Railway automáticamente. **No** los
 > seteés a mano.

@@ -18,6 +18,7 @@ import { registerInvoiceRoutes } from './routes/invoices.js';
 import { registerCreditNoteRoutes } from './routes/credit-notes.js';
 import { registerExternalConfirmRoutes } from './routes/external-confirm.js';
 import { registerDiscoveryRoutes } from './routes/discovery.js';
+import { registerAdminResetRoute } from './routes/admin-reset.js';
 import { FakeNetSuiteDispatcher, RealNetSuiteDispatcher, type NetSuiteDispatcher } from './services/netsuite-dispatcher.js';
 import type { PrismaClient } from '@prisma/client';
 import { registerAdmin } from './admin/index.js';
@@ -116,6 +117,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   registerInvoiceRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerCreditNoteRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerExternalConfirmRoutes(app, prisma, { config: deps.config });
+  registerAdminResetRoute(app, prisma);
 
   return app;
 }
