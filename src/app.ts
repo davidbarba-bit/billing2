@@ -18,6 +18,7 @@ import { registerCreditNoteRoutes } from './routes/credit-notes.js';
 import { registerExternalConfirmRoutes } from './routes/external-confirm.js';
 import { FakeNetSuiteDispatcher, RealNetSuiteDispatcher, type NetSuiteDispatcher } from './services/netsuite-dispatcher.js';
 import type { PrismaClient } from '@prisma/client';
+import { registerAdmin } from './admin/index.js';
 
 export type AppDependencies = {
   config: AppConfig;
@@ -53,7 +54,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   });
 
   // Unified error shape (invariant #10).
-  app.setErrorHandler(async (err, _request, reply) => {
+  app.setErrorHandler(async (err, request, reply) => {
     if (err instanceof ApiError) {
       reply.status(err.status).send(serializeError(err));
       return;
@@ -67,6 +68,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         code: 'validation_errors',
         error_details: { _root: ['invalid_request_body'] },
       });
+      return;
+    }
+    // Errors from @fastify/basic-auth carry a `statusCode` of 401.
+    const statusCode = (err as { statusCode?: number }).statusCode;
+    if (statusCode === 401) {
+      reply.status(401).header('www-authenticate', 'Basic realm="mini-Lago admin"');
+      if (request.url.startsWith('/admin')) {
+        reply.type('text/html').send('<h1>401 Unauthorized</h1><p>Bad credentials.</p>');
+      } else {
+        reply.send({ status: 401, error: 'Unauthorized', code: 'unauthorized' });
+      }
       return;
     }
     app.log.error({ err }, 'unhandled error');
@@ -83,6 +95,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Health.
   app.get('/health', async () => ({ status: 'ok' }));
+
+  // Admin back-office must be registered BEFORE other routes so its
+  // `preHandler` hook for Basic Auth fires for /admin/*.
+  await registerAdmin(app, { config: deps.config, prisma, dispatcher, callbackBaseUrl });
 
   registerCustomerRoutes(app, prisma);
   registerTaxRoutes(app, prisma);

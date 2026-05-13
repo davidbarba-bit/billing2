@@ -59,6 +59,9 @@ async function ensureDefaultOrganization(
       name: 'Default Organization',
       timezone: config.seedDefaultOrgTimezone,
       apiKey: config.seedDefaultApiKey,
+      // Default secret for local dev so the admin's "simulate folio" flow
+      // works out of the box. Replace before exposing externally.
+      netsuiteCallbackSecret: 'dev-callback-secret-replace-me',
     },
   });
 }

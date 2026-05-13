@@ -128,6 +128,44 @@ DATABASE_URL='postgresql://minilago:minilago@localhost:5432/minilago_test?schema
   npm test
 ```
 
+## Admin back-office (`/admin`)
+
+La app monta un back-office server-rendered en `http://localhost:3000/admin`
+protegido con HTTP Basic Auth (env `ADMIN_USER` / `ADMIN_PASSWORD`,
+default `admin` / `admin`).
+
+Secciones:
+
+- **Dashboard** — counts por entidad y botón **Seed Numaris (3 camiones)** que
+  crea el escenario completo del spec: tax IVA 16% → customer `carga-express-mx`
+  → BMs monthly+setup → plan Combustible → subscription calendar → add-ons
+  cobro/setup → 5 eventos para 3 camiones con prorrateo no-trivial
+  (camion-001 full month, camion-002 mid-period, camion-003 baja anticipada).
+- **Customers** — lista + detalle con subscriptions, invoices, credit notes
+  y últimos eventos del customer.
+- **Subscriptions** — lista + detalle. El detalle incluye `current_usage`
+  vivo (ejecutado contra la API interna).
+- **Invoices** — lista + detalle con fees, billed_units_detail expandible,
+  units_annex, applied_taxes, external_invoice. Acciones: **void** y
+  **simular folio NetSuite** (firma HMAC válida + POST a `/external-confirm`).
+- **Credit notes** — lista + detalle + simular folio CN.
+- **Events** — stream de últimos 200 con filtro por subscription.
+- **Plans / Billable metrics / Add-ons / Taxes** — listas + forms create
+  inline. Add-ons soporta DELETE con 409 si tiene fees emitidas (D6).
+
+Flow recomendado para probar:
+
+```
+1. Browse a http://localhost:3000/admin (admin/admin)
+2. Click "Seed Numaris (3 camiones)" en el dashboard.
+3. Click Customers → carga-express-mx → ver subs/invoices vacías.
+4. Click + Nueva invoice → seleccionar add-on cobro, units=3, dispatch.
+5. En el detalle, click "Simular folio NetSuite" → invoice pasa a
+   finalized + confirmed con folio fiscal.
+6. Crea un POST /api/v1/credit_notes contra esa invoice (o usa el
+   admin si añades el form CN — TODO).
+```
+
 ## Smoke test
 
 ```
