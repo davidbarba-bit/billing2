@@ -43,6 +43,10 @@ type EventPayload = {
   operation_type?: 'add' | 'remove';
   unit_external_id?: string;
   unit_label?: string | null;
+  // Meses prepagados específicos para esta unit. Solo aplica si el service es
+  // one_off; sobreescribe service.prepaidMonthsDefault. Si ambos null al
+  // momento de facturar, el cobro falla.
+  prepaid_months?: number | null;
   timestamp?: number | string;
   kind?: string | null;
   properties?: Record<string, unknown>;
@@ -92,6 +96,11 @@ export function registerEventRoutes(
 
       const timestamp = new Date(payload.timestamp * 1000);
 
+      const prepaidMonthsOverride = payload.prepaid_months ?? null;
+      if (prepaidMonthsOverride !== null && (!Number.isInteger(prepaidMonthsOverride) || prepaidMonthsOverride <= 0)) {
+        throw validation({ prepaid_months: ['must_be_positive_integer'] });
+      }
+
       const result = await prisma.$transaction(async (tx) => {
         const unit = await tx.unit.upsert({
           where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id! } },
@@ -101,6 +110,9 @@ export function registerEventRoutes(
             label: payload.unit_label ?? null,
             activeFrom: timestamp,
             activeTo: op === 'remove' ? timestamp : null,
+            // Solo se setea en create. Si la unit ya existe, preservamos lo
+            // que tenga (se puede ajustar con PATCH /units/:id).
+            prepaidMonths: prepaidMonthsOverride,
           },
           update: op === 'add'
             ? { activeTo: null, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) }

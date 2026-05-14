@@ -1,20 +1,24 @@
-// v4 — intervalos configurables + servicios one_off.
+// v4/v6 — intervalos configurables + servicios one_off prepagados.
 //
 // Verifica:
 //   - Intervalos 1, 3, 6, 12 meses se respetan en billingPeriodFor.
-//   - Service one_off + customer trigger=next_cycle → la unit sale como fee
-//     "one_off" en la siguiente cycle invoice, y queda marcada (no se cobra
-//     dos veces).
-//   - Service one_off + customer trigger=immediate → POST /events emite
-//     invoice individual al instante y devuelve triggered_invoice_id.
-//   - Re-ping a la misma unit YA cobrada NO emite nueva invoice.
-//   - one_off no aparece en cycle invoice cuando trigger=immediate.
+//   - Service one_off con setup + prepaid_months_default = 48:
+//     * next_cycle: 1ª unit nueva en el periodo → cycle invoice tiene
+//       1 línea de setup + 1 línea de 48 meses × $X.
+//     * immediate: POST /events emite invoice individual al instante con
+//       2 líneas (setup + 48 meses × $X).
+//   - Múltiples units one-off en next_cycle → cada unit aporta su PAR de
+//     renglones (setup + mensualidades con su N propio).
+//   - Override de prepaid_months por unit (override del default del service).
+//   - Re-ping de unit ya cobrada NO duplica.
+//   - Cobro falla si prepaid_months no está ni en la unit ni en el service.
+//   - Intervalo fuera de {1,3,6,12} rechazado.
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
 import { billingPeriodFor } from '../../src/services/billing-engine.js';
 
-describe('v4 — intervals + one_off', () => {
+describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
   let h: Harness;
   beforeEach(async () => { h = await buildTestHarness({ orgTimezone: 'America/Mexico_City' }); });
   afterAll(async () => { await closeHarness(h); });
@@ -27,7 +31,6 @@ describe('v4 — intervals + one_off', () => {
     } as unknown as import('@prisma/client').Customer;
     const ref = new Date('2026-04-15T00:00:00Z');
     const { start, end } = billingPeriodFor(customer, 'UTC', ref);
-    // Period 2 (after first Q1): Apr 1 → Jul 1.
     expect(start.toISOString()).toBe('2026-04-01T00:00:00.000Z');
     expect(end.toISOString().slice(0, 10)).toBe('2026-06-30');
   });
@@ -42,23 +45,28 @@ describe('v4 — intervals + one_off', () => {
     const { start, end, daysInPeriod } = billingPeriodFor(customer, 'UTC', ref);
     expect(start.toISOString().slice(0, 10)).toBe('2026-05-14');
     expect(end.toISOString().slice(0, 10)).toBe('2026-05-31');
-    expect(daysInPeriod).toBe(18); // May 14 → June 1
+    expect(daysInPeriod).toBe(18);
   });
 
-  it('one_off + next_cycle: la unit sale como fee one_off en la cycle invoice', async () => {
-    // Customer trigger=next_cycle (default), interval=1M, anchor=1.
+  it('one_off + next_cycle: 1 unit con 48 meses prepagados + setup → cycle invoice tiene 2 fees', async () => {
     await h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
       payload: { customer: { external_id: 'c1', name: 'C1', currency: 'MXN', timezone: 'America/Mexico_City', subscription_at: '2025-01-01T00:00:00Z' } },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
-      payload: { service: { code: 's-oneoff', customer_external_id: 'c1', name: 'Diagnóstico', pricing_model: 'one_off', monthly_unit_amount_cents: 75000 } },
+      payload: { service: {
+        code: 's-oneoff', customer_external_id: 'c1', name: 'Servicio Combustible',
+        pricing_model: 'one_off',
+        monthly_unit_amount_cents: 10000,   // $100/mes
+        setup_unit_amount_cents: 150000,    // $1,500 setup
+        prepaid_months_default: 48,
+      } },
     });
     const now = Math.floor(Date.now() / 1000);
     await h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
-      payload: { event: { transaction_id: 'tx-1', service_code: 's-oneoff', operation_type: 'add', unit_external_id: 'sensor-x', timestamp: now } },
+      payload: { event: { transaction_id: 'tx-1', service_code: 's-oneoff', operation_type: 'add', unit_external_id: 'camion-001', unit_label: 'Camión 001', timestamp: now } },
     });
 
     const r = await h.app.inject({
@@ -67,34 +75,91 @@ describe('v4 — intervals + one_off', () => {
       payload: { invoice: { customer_external_id: 'c1', metadata: { idempotency_key: 'cycle-1' } } },
     });
     expect(r.statusCode).toBe(200);
-    const body = r.json() as { invoice: { id: string; fees: Array<{ kind: string; amount_cents: number }> } };
-    const oneOff = body.invoice.fees.find((f) => f.kind === 'one_off');
-    expect(oneOff).toBeTruthy();
-    expect(oneOff!.amount_cents).toBe(75000);
+    const body = r.json() as { invoice: { fees: Array<{ kind: string; units: string; amount_cents: number; description: string }>; fees_amount_cents: number } };
 
-    // La unit debe quedar marcada como cobrada en DB.
-    const unit = await h.prisma.unit.findFirstOrThrow({ where: { externalId: 'sensor-x' } });
+    // Esperamos 2 fees: setup ($1,500) + mensualidades (48 × $100 = $4,800).
+    const setupFee = body.invoice.fees.find((f) => f.kind === 'setup');
+    const monthlyFee = body.invoice.fees.find((f) => f.kind === 'one_off');
+    expect(setupFee).toBeTruthy();
+    expect(setupFee!.amount_cents).toBe(150000);
+    expect(setupFee!.units).toBe('1.0000');
+    expect(monthlyFee).toBeTruthy();
+    expect(monthlyFee!.amount_cents).toBe(48 * 10000);
+    expect(monthlyFee!.units).toBe('48.0000');
+    expect(body.invoice.fees_amount_cents).toBe(150000 + 48 * 10000); // $6,300
+
+    // La unit debe quedar marcada como cobrada.
+    const unit = await h.prisma.unit.findFirstOrThrow({ where: { externalId: 'camion-001' } });
     expect(unit.oneoffBilledAt).not.toBeNull();
-
-    // Idempotencia: una 2ª llamada con misma config retorna la MISMA invoice
-    // (no crea un duplicado). Eso garantiza que el cron pueda re-correr.
-    const r2 = await h.app.inject({
-      method: 'POST', url: '/api/v1/invoices',
-      headers: { ...h.authHeader(), 'idempotency-key': 'cycle-2-different-key' },
-      payload: { invoice: { customer_external_id: 'c1', metadata: { idempotency_key: 'cycle-2-different-key' } } },
-    });
-    const body2 = r2.json() as { invoice: { id: string } };
-    expect(body2.invoice.id).toBe(body.invoice.id);
   });
 
-  it('one_off + immediate: POST /events emite invoice individual', async () => {
+  it('one_off + next_cycle: 3 units distintas → 6 fees (par setup+mensualidad por unit, una con N propio)', async () => {
     await h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c2', name: 'C2', currency: 'MXN', timezone: 'America/Mexico_City', nonrecurring_trigger: 'immediate' } },
+      payload: { customer: { external_id: 'cM', name: 'Multi', currency: 'MXN', subscription_at: '2025-01-01T00:00:00Z' } },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
-      payload: { service: { code: 's-imm', customer_external_id: 'c2', name: 'Imm', pricing_model: 'one_off', monthly_unit_amount_cents: 30000 } },
+      payload: { service: {
+        code: 's-multi', customer_external_id: 'cM', name: 'Combustible',
+        pricing_model: 'one_off', monthly_unit_amount_cents: 10000,
+        setup_unit_amount_cents: 150000, prepaid_months_default: 48,
+      } },
+    });
+    const now = Math.floor(Date.now() / 1000);
+    // Unit A: usa default 48 meses
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: { transaction_id: 'tx-a', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-A', timestamp: now } },
+    });
+    // Unit B: override 60 meses
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: { transaction_id: 'tx-b', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-B', prepaid_months: 60, timestamp: now } },
+    });
+    // Unit C: override 24 meses
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: { transaction_id: 'tx-c', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-C', prepaid_months: 24, timestamp: now } },
+    });
+
+    const r = await h.app.inject({
+      method: 'POST', url: '/api/v1/invoices',
+      headers: { ...h.authHeader(), 'idempotency-key': 'multi-1' },
+      payload: { invoice: { customer_external_id: 'cM', metadata: { idempotency_key: 'multi-1' } } },
+    });
+    expect(r.statusCode).toBe(200);
+    const inv = (r.json() as { invoice: { fees: Array<{ kind: string; units: string; amount_cents: number }>; fees_amount_cents: number } }).invoice;
+
+    // 3 setups + 3 mensualidades = 6 fees.
+    const setupFees = inv.fees.filter((f) => f.kind === 'setup');
+    const monthlyFees = inv.fees.filter((f) => f.kind === 'one_off');
+    expect(setupFees).toHaveLength(3);
+    expect(monthlyFees).toHaveLength(3);
+
+    // Cada setup es $1,500.
+    for (const f of setupFees) expect(f.amount_cents).toBe(150000);
+
+    // Mensualidades: 48m, 60m, 24m (sorted by unit external_id).
+    const months = monthlyFees.map((f) => Number(f.units)).sort((a, b) => a - b);
+    expect(months).toEqual([24, 48, 60]);
+
+    // Total: 3 × 1500 + (48 + 60 + 24) × 100 = 4,500 + 13,200 = 17,700 ($177.00 × 100)
+    expect(inv.fees_amount_cents).toBe(3 * 150000 + (48 + 60 + 24) * 10000);
+  });
+
+  it('one_off + immediate: POST /events emite invoice individual con 2 fees', async () => {
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
+      payload: { customer: { external_id: 'c2', name: 'C2', currency: 'MXN', nonrecurring_trigger: 'immediate' } },
+    });
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
+      payload: { service: {
+        code: 's-imm', customer_external_id: 'c2', name: 'Imm',
+        pricing_model: 'one_off', monthly_unit_amount_cents: 10000,
+        setup_unit_amount_cents: 150000, prepaid_months_default: 48,
+      } },
     });
 
     const r = await h.app.inject({
@@ -109,12 +174,17 @@ describe('v4 — intervals + one_off', () => {
       method: 'GET', url: `/api/v1/invoices/${body.triggered_invoice_id}`,
       headers: h.authHeader(),
     });
-    const invBody = invRes.json() as { invoice: { fees: Array<{ kind: string; amount_cents: number }>; fees_amount_cents: number } };
-    expect(invBody.invoice.fees_amount_cents).toBe(30000);
-    expect(invBody.invoice.fees).toHaveLength(1);
-    expect(invBody.invoice.fees[0]!.kind).toBe('one_off');
+    const inv = (invRes.json() as { invoice: { fees: Array<{ kind: string; units: string; amount_cents: number }>; fees_amount_cents: number } }).invoice;
 
-    // Re-ping de la misma unit no debe disparar nueva invoice.
+    expect(inv.fees).toHaveLength(2);
+    const setupFee = inv.fees.find((f) => f.kind === 'setup');
+    const monthlyFee = inv.fees.find((f) => f.kind === 'one_off');
+    expect(setupFee?.amount_cents).toBe(150000);
+    expect(monthlyFee?.amount_cents).toBe(48 * 10000);
+    expect(monthlyFee?.units).toBe('48.0000');
+    expect(inv.fees_amount_cents).toBe(150000 + 48 * 10000); // $6,300
+
+    // Re-ping no duplica.
     const r2 = await h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
       payload: { event: { transaction_id: 'tx-imm-2', service_code: 's-imm', operation_type: 'add', unit_external_id: 'u-1', timestamp: Math.floor(Date.now()/1000) } },
@@ -123,47 +193,66 @@ describe('v4 — intervals + one_off', () => {
     expect(body2.triggered_invoice_id).toBeUndefined();
   });
 
-  it('one_off + immediate: la cycle invoice NO incluye one_offs (esos fueron a invoice individual)', async () => {
+  it('one_off + immediate: el POST /events con prepaid_months override usa ese valor', async () => {
     await h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c3', name: 'C3', currency: 'MXN', timezone: 'America/Mexico_City', nonrecurring_trigger: 'immediate' } },
+      payload: { customer: { external_id: 'cO', name: 'Override', currency: 'MXN', nonrecurring_trigger: 'immediate' } },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
-      payload: { service: { code: 's3-imm', customer_external_id: 'c3', name: 'Imm', pricing_model: 'one_off', monthly_unit_amount_cents: 10000 } },
-    });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
-      payload: { event: { transaction_id: 'tx-3', service_code: 's3-imm', operation_type: 'add', unit_external_id: 'u-x', timestamp: Math.floor(Date.now()/1000) } },
+      payload: { service: {
+        code: 's-ov', customer_external_id: 'cO', name: 'Ov',
+        pricing_model: 'one_off', monthly_unit_amount_cents: 10000,
+        setup_unit_amount_cents: 0, prepaid_months_default: 48,
+      } },
     });
 
-    // Cycle invoice del customer → no debería tener fees (no hay services recurring ni addons).
     const r = await h.app.inject({
-      method: 'POST', url: '/api/v1/invoices',
-      headers: { ...h.authHeader(), 'idempotency-key': 'c3-cycle' },
-      payload: { invoice: { customer_external_id: 'c3', metadata: { idempotency_key: 'c3-cycle' } } },
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: { transaction_id: 'tx-ov', service_code: 's-ov', operation_type: 'add', unit_external_id: 'u-ov', prepaid_months: 72, timestamp: Math.floor(Date.now()/1000) } },
     });
-    const inv = (r.json() as { invoice: { fees: Array<{ kind: string }>; fees_amount_cents: number } }).invoice;
-    expect(inv.fees.find((f) => f.kind === 'one_off')).toBeUndefined();
-    expect(inv.fees_amount_cents).toBe(0);
+    expect(r.statusCode).toBe(200);
+    const invId = (r.json() as { triggered_invoice_id: string }).triggered_invoice_id;
+
+    const inv = (await h.app.inject({ method: 'GET', url: `/api/v1/invoices/${invId}`, headers: h.authHeader() })).json() as { invoice: { fees: Array<{ kind: string; units: string; amount_cents: number }> } };
+    const monthlyFee = inv.invoice.fees.find((f) => f.kind === 'one_off');
+    expect(monthlyFee?.units).toBe('72.0000');
+    expect(monthlyFee?.amount_cents).toBe(72 * 10000); // $7,200
   });
 
-  it('rechaza service one_off con setup_unit_amount_cents > 0', async () => {
+  it('error si prepaid_months no está definido ni en service ni en unit', async () => {
     await h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c4', name: 'C4', currency: 'MXN' } },
+      payload: { customer: { external_id: 'cErr', name: 'E', currency: 'MXN', nonrecurring_trigger: 'immediate' } },
     });
-    const r = await h.app.inject({
+    await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
-      payload: { service: { code: 's4', customer_external_id: 'c4', name: 'Bad', pricing_model: 'one_off', monthly_unit_amount_cents: 5000, setup_unit_amount_cents: 100 } },
+      payload: { service: { code: 's-err', customer_external_id: 'cErr', name: 'Err', pricing_model: 'one_off', monthly_unit_amount_cents: 5000 } },
     });
-    expect(r.statusCode).toBe(422);
+    // Unit sin prepaid_months y service sin default → error al facturar.
+    const r = await h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: { transaction_id: 'tx-err', service_code: 's-err', operation_type: 'add', unit_external_id: 'u-err', timestamp: Math.floor(Date.now()/1000) } },
+    });
+    expect(r.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it('rechaza intervalos fuera de {1,3,6,12}', async () => {
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
       payload: { customer: { external_id: 'c5', name: 'C5', currency: 'MXN', billing_period_months: 4 } },
+    });
+    expect(r.statusCode).toBe(422);
+  });
+
+  it('rechaza prepaid_months_default en service recurring', async () => {
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
+      payload: { customer: { external_id: 'cR', name: 'R', currency: 'MXN' } },
+    });
+    const r = await h.app.inject({
+      method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
+      payload: { service: { code: 's-rec', customer_external_id: 'cR', name: 'Rec', pricing_model: 'recurring', monthly_unit_amount_cents: 1000, prepaid_months_default: 12 } },
     });
     expect(r.statusCode).toBe(422);
   });

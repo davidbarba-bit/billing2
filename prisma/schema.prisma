@@ -128,6 +128,10 @@ model Service {
   pricingModel           String    @default("recurring") @map("pricing_model")
   monthlyUnitAmountCents Int       @default(0) @map("monthly_unit_amount_cents")
   setupUnitAmountCents   Int       @default(0) @map("setup_unit_amount_cents")
+  // Default de meses prepagados por unit (solo aplica a pricing_model=one_off).
+  // Puede ser sobreescrito a nivel Unit (Unit.prepaidMonths). Si ambos son
+  // null al momento de facturar, se aborta el cobro con un error.
+  prepaidMonthsDefault   Int?      @map("prepaid_months_default")
   status                 String    @default("active") // active | terminated
   terminatedAt           DateTime? @map("terminated_at")
   metadata               Json      @default("{}")
@@ -215,6 +219,10 @@ model Unit {
   //   oneoffBilledAt  → para services one_off (la unit no vuelve a aparecer en facturas)
   setupBilledAt DateTime? @map("setup_billed_at")
   oneoffBilledAt DateTime? @map("oneoff_billed_at")
+  // Meses prepagados para esta unit (override del default del Service). Solo
+  // aplica si el Service es one_off. Cuando la unit se factura por primera vez,
+  // se cobra setup + N × monthly y la unit queda marcada con oneoffBilledAt.
+  prepaidMonths Int?      @map("prepaid_months")
   metadata      Json      @default("{}")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")

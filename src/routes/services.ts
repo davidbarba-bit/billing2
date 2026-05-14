@@ -15,6 +15,7 @@ type ServicePayload = {
   pricing_model?: 'recurring' | 'one_off';
   monthly_unit_amount_cents?: number;
   setup_unit_amount_cents?: number;
+  prepaid_months_default?: number | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -55,11 +56,16 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       if (monthlyAmount < 0 || setupAmount < 0) {
         throw validation({ amount: ['must_be_non_negative'] });
       }
-      if (pricingModel === 'one_off' && setupAmount > 0) {
-        throw validation({ setup_unit_amount_cents: ['must_be_zero_for_one_off'] });
-      }
       if (pricingModel === 'one_off' && monthlyAmount === 0) {
         throw validation({ monthly_unit_amount_cents: ['must_be_positive_for_one_off'] });
+      }
+      // prepaid_months_default solo aplica a one_off; en recurring debe ser null.
+      const prepaidMonthsDefault = payload.prepaid_months_default ?? null;
+      if (pricingModel === 'recurring' && prepaidMonthsDefault !== null) {
+        throw validation({ prepaid_months_default: ['only_applicable_to_one_off'] });
+      }
+      if (prepaidMonthsDefault !== null && (!Number.isInteger(prepaidMonthsDefault) || prepaidMonthsDefault <= 0)) {
+        throw validation({ prepaid_months_default: ['must_be_positive_integer'] });
       }
 
       const currency = payload.currency ?? customer.currency;
@@ -75,6 +81,7 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
           pricingModel,
           monthlyUnitAmountCents: monthlyAmount,
           setupUnitAmountCents: setupAmount,
+          prepaidMonthsDefault: prepaidMonthsDefault,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });

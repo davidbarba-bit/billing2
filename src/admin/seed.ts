@@ -101,6 +101,9 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
   }
 
   // Service one_off de ejemplo (pago por adelantado, una vez por unit).
+  // Modelo Numaris: la unit nueva paga upfront 48 meses de mensualidad
+  // ($100/mes) + setup de instalación ($1,500). Total por unit nueva:
+  // setup $1,500 + 48 × $100 = $6,300.
   let oneOffService = await prisma.service.findUnique({
     where: { organizationId_code: { organizationId: org.id, code: 'instalacion-gps' } },
   });
@@ -110,12 +113,13 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         organizationId: org.id,
         customerId: customer.id,
         code: 'instalacion-gps',
-        name: 'Instalación inicial GPS',
-        description: 'Cargo único por instalación: MX$3500 por unidad nueva. Modo next_cycle: sale en la factura del periodo cuando aparece la unit.',
+        name: 'Servicio Combustible (prepago)',
+        description: 'Modelo prepago: cliente paga setup + 48 meses de mensualidad por adelantado al instalar cada unidad nueva.',
         currency: 'MXN',
         pricingModel: 'one_off',
-        monthlyUnitAmountCents: 350000,
-        setupUnitAmountCents: 0,
+        monthlyUnitAmountCents: 10000,   // $100/mes prepagado
+        setupUnitAmountCents: 150000,    // $1,500 setup
+        prepaidMonthsDefault: 48,        // 48 meses default
         status: 'active',
       },
     });

@@ -4,10 +4,11 @@
 
 Motor de facturación domain-specific para **Numaris** (rastreo flotillas en LATAM).
 Calcula invoices por uso real + las despacha a NetSuite. Construido v1 contra el
-spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v5 Numaris-native**:
+spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v6 Numaris-native**:
 un solo invoice por cliente por periodo agregando cargos de todos sus servicios
-recurrentes + add-ons, con soporte de servicios one-off (cargo único por unidad)
-en dos modos: emisión inmediata por ping o acumulación al cierre del ciclo.
+recurrentes + add-ons, **más servicios prepagados** (setup + N mensualidades por
+adelantado al primer ping de cada unit) en dos modos: emisión inmediata por
+ping o acumulación al cierre del ciclo.
 
 **Impuestos**: mini-Lago **NO calcula impuestos**. Los invoices contienen solo
 montos netos por partida (`fees_amount_cents`). NetSuite calcula IVA, IEPS,
@@ -24,7 +25,7 @@ Stack:
 
 ---
 
-## El modelo de dominio (v5)
+## El modelo de dominio (v6)
 
 El cambio mental crítico: **un cliente recibe UNA factura por periodo** que cubre
 TODO lo que le facturas (todos sus servicios recurrentes contratados + sus
@@ -42,14 +43,16 @@ Organization (Numaris)
          │
          ├── Service[]          ← cada producto contratado por el cliente
          │     ├── pricing_model: recurring | one_off
-         │     ├── monthly_unit_amount_cents   (recurring: por periodo / one_off: cargo único)
-         │     ├── setup_unit_amount_cents     (sólo recurring; 0 en one_off)
+         │     ├── monthly_unit_amount_cents   (recurring: por periodo / one_off: precio por mes prepagado)
+         │     ├── setup_unit_amount_cents     (cargo único por unit al primer ping; aplica a ambos)
+         │     ├── prepaid_months_default      (solo one_off: meses prepagados por default por unit)
          │     ├── status: active | terminated
          │     ├── Unit[]       ← cada cosa rastreada (camión, GPS, etc.)
          │     │     ├── external_id, label
          │     │     ├── active_from, active_to    ← define el prorrateo recurring
          │     │     ├── setup_billed_at           ← gate del setup fee (recurring)
-         │     │     └── oneoff_billed_at          ← gate del cobro one_off
+         │     │     ├── oneoff_billed_at          ← gate del cobro one_off
+         │     │     └── prepaid_months            ← solo one_off: override del default del service
          │     └── ServiceAddOn[]               ← modifier per-unit (solo recurring)
          │           ├── amount_cents (por unidad por periodo)
          │           ├── active_from, active_to
@@ -98,8 +101,10 @@ Para ese customer + periodo:
    - 1 fee `setup` (por cada unidad con `setup_billed_at = null`; luego marca billed).
    - 1 fee `service_addon` por cada ServiceAddOn vigente (per-unit prorrateado).
 2. **Por cada Service `one_off` activo, si `customer.nonrecurring_trigger == 'next_cycle'`:**
-   - 1 fee `one_off` con todas las units cuya `oneoff_billed_at = null` y `active_from`
-     cayó dentro del periodo. Luego marca billed (no volverán a aparecer).
+   - Por cada unit nueva del periodo (`oneoff_billed_at = null`, `active_from` cae en el periodo):
+     - 1 fee `setup` (`units=1`, `amount=setup_unit_amount_cents`) si setup > 0
+     - 1 fee `one_off` (`units=N` meses, `amount=N × monthly_unit_amount_cents`)
+   - Cada unit aporta su PAR de renglones con N propio (override de la unit o default del service). Luego se marca `oneoff_billed_at` y no vuelve a aparecer.
 3. **Por cada CustomerAddOn vigente:** 1 fee `customer_addon` flat (prorrateado).
 4. **NetSuite calcula impuestos** al recibir el payload neto y los devuelve en el folio fiscal (CFDI) vía `/external-confirm`.
 
@@ -108,10 +113,15 @@ Para ese customer + periodo:
 Si el evento crea/re-activa una Unit en un Service con `pricing_model='one_off'`
 **y** el Customer tiene `nonrecurring_trigger='immediate'` **y** la unit no había
 sido cobrada antes (`oneoff_billed_at = null`):
-- Se emite automáticamente UNA invoice individual con SOLO esa unit.
-- Se marca la unit como cobrada.
+- Se emite automáticamente UNA invoice individual con 2 líneas:
+  - Setup (cantidad 1, `setup_unit_amount_cents`) si > 0
+  - Mensualidad prepagada (cantidad N meses × `monthly_unit_amount_cents`)
+- Se marca la unit como cobrada (`oneoff_billed_at`).
 - Se despacha a NetSuite en background.
 - El response del POST /events incluye `triggered_invoice_id`.
+
+N (meses prepagados) viene de `unit.prepaid_months` (override en el POST /events)
+o `service.prepaid_months_default`. Si ambos son null, el cobro falla con error.
 
 Esto significa que un día con 1000 pings genera 1000 invoices + 1000 dispatches.
 Re-pings (re-activaciones) de una unit ya cobrada NO emiten nueva invoice.
@@ -215,16 +225,25 @@ Service RECURRENTE (renta por periodo):
 
 (Sin `tax_codes`: NetSuite maneja la fiscalidad de cada cliente.)
 
-Service ONE-OFF (cargo único por unidad cuando aparece):
+Service ONE-OFF / prepago (setup + N meses por adelantado al primer ping):
 ```
 /admin/services → "+ Nuevo service"
   customer_external_id:       transportes-norte
-  code:                       instalacion-gps-transportes-norte
-  name:                       "Instalación GPS"
+  code:                       combustible-prepago
+  name:                       "Servicio Combustible (prepago)"
   pricing_model:              one_off
-  monthly_unit_amount_cents:  350000       ← $3500 cargo único por unidad
-  setup_unit_amount_cents:    0            ← debe ser 0 en one_off
+  monthly_unit_amount_cents:  10000        ← $100/mes (× N meses al primer ping)
+  setup_unit_amount_cents:    150000       ← $1,500 setup por unit al primer ping
+  prepaid_months_default:     48           ← 48 meses por default (override por unit)
 ```
+
+Cuando la unit hace su primer ping (`POST /events` con `prepaid_months` opcional
+para override), la factura del cliente tendrá 2 renglones por esta unit:
+```
+1   - Setup Combustible (prepago) — Camión 001            $1,500    $1,500
+48  - Mensualidad Combustible (prepago) — Camión 001      $100      $4,800
+```
+Total por la unit: $6,300. La unit queda marcada y no se vuelve a facturar.
 
 **4. Agregar las units (los camiones, los GPS, lo que rastrees)**
 
@@ -290,7 +309,7 @@ Apunta tu generador de cliente a `https://<host>/openapi.json`.
 - `DELETE /api/v1/customers/:external_id` (409 si tiene services activos)
 
 ### Services
-- `POST /api/v1/services` — alta atada a un customer. Acepta `pricing_model` (recurring | one_off). En one_off, `setup_unit_amount_cents` debe ser 0 y `monthly_unit_amount_cents` > 0.
+- `POST /api/v1/services` — alta atada a un customer. Acepta `pricing_model` (recurring | one_off). En one_off, `setup_unit_amount_cents` puede ser > 0 (cargo único por unit), `monthly_unit_amount_cents` > 0 (precio mensual prepagado), y `prepaid_months_default` opcional.
 - `GET /api/v1/services` (filtros `customer_external_id`, `status`), `GET /api/v1/services/:code`
 - `POST /api/v1/services/:code/terminate` — marca terminated + cierra units activas
 - `DELETE /api/v1/services/:code` (409 si tiene fees emitidas)
@@ -306,9 +325,9 @@ Apunta tu generador de cliente a `https://<host>/openapi.json`.
 - `GET / PATCH / DELETE /api/v1/customer-add-ons/:id`
 
 ### Units & events
-- `POST /api/v1/events` — add/remove (materializa unit + audit). **Side-effect v4**: si la unit pertenece a un service `one_off` y el customer tiene `nonrecurring_trigger='immediate'`, emite invoice individual + dispatch a NetSuite. El response incluye `triggered_invoice_id`.
+- `POST /api/v1/events` — add/remove (materializa unit + audit). Acepta `prepaid_months` opcional para overrides en services one_off. **Side-effect**: si la unit pertenece a un service `one_off` y el customer tiene `nonrecurring_trigger='immediate'`, emite invoice individual (setup + N mensualidades) + dispatch a NetSuite. El response incluye `triggered_invoice_id`.
 - `GET /api/v1/events` — audit log
-- `POST / GET / PATCH /api/v1/units[/:id]` — CRUD directo
+- `POST / GET / PATCH /api/v1/units[/:id]` — CRUD directo. `POST/PATCH` aceptan `prepaid_months`. PATCH solo permite cambiarlo si la unit aún no se ha facturado.
 
 ### Invoices
 - `POST /api/v1/invoices` — cycle invoice del customer. `{ customer_external_id, period_from?, period_to?, metadata: { idempotency_key } }`. Agrega fees de services recurring + one_offs en modo next_cycle + customer add-ons.
@@ -395,12 +414,12 @@ npm run typecheck
 
 Suite actual:
 - `tests/behavior/auto-billing-cron.test.ts` — 3 casos del cron: emite cycle invoice cuando el periodo venció + avanza el periodo, re-correr es idempotente, activa pending customers.
-- `tests/behavior/v4-intervals-oneoff.test.ts` — 7 casos v4: intervalo 3M, stub primer periodo, one_off + next_cycle (acumula y marca billed), one_off + immediate (emite invoice individual desde /events), re-ping no duplica, validaciones (setup>0 en one_off, intervalo fuera de {1,3,6,12}).
-- `tests/behavior/v3-billing.test.ts` — 3 casos del modelo v3 base (seed completo, customer add-on independiente de units, terminated add-on excluido).
-- `tests/behavior/admin-reset.test.ts` — 6 casos del hard-reset (preserva org, resetea counters, sequential_ids arrancan en 1).
+- `tests/behavior/v4-intervals-oneoff.test.ts` — 9 casos v4/v6: intervalo 3M, stub primer periodo, one_off prepago + next_cycle (par setup+mensualidad por unit), one_off prepago + immediate (invoice individual de 2 fees), 3 units con prepaid_months distintos (6 fees), override por evento, error si falta prepaid_months, validaciones (intervalo fuera de {1,3,6,12}, prepaid_months_default en recurring).
+- `tests/behavior/v3-billing.test.ts` — 3 casos del modelo v3 base.
+- `tests/behavior/admin-reset.test.ts` — 6 casos del hard-reset.
 - `tests/unit/*` — rounding, tz, HMAC.
 
-32/32 verde en la última ejecución.
+34/34 verde en la última ejecución.
 
 ---
 
@@ -439,5 +458,6 @@ Tiempo total ~2 min. Costo: 0 en repos públicos.
 - `20260514_v3_customer_invoices` — v3: invoices por Customer, billing fields se mueven a Customer, AddOn se separa en ServiceAddOn + CustomerAddOn.
 - `20260514_v4_intervals_and_oneoff` — v4: drop `billing_time`. Customer gana `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), `nonrecurring_trigger`. Service gana `pricing_model` (recurring/one_off). Unit gana `oneoff_billed_at`. Fee.kind gana `one_off`.
 - `20260514_v5_drop_tax` — v5: drop `Tax`, `CustomerTaxLink`, `ServiceTaxLink`, `AppliedTax`, `CreditNoteAppliedTax`. Drop columnas tax en Invoice/Fee/CreditNote (`taxes_amount_cents`, `taxes_rate`, `total_amount_cents`). mini-Lago solo expone montos netos; NetSuite calcula impuestos al emitir el CFDI.
+- `20260514_v6_prepaid_months` — v6: agrega `Service.prepaid_months_default` y `Unit.prepaid_months` para modelar servicios prepagados (cliente paga setup + N meses por adelantado al primer ping de cada unit). Relaja la validación de `setup_unit_amount_cents` en `pricing_model=one_off` (antes se forzaba a 0, ahora se permite el cargo único por unit).
 
 Cada migración es destructiva sobre la anterior. En prod, después de aplicar v4 ejecuta el **Hard reset** desde el admin y re-seedea para tener data limpia.

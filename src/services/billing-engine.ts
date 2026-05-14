@@ -111,8 +111,13 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
       // "immediate" emite invoice individual desde el handler de /events
       // (ver `computeOneOffPingInvoice`), no aquí.
       if (customer.nonrecurringTrigger !== 'next_cycle') continue;
-      const fee = buildOneOffFee(service, service.units, periodStart, periodEnd);
-      if (fee) fees.push(fee);
+      const pending = service.units
+        .filter((u) => u.oneoffBilledAt === null && u.activeFrom <= periodEnd && u.activeFrom >= periodStart)
+        .sort((a, b) => (a.externalId < b.externalId ? -1 : 1));
+      for (const unit of pending) {
+        const unitFees = buildOneOffFeesForUnit(service, unit);
+        fees.push(...unitFees);
+      }
     }
   }
 
@@ -131,8 +136,8 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice individual por un único ping (modo immediate).
-// Construida con UNA unit recién creada para un service one_off.
+// Factura individual por un único ping (modo immediate).
+// Genera setup (si aplica) + mensualidades prepagadas para UNA unit.
 // ---------------------------------------------------------------------------
 export function computeOneOffPingInvoice(opts: {
   service: Service;
@@ -141,28 +146,71 @@ export function computeOneOffPingInvoice(opts: {
   const { service, unit } = opts;
   if (service.pricingModel !== 'one_off') throw new Error('computeOneOffPingInvoice requires pricing_model=one_off');
   if (service.monthlyUnitAmountCents <= 0) throw new Error('one_off service has zero monthlyUnitAmountCents');
+  return finalize(buildOneOffFeesForUnit(service, unit));
+}
 
-  const amountCents = service.monthlyUnitAmountCents;
-  const detail: BilledUnitDetail = {
-    external_id: unit.externalId,
-    label: unit.label,
-    active_from: isoUtc(unit.activeFrom),
-    active_to: null,
-    billed_fraction: '1.0000',
-    amount_cents: amountCents,
-  };
-  const fee: ComputedFee = {
+// ---------------------------------------------------------------------------
+// Builder one-off por unit. Genera 1-2 fees:
+//   - kind='setup' (units=1, amount=setup_unit_amount_cents) si setup > 0
+//   - kind='one_off' (units=N meses, amount=N × monthly_unit_amount_cents)
+// donde N = unit.prepaidMonths ?? service.prepaidMonthsDefault.
+// Lanza error si N no está definido o es <= 0.
+// ---------------------------------------------------------------------------
+function buildOneOffFeesForUnit(service: Service, unit: Unit): ComputedFee[] {
+  const months = unit.prepaidMonths ?? service.prepaidMonthsDefault ?? null;
+  if (months === null || months <= 0) {
+    throw new Error(
+      `unit ${unit.externalId}: prepaid_months no especificado (ni en la unit ni en el service "${service.code}")`,
+    );
+  }
+
+  const unitLabel = unit.label ?? unit.externalId;
+  const fees: ComputedFee[] = [];
+
+  // Renglón de SETUP (si el service tiene setup > 0).
+  if (service.setupUnitAmountCents > 0) {
+    fees.push({
+      kind: 'setup',
+      serviceId: service.id,
+      description: `Setup ${service.name} — ${unitLabel}`,
+      units: '1.0000',
+      unitAmountCents: service.setupUnitAmountCents,
+      preciseUnitAmount: (service.setupUnitAmountCents / 100).toFixed(2),
+      amountCents: service.setupUnitAmountCents,
+      billedUnitsDetail: [{
+        external_id: unit.externalId,
+        label: unit.label,
+        active_from: isoUtc(unit.activeFrom),
+        active_to: null,
+        billed_fraction: '1.0000',
+        amount_cents: service.setupUnitAmountCents,
+      }],
+      unitIds: [unit.id],
+    });
+  }
+
+  // Renglón de MENSUALIDADES PREPAGADAS (N meses × monthly_amount).
+  const monthlyTotal = months * service.monthlyUnitAmountCents;
+  fees.push({
     kind: 'one_off',
     serviceId: service.id,
-    description: `${service.name} — ${unit.label ?? unit.externalId} (one-off ping)`,
-    units: '1.0000',
-    unitAmountCents: amountCents,
-    preciseUnitAmount: (amountCents / 100).toFixed(2),
-    amountCents,
-    billedUnitsDetail: [detail],
+    description: `Mensualidad ${service.name} — ${unitLabel}`,
+    units: `${months}.0000`,
+    unitAmountCents: service.monthlyUnitAmountCents,
+    preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
+    amountCents: monthlyTotal,
+    billedUnitsDetail: [{
+      external_id: unit.externalId,
+      label: unit.label,
+      active_from: isoUtc(unit.activeFrom),
+      active_to: null,
+      billed_fraction: `${months}.0000`,
+      amount_cents: monthlyTotal,
+    }],
     unitIds: [unit.id],
-  };
-  return finalize([fee]);
+  });
+
+  return fees;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,28 +334,6 @@ function buildSetupFee(service: Service, units: Unit[], periodStart: Date, perio
 
 // One-off agrupado: 1 fee por service con TODAS las units one-off pendientes
 // que se activaron dentro del periodo. Modo next_cycle.
-function buildOneOffFee(service: Service, units: Unit[], periodStart: Date, periodEnd: Date): ComputedFee | null {
-  if (service.monthlyUnitAmountCents <= 0) return null;
-  const pending = units
-    .filter((u) => u.oneoffBilledAt === null && u.activeFrom <= periodEnd && u.activeFrom >= periodStart)
-    .sort((a, b) => (a.externalId < b.externalId ? -1 : 1));
-  if (pending.length === 0) return null;
-  const detail: BilledUnitDetail[] = pending.map((u) => ({
-    external_id: u.externalId, label: u.label,
-    active_from: isoUtc(u.activeFrom), active_to: null,
-    billed_fraction: '1.0000', amount_cents: service.monthlyUnitAmountCents,
-  }));
-  const amountCents = service.monthlyUnitAmountCents * pending.length;
-  return {
-    kind: 'one_off', serviceId: service.id,
-    description: `${service.name} — one-off × ${pending.length}`,
-    units: `${pending.length}.0000`, unitAmountCents: service.monthlyUnitAmountCents,
-    preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
-    amountCents,
-    billedUnitsDetail: detail, unitIds: pending.map((u) => u.id),
-  };
-}
-
 function buildServiceAddOnFee(
   service: ServiceForBilling, addOn: ServiceAddOn, addOnFrom: Date, addOnTo: Date,
   daysInPeriod: number, periodStart: Date, periodEnd: Date,

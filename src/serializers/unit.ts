@@ -13,6 +13,8 @@ export function serializeUnit(unit: Unit) {
       active_from: isoUtc(unit.activeFrom),
       active_to: unit.activeTo ? isoUtc(unit.activeTo) : null,
       setup_billed_at: unit.setupBilledAt ? isoUtc(unit.setupBilledAt) : null,
+      oneoff_billed_at: unit.oneoffBilledAt ? isoUtc(unit.oneoffBilledAt) : null,
+      prepaid_months: unit.prepaidMonths ?? null,
       metadata: unit.metadata ?? {},
       status: unit.activeTo === null ? 'active' : 'terminated',
       created_at: isoUtc(unit.createdAt),

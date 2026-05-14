@@ -431,7 +431,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Status', render: (s) => statusBadge(s.status) },
           { label: 'Modelo', render: (s) => badge(s.pricingModel, s.pricingModel === 'one_off' ? 'green' : 'blue') },
           { label: 'Monto /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
-          { label: 'Setup /u', render: (s) => s.pricingModel === 'one_off' ? '—' : fmtMoney(s.setupUnitAmountCents, s.currency) },
+          { label: 'Setup /u', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) },
+          { label: 'Prepaid (m)', render: (s) => s.pricingModel === 'one_off' ? (s.prepaidMonthsDefault !== null ? String(s.prepaidMonthsDefault) : '<span class="text-red-600">—</span>') : '<span class="text-gray-400">n/a</span>' },
           { label: 'Units', render: (s) => String(s._count.units) },
         ],
       }),
@@ -474,7 +475,11 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           </label>
           <label class="block"><span class="text-sm text-gray-700">Setup por unidad (cents)</span>
             <input type="number" name="setup_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
-            <span class="text-xs text-gray-500">Solo aplica a recurring. En one_off debe ser 0.</span>
+            <span class="text-xs text-gray-500">Cargo único por unit al primer ping. Aplica a recurring y one_off.</span>
+          </label>
+          <label class="block col-span-2"><span class="text-sm text-gray-700">Meses prepagados por defecto (solo one_off)</span>
+            <input type="number" name="prepaid_months_default" min="1" placeholder="48" class="mt-1 block w-full rounded border-gray-300">
+            <span class="text-xs text-gray-500">Cuántos meses paga el cliente por adelantado por cada unit nueva. Override por unit en POST /events. Dejar vacío si es recurring.</span>
           </label>
         </div>
         <p class="text-xs text-gray-500">El ciclo de facturación lo define el customer. <strong>Los impuestos los calcula NetSuite</strong> según la configuración fiscal del cliente; mini-Lago solo envía montos netos.</p>
@@ -508,6 +513,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           pricing_model: body.pricing_model || 'recurring',
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
+          prepaid_months_default: body.prepaid_months_default ? Number(body.prepaid_months_default) : undefined,
         },
       },
     });
@@ -544,11 +550,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">${escapeHtml(service.customer.externalId)}</a>`],
       ['Status', statusBadge(service.status)],
       ['Pricing model', badge(service.pricingModel, service.pricingModel === 'one_off' ? 'green' : 'blue')],
-      ['Monto /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency) + (service.pricingModel === 'one_off' ? ' (one-off)' : ' /periodo')],
-      ['Setup /unidad', service.pricingModel === 'one_off' ? '<span class="text-gray-400">n/a (one_off)</span>' : fmtMoney(service.setupUnitAmountCents, service.currency)],
+      ['Monto /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency) + (service.pricingModel === 'one_off' ? ' /mes prepagado' : ' /periodo')],
+      ['Setup /unidad', fmtMoney(service.setupUnitAmountCents, service.currency)],
+      ['Meses prepagados (default)', service.pricingModel === 'one_off' ? (service.prepaidMonthsDefault !== null ? String(service.prepaidMonthsDefault) + ' meses' : '<span class="text-red-600">no configurado — se debe especificar por unit</span>') : '<span class="text-gray-400">n/a (recurring)</span>'],
       ['Terminated at', fmtDate(service.terminatedAt)],
     ]);
 
+    const isOneOff = service.pricingModel === 'one_off';
     const unitsBlock = table({
       rows: service.units,
       empty: 'Sin unidades',
@@ -558,7 +566,14 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
         { label: 'Active from', render: (u) => fmtDate(u.activeFrom) },
         { label: 'Active to', render: (u) => fmtDate(u.activeTo) },
-        { label: 'Setup billed', render: (u) => u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
+        ...(isOneOff
+          ? [
+              { label: 'Meses prepagados', render: (u: typeof service.units[number]) => u.prepaidMonths !== null ? `${u.prepaidMonths}m` : (service.prepaidMonthsDefault !== null ? `${service.prepaidMonthsDefault}m (default)` : '<span class="text-red-600">—</span>') },
+              { label: 'One-off facturado', render: (u: typeof service.units[number]) => u.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
+            ]
+          : [
+              { label: 'Setup billed', render: (u: typeof service.units[number]) => u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
+            ]),
       ],
     });
 

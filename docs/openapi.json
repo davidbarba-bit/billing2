@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "mini-Lago API (Numaris-native)",
-    "version": "5.0.0",
-    "description": "Motor de facturación domain-specific para Numaris.\n\n**Modelo v5:**\n- `Customer` posee el ciclo de facturación: `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), y `nonrecurring_trigger` (immediate | next_cycle).\n- `Service.pricing_model`:\n  - `recurring`: renta per_unit cada periodo del customer (+ setup opcional una vez por unit).\n  - `one_off`: cargo único per_unit cuando la unit aparece. La unit no vuelve a aparecer en facturas.\n- `Unit` materializada. `setup_billed_at` gate el setup. `oneoff_billed_at` gate el cobro one_off.\n- `Invoice`:\n  - Cycle invoice (cron auto-billing + POST /invoices manual): por Customer, agrega fees de todos sus services recurring (+ one_offs si trigger=next_cycle) + customer add-ons.\n  - One-off immediate invoice: emitida automáticamente desde POST /events cuando una unit hace ping en un service one_off de un customer con trigger=immediate.\n- `Fee.kind ∈ {monthly, setup, service_addon, customer_addon, one_off}`.\n\n**Impuestos**: mini-Lago **NO calcula impuestos**. Los invoices exponen solo `fees_amount_cents` (monto neto). NetSuite calcula IVA, IEPS, retenciones, etc. según la configuración fiscal del cliente y emite el CFDI con esos cargos incluidos. El folio fiscal con impuestos llega de vuelta vía `/external-confirm`.\n\n**Auth**: Bearer en `/api/v1/*` (excepto health/openapi/discovery). Callbacks NetSuite con HMAC-SHA256.\n\n**Idempotency** en POST /invoices y /credit_notes. POST /events ya es idempotente por `transaction_id`."
+    "version": "6.0.0",
+    "description": "Motor de facturación domain-specific para Numaris.\n\n**Modelo v6:**\n- `Customer` posee el ciclo de facturación: `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), y `nonrecurring_trigger` (immediate | next_cycle).\n- `Service.pricing_model`:\n  - `recurring`: renta per_unit cada periodo del customer + setup opcional una vez por unit.\n  - `one_off` (prepago): cuando una unit hace su primer ping, se cobra **1 vez** setup (si aplica) + **N mensualidades por adelantado** (N = `unit.prepaid_months` ?? `service.prepaid_months_default`). La unit queda marcada y no vuelve a aparecer en facturas.\n- `Unit` materializada. `setup_billed_at` (recurring) y `oneoff_billed_at` (one_off) gating.\n- `Invoice`:\n  - Cycle invoice (cron auto-billing + POST /invoices manual): agrega fees de todos los services recurring (+ one_offs nuevos si trigger=next_cycle) + customer add-ons.\n  - One-off immediate invoice: POST /events emite automáticamente 1 invoice con 2 líneas (setup + N mensualidades) por la unit que acaba de aparecer.\n- `Fee.kind ∈ {monthly, setup, service_addon, customer_addon, one_off}`. En el modelo prepago: `setup` es 1 renglón por unit nueva, `one_off` es 1 renglón por unit nueva con `units=N` meses.\n\n**Impuestos**: mini-Lago **NO calcula impuestos**. Los invoices exponen solo `fees_amount_cents` (monto neto). NetSuite calcula IVA/IEPS/retenciones y emite el CFDI. El folio fiscal llega de vuelta vía `/external-confirm`.\n\n**Auth**: Bearer en `/api/v1/*` (excepto health/openapi/discovery). Callbacks NetSuite con HMAC-SHA256.\n\n**Idempotency** en POST /invoices y /credit_notes. POST /events ya es idempotente por `transaction_id`."
   },
   "servers": [
     { "url": "https://billing2-production.up.railway.app", "description": "Railway prod" },
@@ -65,8 +65,9 @@
           "customer_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string" },
           "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "description": "recurring=renta por periodo + setup opcional. one_off=cargo único por unit cuando aparece." },
-          "monthly_unit_amount_cents": { "type": "integer", "description": "Recurring: monto por unidad por periodo. One-off: monto único por unidad." },
-          "setup_unit_amount_cents": { "type": "integer", "description": "Solo aplica a recurring. Debe ser 0 en one_off." },
+          "monthly_unit_amount_cents": { "type": "integer", "description": "Recurring: renta por unidad por periodo. One-off (prepago): precio mensual unitario; total se calcula como N × monthly cuando la unit hace primer ping." },
+          "setup_unit_amount_cents": { "type": "integer", "description": "Cargo único por unidad al primer ping (aplica tanto a recurring como a one_off)." },
+          "prepaid_months_default": { "type": ["integer", "null"], "description": "Solo one_off: default de meses prepagados por unit. Sobreescribible por unit en POST /events o POST /units (campo prepaid_months)." },
           "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
@@ -80,7 +81,8 @@
           "currency": { "type": "string" },
           "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "default": "recurring" },
           "monthly_unit_amount_cents": { "type": "integer", "minimum": 0 },
-          "setup_unit_amount_cents": { "type": "integer", "minimum": 0 }
+          "setup_unit_amount_cents": { "type": "integer", "minimum": 0 },
+          "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1, "description": "Solo para one_off — meses prepagados por defecto por unit." }
         }
       },
       "ServiceAddOn": {
@@ -124,6 +126,7 @@
           "active_to": { "type": ["string", "null"], "format": "date-time" },
           "setup_billed_at": { "type": ["string", "null"], "format": "date-time" },
           "oneoff_billed_at": { "type": ["string", "null"], "format": "date-time", "description": "Si está set, la unit ya fue cobrada en un service one_off y no genera más fees." },
+          "prepaid_months": { "type": ["integer", "null"], "minimum": 1, "description": "Solo aplica si el service es one_off. Sobreescribe service.prepaid_months_default." },
           "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
@@ -238,7 +241,7 @@
     },
 
     "/api/v1/events": {
-      "post": { "summary": "POST event (add/remove unit) — materializa unit. Si la unit pertenece a un service one_off de un customer con trigger=immediate, también emite invoice individual + dispatch (response incluye `triggered_invoice_id`).", "tags": ["events"], "responses": { "200": { "description": "Event (+ triggered_invoice_id si aplicó)" } } },
+      "post": { "summary": "POST event (add/remove unit) — materializa unit. El payload acepta `prepaid_months` opcional para overrides en services one_off. Si la unit pertenece a un service one_off de un customer con trigger=immediate, también emite invoice individual con setup + N mensualidades, y la response incluye `triggered_invoice_id`.", "tags": ["events"], "responses": { "200": { "description": "Event (+ triggered_invoice_id si aplicó)" } } },
       "get": { "summary": "Event log (audit)", "tags": ["events"], "responses": { "200": { "description": "Lista" } } }
     },
 

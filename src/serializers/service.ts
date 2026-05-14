@@ -17,6 +17,7 @@ export function serializeService(service: ServiceWithLinks) {
       pricing_model: service.pricingModel,
       monthly_unit_amount_cents: service.monthlyUnitAmountCents,
       setup_unit_amount_cents: service.setupUnitAmountCents,
+      prepaid_months_default: service.prepaidMonthsDefault ?? null,
       status: service.status,
       terminated_at: service.terminatedAt ? isoUtc(service.terminatedAt) : null,
       metadata: service.metadata ?? {},
