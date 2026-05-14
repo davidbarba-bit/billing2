@@ -92,6 +92,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   app.get('/health', async () => ({ status: 'ok' }));
 
+  // Friendly landing: hitting the root in a browser sends you to the API
+  // docs. The actual API lives under /api/v1/*; visiting / directly was
+  // returning a confusing 404 to first-time visitors.
+  app.get('/', async (_request, reply) => {
+    reply.redirect('/docs', 302);
+  });
+
   // Public API contract discovery (no auth).
   registerDiscoveryRoutes(app);
 
