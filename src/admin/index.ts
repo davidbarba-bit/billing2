@@ -279,6 +279,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         organization: true,
         taxLinks: { include: { tax: true } },
         services: { orderBy: { createdAt: 'desc' } },
+        addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }] },
         invoices: { orderBy: { createdAt: 'desc' } },
         creditNotes: { orderBy: { createdAt: 'desc' } },
       },
@@ -300,9 +301,61 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Timezone', escapeHtml(customer.timezone ?? '—')],
       ['Tax ID', escapeHtml(customer.taxIdentificationNumber ?? '—')],
       ['Taxes', customer.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '—'],
+      ['Status', statusBadge(customer.status)],
+      ['Billing time', badge(customer.billingTime, 'blue')],
+      ['Subscription at', fmtDate(customer.subscriptionAt)],
+      ['Started at', fmtDate(customer.startedAt)],
+      ['Period start', fmtDate(customer.currentBillingPeriodStartedAt)],
+      ['Period end', fmtDate(customer.currentBillingPeriodEndingAt)],
       ['Creado', fmtDate(customer.createdAt)],
       ['Actualizado', fmtDate(customer.updatedAt)],
     ]);
+
+    const customerAddOnsBlock = table({
+      rows: customer.addOns,
+      empty: 'Sin customer add-ons',
+      columns: [
+        { label: 'Code', render: (a) => `<code>${escapeHtml(a.code)}</code>` },
+        { label: 'Nombre', render: (a) => escapeHtml(a.name) },
+        { label: 'Amount /mes', render: (a) => `${fmtMoney(a.amountCents, customer.currency)} flat/mes` },
+        { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
+        { label: 'Active from', render: (a) => fmtDate(a.activeFrom) },
+        { label: 'Active to', render: (a) => fmtDate(a.activeTo) },
+        { label: 'Acciones', render: (a) => a.activeTo === null
+          ? postButton(`/admin/customer-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
+          : '<span class="text-gray-400">terminated</span>' },
+      ],
+    });
+
+    const customerAddOnForm = `
+      <details>
+        <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar customer add-on (flat)</summary>
+        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/add-ons" class="mt-3 space-y-3 max-w-2xl">
+          <p class="text-xs text-gray-500">Cargos flat independientes de unidades o services (ej. "10 reglas de evento +$1000/mes").</p>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="text-sm text-gray-700">Code</span>
+              <input required name="code" placeholder="reglas-10" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Nombre</span>
+              <input required name="name" placeholder="Reglas de evento 5→10" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Amount flat (cents) /mes</span>
+              <input required type="number" name="amount_cents" min="0" value="100000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
+              <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+          </div>
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear customer add-on</button>
+        </form>
+      </details>
+    `;
+
+    const invoiceForm = `
+      <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/invoice" class="inline">
+        <button type="submit" class="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Calcular factura del periodo</button>
+      </form>
+    `;
 
     const servicesBlock = table({
       rows: customer.services,
@@ -314,7 +367,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         { label: 'Status', render: (s) => statusBadge(s.status) },
         { label: 'Mensual', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) + '/u' },
         { label: 'Setup', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) + '/u' },
-        { label: 'Period end', render: (s) => fmtDate(s.currentBillingPeriodEndingAt) },
       ],
     });
 
@@ -349,8 +401,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       title: `Customer · ${customer.externalId}`, active: '/admin/customers', orgSlug: org.slug, flash,
       body: pageHeader(customer.name, btn('/admin/customers', '← back'))
         + card('Identidad', info)
+        + card('Acciones', invoiceForm)
         + card(`Services (${customer.services.length})`, servicesBlock,
           btn(`/admin/services/new?customer=${customer.externalId}`, '+ Nuevo service', 'primary'))
+        + card(`Customer add-ons flat (${customer.addOns.length})`, customerAddOnsBlock + '<div class="mt-4">' + customerAddOnForm + '</div>')
         + card(`Invoices (${customer.invoices.length})`, invoicesBlock)
         + card(`Credit notes (${customer.creditNotes.length})`, cnsBlock),
     }));
@@ -382,7 +436,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Mensual /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
           { label: 'Setup /u', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) },
           { label: 'Units', render: (s) => String(s._count.units) },
-          { label: 'Billing', render: (s) => badge(s.billingTime, 'blue') },
         ],
       }),
     }));
@@ -422,16 +475,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           <label class="block"><span class="text-sm text-gray-700">Setup por unidad (cents)</span>
             <input type="number" name="setup_unit_amount_cents" value="120000" min="0" class="mt-1 block w-full rounded border-gray-300">
           </label>
-          <label class="block"><span class="text-sm text-gray-700">Billing time</span>
-            <select name="billing_time" class="mt-1 block w-full rounded border-gray-300">
-              <option value="calendar" selected>calendar</option>
-              <option value="anniversary">anniversary</option>
-            </select>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Subscription at (opcional)</span>
-            <input name="subscription_at" placeholder="2026-06-15T06:00:00Z" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          </label>
         </div>
+        <p class="text-xs text-gray-500">El ciclo de facturación (calendar / anniversary) se hereda del customer.</p>
         <div>
           <span class="text-sm text-gray-700">Taxes (vacío = usa taxes del customer)</span>
           <div class="space-y-1 mt-1">${taxOptions || '<p class="text-sm text-gray-500">No hay taxes — créalos en /admin/taxes primero.</p>'}</div>
@@ -469,8 +514,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           currency: body.currency || 'MXN',
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
-          billing_time: body.billing_time || 'calendar',
-          subscription_at: (body.subscription_at as string) || undefined,
           tax_codes: taxCodes,
         },
       },
@@ -494,7 +537,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         taxLinks: { include: { tax: true } },
         units: { orderBy: [{ activeFrom: 'desc' }] },
         addOns: { orderBy: [{ activeFrom: 'desc' }] },
-        invoices: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     });
     if (!service) {
@@ -509,14 +551,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Nombre', escapeHtml(service.name)],
       ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">${escapeHtml(service.customer.externalId)}</a>`],
       ['Status', statusBadge(service.status)],
-      ['Billing time', service.billingTime],
       ['Mensual /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency)],
       ['Setup /unidad', fmtMoney(service.setupUnitAmountCents, service.currency)],
-      ['Subscription at', fmtDate(service.subscriptionAt)],
-      ['Started at', fmtDate(service.startedAt)],
-      ['Period start', fmtDate(service.currentBillingPeriodStartedAt)],
-      ['Period end', fmtDate(service.currentBillingPeriodEndingAt)],
-      ['Taxes', service.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '<span class="text-gray-400">(hereda del customer)</span>'],
+      ['Terminated at', fmtDate(service.terminatedAt)],
+      ['Taxes (service-level)', service.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '<span class="text-gray-400">(hereda del customer)</span>'],
     ]);
 
     const unitsBlock = table({
@@ -532,47 +570,33 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ],
     });
 
-    const invoicesBlock = table({
-      rows: service.invoices,
-      empty: 'Sin invoices',
-      rowHref: (i) => `/admin/invoices/${i.id}`,
-      columns: [
-        { label: '#', render: (i) => String(i.sequentialId) },
-        { label: 'Folio', render: (i) => i.number ? `<code>${escapeHtml(i.number)}</code>` : '—' },
-        { label: 'Status', render: (i) => statusBadge(i.status) },
-        { label: 'Total', render: (i) => fmtMoney(i.totalAmountCents, i.currency) },
-        { label: 'Emitida', render: (i) => fmtDateOnly(i.issuingDate) },
-      ],
-    });
-
-    const invoiceForm = `
-      <form method="post" action="/admin/services/${escapeHtml(service.code)}/invoice" class="inline">
-        <button type="submit" class="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Calcular factura del periodo</button>
-      </form>
-    `;
+    // v3: invoices are per-customer. The "calcular factura" button now
+    // lives on the customer page; here we just link to the customer's
+    // invoices.
+    const invoicesLink = `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">Ver invoices del customer →</a>`;
     const terminateForm = service.status !== 'terminated' ? postButton(`/admin/services/${service.code}/terminate`, 'Terminar service', 'danger', `¿Terminar ${service.code}?`) : '';
 
     const addOnsBlock = table({
       rows: service.addOns,
-      empty: 'Sin add-ons',
+      empty: 'Sin add-ons per-unit',
       columns: [
         { label: 'Code', render: (a) => `<code>${escapeHtml(a.code)}</code>` },
         { label: 'Nombre', render: (a) => escapeHtml(a.name) },
-        { label: 'Tipo', render: (a) => badge(a.pricingType, a.pricingType === 'flat_monthly' ? 'blue' : 'green') },
-        { label: 'Amount', render: (a) => `${fmtMoney(a.amountCents, service.currency)}${a.pricingType === 'per_unit_monthly' ? '/u' : ''}/mes` },
+        { label: 'Amount /u', render: (a) => `${fmtMoney(a.amountCents, service.currency)}/u/mes` },
         { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
         { label: 'Active from', render: (a) => fmtDate(a.activeFrom) },
         { label: 'Active to', render: (a) => fmtDate(a.activeTo) },
         { label: 'Acciones', render: (a) => a.activeTo === null
-          ? postButton(`/admin/add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
+          ? postButton(`/admin/service-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
           : '<span class="text-gray-400">terminated</span>' },
       ],
     });
 
     const addOnForm = `
       <details>
-        <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar add-on</summary>
+        <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar add-on per-unit</summary>
         <form method="post" action="/admin/services/${escapeHtml(service.code)}/add-ons" class="mt-3 space-y-3 max-w-2xl">
+          <p class="text-xs text-gray-500">Add-ons per-unit se cobran sobre cada unidad activa del service. Si necesitas un cargo flat independiente de unidades, agrégalo a nivel customer.</p>
           <div class="grid grid-cols-2 gap-3">
             <label class="block"><span class="text-sm text-gray-700">Code</span>
               <input required name="code" placeholder="historial-12m" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
@@ -580,13 +604,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <label class="block"><span class="text-sm text-gray-700">Nombre</span>
               <input required name="name" placeholder="Historial 6→12 meses" class="mt-1 block w-full rounded border-gray-300 text-sm">
             </label>
-            <label class="block"><span class="text-sm text-gray-700">Pricing type</span>
-              <select required name="pricing_type" class="mt-1 block w-full rounded border-gray-300 text-sm">
-                <option value="per_unit_monthly">per_unit_monthly — $X por unidad × mes</option>
-                <option value="flat_monthly">flat_monthly — $X flat × mes</option>
-              </select>
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Amount (cents)</span>
+            <label class="block"><span class="text-sm text-gray-700">Amount per unit (cents) /mes</span>
               <input required type="number" name="amount_cents" min="0" value="5000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
             </label>
             <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
@@ -603,10 +621,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       title: `Service · ${service.code}`, active: '/admin/services', orgSlug: org.slug, flash,
       body: pageHeader(service.name, btn('/admin/services', '← back'))
         + card('Identidad', info)
-        + card('Acciones', `${invoiceForm} ${terminateForm}`)
-        + card(`Add-ons (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
-        + card(`Units (${service.units.length})`, unitsBlock)
-        + card(`Invoices recientes (${service.invoices.length})`, invoicesBlock),
+        + card('Acciones', `${terminateForm} <span class="ml-3">${invoicesLink}</span>`)
+        + card(`Add-ons per-unit (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
+        + card(`Units (${service.units.length})`, unitsBlock),
     }));
   });
 
@@ -620,11 +637,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       url: `/api/v1/services/${encodeURIComponent(svcCode)}/add-ons`,
       headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
       payload: {
-        add_on: {
+        service_add_on: {
           code: body.code,
           name: body.name,
           description: (body.description as string) || undefined,
-          pricing_type: body.pricing_type,
           amount_cents: Number(body.amount_cents),
         },
       },
@@ -634,46 +650,91 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     reply.redirect(`/admin/services/${svcCode}`);
   });
 
-  app.post('/admin/add-ons/:id/terminate', async (request, reply) => {
+  app.post('/admin/service-add-ons/:id/terminate', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
     const { id } = request.params as { id: string };
-    const addOn = await prisma.addOn.findFirst({
+    const addOn = await prisma.serviceAddOn.findFirst({
       where: { id, service: { organizationId: org.id } },
       include: { service: true },
     });
     if (!addOn) {
-      setFlash(reply, 'error', 'add_on no encontrado');
+      setFlash(reply, 'error', 'service_add_on no encontrado');
       return reply.redirect('/admin/services');
     }
-    const result = await app.inject({
+    await app.inject({
       method: 'DELETE',
-      url: `/api/v1/add-ons/${id}`,
+      url: `/api/v1/service-add-ons/${id}`,
       headers: { authorization: `Bearer ${org.apiKey}` },
     });
-    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
-    else setFlash(reply, 'success', `Add-on ${addOn.code} terminado`);
+    setFlash(reply, 'success', `Add-on ${addOn.code} terminado`);
     reply.redirect(`/admin/services/${addOn.service.code}`);
   });
 
-  app.post('/admin/services/:code/invoice', async (request, reply) => {
+  // POST /admin/customers/:external_id/invoice → calcula la factura del periodo.
+  app.post('/admin/customers/:externalId/invoice', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
-    const { code: svcCode } = request.params as { code: string };
+    const { externalId } = request.params as { externalId: string };
     const idemKey = `admin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const result = await app.inject({
       method: 'POST',
       url: '/api/v1/invoices',
       headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json', 'idempotency-key': idemKey },
-      payload: { invoice: { service_code: svcCode, metadata: { idempotency_key: idemKey } } },
+      payload: { invoice: { customer_external_id: externalId, metadata: { idempotency_key: idemKey } } },
     });
     if (result.statusCode !== 200) {
       setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
-      return reply.redirect(`/admin/services/${svcCode}`);
+      return reply.redirect(`/admin/customers/${externalId}`);
     }
     const invoiceId = (result.json() as { invoice: { id: string } }).invoice.id;
     setFlash(reply, 'success', 'Factura creada.');
     reply.redirect(`/admin/invoices/${invoiceId}`);
+  });
+
+  // POST /admin/customers/:external_id/add-ons (customer-level flat add-on)
+  app.post('/admin/customers/:externalId/add-ons', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+    const result = await app.inject({
+      method: 'POST',
+      url: `/api/v1/customers/${encodeURIComponent(externalId)}/add-ons`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: {
+        customer_add_on: {
+          code: body.code,
+          name: body.name,
+          description: (body.description as string) || undefined,
+          amount_cents: Number(body.amount_cents),
+        },
+      },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
+    else setFlash(reply, 'success', `Customer add-on "${body.code}" creado`);
+    reply.redirect(`/admin/customers/${externalId}`);
+  });
+
+  app.post('/admin/customer-add-ons/:id/terminate', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const addOn = await prisma.customerAddOn.findFirst({
+      where: { id, customer: { organizationId: org.id } },
+      include: { customer: true },
+    });
+    if (!addOn) {
+      setFlash(reply, 'error', 'customer_add_on no encontrado');
+      return reply.redirect('/admin/customers');
+    }
+    await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/customer-add-ons/${id}`,
+      headers: { authorization: `Bearer ${org.apiKey}` },
+    });
+    setFlash(reply, 'success', `Customer add-on ${addOn.code} terminado`);
+    reply.redirect(`/admin/customers/${addOn.customer.externalId}`);
   });
 
   app.post('/admin/services/:code/terminate', async (request, reply) => {
@@ -763,7 +824,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const invoices = await prisma.invoice.findMany({
       where: { organizationId: org.id },
       orderBy: { createdAt: 'desc' },
-      include: { customer: true, service: true, _count: { select: { fees: true } } },
+      include: { customer: true, _count: { select: { fees: true } } },
     });
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
@@ -776,7 +837,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: '#', render: (i) => String(i.sequentialId) },
           { label: 'Folio', render: (i) => i.number ? `<code>${escapeHtml(i.number)}</code>` : '<span class="text-gray-400">—</span>' },
           { label: 'Customer', render: (i) => escapeHtml(i.customer.externalId) },
-          { label: 'Service', render: (i) => i.service ? escapeHtml(i.service.code) : '—' },
+          { label: 'Period', render: (i) => i.periodFrom && i.periodTo ? `${fmtDateOnly(i.periodFrom)} → ${fmtDateOnly(i.periodTo)}` : '—' },
           { label: 'Status', render: (i) => statusBadge(i.status) },
           { label: 'Dispatch', render: (i) => statusBadge(i.externalDispatchStatus) },
           { label: 'Total', render: (i) => fmtMoney(i.totalAmountCents, i.currency) },
@@ -792,7 +853,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const { id } = request.params as { id: string };
     const invoice = await prisma.invoice.findFirst({
       where: { id, organizationId: org.id },
-      include: { customer: true, service: true, fees: { orderBy: { position: 'asc' } }, appliedTaxes: true },
+      include: { customer: true, fees: { orderBy: { position: 'asc' } }, appliedTaxes: true },
     });
     if (!invoice) {
       reply.status(404).type('text/html').send(layout({
@@ -806,7 +867,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Sequential', String(invoice.sequentialId)],
       ['Folio fiscal', invoice.number ? `<code>${escapeHtml(invoice.number)}</code>` : '<span class="text-gray-400">— (sin folio NetSuite)</span>'],
       ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(invoice.customer.externalId)}">${escapeHtml(invoice.customer.externalId)}</a>`],
-      ['Service', invoice.service ? `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(invoice.service.code)}">${escapeHtml(invoice.service.code)}</a>` : '—'],
       ['Status', statusBadge(invoice.status)],
       ['Dispatch', statusBadge(invoice.externalDispatchStatus)],
       ['Payment', statusBadge(invoice.paymentStatus)],

@@ -59,7 +59,6 @@ export function registerCreditNoteRoutes(
         include: {
           fees: true,
           customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-          service: { include: { taxLinks: { include: { tax: true } } } },
         },
       });
       if (!invoice) throw notFound('invoice');
@@ -82,9 +81,8 @@ export function registerCreditNoteRoutes(
         }
       }
 
-      const taxes = invoice.service?.taxLinks.length
-        ? invoice.service.taxLinks.map((l) => l.tax)
-        : invoice.customer.taxLinks.map((l) => l.tax);
+      // Tax stack is always customer-level in v3.
+      const taxes = invoice.customer.taxLinks.map((l) => l.tax);
       const subTotal = payload.items.reduce((acc, i) => acc + i.amount_cents, 0);
       const totalRate = taxes.reduce((acc, t) => acc + Number(t.rate), 0);
       const taxesAmountCents = bankersRound(subTotal * (totalRate / 100));

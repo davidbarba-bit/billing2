@@ -1,41 +1,25 @@
-// Add-on routes — recurring modifiers attached to a Service.
-//
-// Two pricing types today:
-//   - per_unit_monthly: amount × active_units, prorated by days
-//   - flat_monthly:     amount × prorated days (independent of units)
-//
-// Endpoints:
-//   POST   /api/v1/services/:code/add-ons   create
-//   GET    /api/v1/services/:code/add-ons   list
-//   GET    /api/v1/add-ons/:id              read
-//   PATCH  /api/v1/add-ons/:id               update (name/description/amount/active_to)
-//   DELETE /api/v1/add-ons/:id              terminate (sets active_to=now)
+// ServiceAddOn routes — per-unit recurring modifier on a service.
 
 import type { FastifyInstance } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { notFound, validation } from '../errors.js';
-import { serializeAddOn } from '../serializers/add-on.js';
+import { serializeServiceAddOn } from '../serializers/service-add-on.js';
 
-type AddOnPayload = {
+type Payload = {
   code?: string;
   name?: string;
   description?: string | null;
-  pricing_type?: 'per_unit_monthly' | 'flat_monthly';
   amount_cents?: number;
   active_from?: string;
   active_to?: string | null;
   metadata?: Record<string, unknown>;
 };
 
-const VALID_PRICING_TYPES = new Set(['per_unit_monthly', 'flat_monthly']);
-
-export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient): void {
+export function registerServiceAddOnRoutes(app: FastifyInstance, prisma: PrismaClient): void {
   const authenticate = buildAuthHook(prisma);
 
-  // ------------------------------------------------------------------
   // POST /api/v1/services/:code/add-ons
-  // ------------------------------------------------------------------
   app.route({
     method: 'POST',
     url: '/api/v1/services/:code/add-ons',
@@ -43,14 +27,11 @@ export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient):
     handler: async (request, reply) => {
       const org = requireOrg(request);
       const { code: serviceCode } = request.params as { code: string };
-      const body = request.body as { add_on?: AddOnPayload } | null;
-      const payload = body?.add_on;
-      if (!payload) throw validation({ add_on: ['value_is_mandatory'] });
+      const body = request.body as { service_add_on?: Payload; add_on?: Payload } | null;
+      const payload = body?.service_add_on ?? body?.add_on; // accept both wrappers
+      if (!payload) throw validation({ service_add_on: ['value_is_mandatory'] });
       if (!payload.code) throw validation({ code: ['value_is_mandatory'] });
       if (!payload.name) throw validation({ name: ['value_is_mandatory'] });
-      if (!payload.pricing_type || !VALID_PRICING_TYPES.has(payload.pricing_type)) {
-        throw validation({ pricing_type: ['value_is_invalid'] });
-      }
       if (payload.amount_cents === undefined || !Number.isInteger(payload.amount_cents) || payload.amount_cents < 0) {
         throw validation({ amount_cents: ['must_be_non_negative_integer'] });
       }
@@ -60,7 +41,7 @@ export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient):
       });
       if (!service) throw notFound('service');
 
-      const existing = await prisma.addOn.findUnique({
+      const existing = await prisma.serviceAddOn.findUnique({
         where: { serviceId_code: { serviceId: service.id, code: payload.code } },
       });
       if (existing) throw validation({ code: ['value_already_exist'] });
@@ -68,27 +49,23 @@ export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient):
       const activeFrom = payload.active_from ? new Date(payload.active_from) : new Date();
       if (Number.isNaN(activeFrom.getTime())) throw validation({ active_from: ['invalid_iso_datetime'] });
 
-      const addOn = await prisma.addOn.create({
+      const addOn = await prisma.serviceAddOn.create({
         data: {
           serviceId: service.id,
           code: payload.code,
           name: payload.name,
           description: payload.description ?? null,
-          pricingType: payload.pricing_type,
           amountCents: payload.amount_cents,
           activeFrom,
           activeTo: payload.active_to ? new Date(payload.active_to) : null,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
-
-      reply.send(serializeAddOn(addOn));
+      reply.send(serializeServiceAddOn(addOn));
     },
   });
 
-  // ------------------------------------------------------------------
   // GET /api/v1/services/:code/add-ons
-  // ------------------------------------------------------------------
   app.route({
     method: 'GET',
     url: '/api/v1/services/:code/add-ons',
@@ -103,21 +80,21 @@ export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient):
       if (!service) throw notFound('service');
       const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
       const page = Math.max(1, Number(q.page ?? 1));
-      const where: Prisma.AddOnWhereInput = { serviceId: service.id };
+      const where: Prisma.ServiceAddOnWhereInput = { serviceId: service.id };
       if (q.status === 'active') where.activeTo = null;
       if (q.status === 'terminated') where.activeTo = { not: null };
       const [items, totalCount] = await Promise.all([
-        prisma.addOn.findMany({
+        prisma.serviceAddOn.findMany({
           where,
           orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }],
           take: perPage,
           skip: (page - 1) * perPage,
         }),
-        prisma.addOn.count({ where }),
+        prisma.serviceAddOn.count({ where }),
       ]);
       const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
       reply.send({
-        add_ons: items.map((a) => serializeAddOn(a).add_on),
+        service_add_ons: items.map((a) => serializeServiceAddOn(a).service_add_on),
         meta: {
           current_page: page,
           next_page: page < totalPages ? page + 1 : null,
@@ -129,49 +106,40 @@ export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient):
     },
   });
 
-  // ------------------------------------------------------------------
-  // GET /api/v1/add-ons/:id
-  // ------------------------------------------------------------------
+  // GET /api/v1/service-add-ons/:id
   app.route({
     method: 'GET',
-    url: '/api/v1/add-ons/:id',
+    url: '/api/v1/service-add-ons/:id',
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
       const { id } = request.params as { id: string };
-      const addOn = await prisma.addOn.findFirst({
+      const addOn = await prisma.serviceAddOn.findFirst({
         where: { id, service: { organizationId: org.id } },
       });
-      if (!addOn) throw notFound('add_on');
-      reply.send(serializeAddOn(addOn));
+      if (!addOn) throw notFound('service_add_on');
+      reply.send(serializeServiceAddOn(addOn));
     },
   });
 
-  // ------------------------------------------------------------------
-  // PATCH /api/v1/add-ons/:id — update name/description/amount/active_to.
-  // The pricing_type and code are immutable to keep historical fee
-  // attribution stable.
-  // ------------------------------------------------------------------
+  // PATCH /api/v1/service-add-ons/:id
   app.route({
     method: 'PATCH',
-    url: '/api/v1/add-ons/:id',
+    url: '/api/v1/service-add-ons/:id',
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
       const { id } = request.params as { id: string };
-      const body = (request.body ?? {}) as { add_on?: Partial<AddOnPayload> };
-      const payload = body.add_on ?? {};
-      const addOn = await prisma.addOn.findFirst({
+      const body = (request.body ?? {}) as { service_add_on?: Partial<Payload>; add_on?: Partial<Payload> };
+      const payload = body.service_add_on ?? body.add_on ?? {};
+      const addOn = await prisma.serviceAddOn.findFirst({
         where: { id, service: { organizationId: org.id } },
       });
-      if (!addOn) throw notFound('add_on');
+      if (!addOn) throw notFound('service_add_on');
       if (payload.code !== undefined && payload.code !== addOn.code) {
         throw validation({ code: ['immutable'] });
       }
-      if (payload.pricing_type !== undefined && payload.pricing_type !== addOn.pricingType) {
-        throw validation({ pricing_type: ['immutable'] });
-      }
-      const data: Prisma.AddOnUpdateInput = {};
+      const data: Prisma.ServiceAddOnUpdateInput = {};
       if (payload.name !== undefined) data.name = payload.name ?? '';
       if (payload.description !== undefined) data.description = payload.description;
       if (payload.amount_cents !== undefined) {
@@ -183,35 +151,29 @@ export function registerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient):
       if (payload.active_to !== undefined) {
         data.activeTo = payload.active_to === null ? null : new Date(payload.active_to);
       }
-      if (payload.metadata !== undefined) {
-        data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
-      }
-      const updated = await prisma.addOn.update({ where: { id: addOn.id }, data });
-      reply.send(serializeAddOn(updated));
+      if (payload.metadata !== undefined) data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
+      const updated = await prisma.serviceAddOn.update({ where: { id: addOn.id }, data });
+      reply.send(serializeServiceAddOn(updated));
     },
   });
 
-  // ------------------------------------------------------------------
-  // DELETE /api/v1/add-ons/:id — soft terminate (sets active_to=now).
-  // Re-activate by PATCH'ing active_to: null.
-  // ------------------------------------------------------------------
+  // DELETE /api/v1/service-add-ons/:id (soft terminate)
   app.route({
     method: 'DELETE',
-    url: '/api/v1/add-ons/:id',
+    url: '/api/v1/service-add-ons/:id',
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
       const { id } = request.params as { id: string };
-      const addOn = await prisma.addOn.findFirst({
+      const addOn = await prisma.serviceAddOn.findFirst({
         where: { id, service: { organizationId: org.id } },
       });
-      if (!addOn) throw notFound('add_on');
-      const now = new Date();
-      const updated = await prisma.addOn.update({
+      if (!addOn) throw notFound('service_add_on');
+      const updated = await prisma.serviceAddOn.update({
         where: { id: addOn.id },
-        data: { activeTo: addOn.activeTo ?? now },
+        data: { activeTo: addOn.activeTo ?? new Date() },
       });
-      reply.send(serializeAddOn(updated));
+      reply.send(serializeServiceAddOn(updated));
     },
   });
 }

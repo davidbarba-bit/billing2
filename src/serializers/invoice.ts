@@ -31,7 +31,8 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
     .map((fee) => ({
       id: fee.id,
       service_id: fee.serviceId,
-      add_on_id: fee.addOnId ?? null,
+      service_add_on_id: fee.serviceAddOnId ?? null,
+      customer_add_on_id: fee.customerAddOnId ?? null,
       kind: fee.kind,
       description: fee.description ?? '',
       units: fee.units,
@@ -65,7 +66,7 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
       sequential_id: invoice.sequentialId,
       number: invoice.number ?? null,
       customer_id: invoice.customerId,
-      service_id: invoice.serviceId ?? null,
+      // v3: invoice no longer has a service_id (it's per-customer now).
       issuing_date: DateTime.fromJSDate(invoice.issuingDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       payment_due_date: DateTime.fromJSDate(invoice.paymentDueDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       net_payment_term: invoice.netPaymentTerm,

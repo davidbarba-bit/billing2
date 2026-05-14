@@ -1,17 +1,17 @@
-// AddOn serializer.
+// ServiceAddOn serializer — per-unit recurring modifier on a service.
 
-import type { AddOn } from '@prisma/client';
+import type { ServiceAddOn } from '@prisma/client';
 import { isoUtc } from '../services/tz.js';
 
-export function serializeAddOn(addOn: AddOn) {
+export function serializeServiceAddOn(addOn: ServiceAddOn) {
   return {
-    add_on: {
+    service_add_on: {
       id: addOn.id,
       service_id: addOn.serviceId,
       code: addOn.code,
       name: addOn.name,
       description: addOn.description ?? null,
-      pricing_type: addOn.pricingType,
+      pricing_type: 'per_unit_monthly',
       amount_cents: addOn.amountCents,
       active_from: isoUtc(addOn.activeFrom),
       active_to: addOn.activeTo ? isoUtc(addOn.activeTo) : null,

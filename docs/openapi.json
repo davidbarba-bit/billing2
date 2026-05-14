@@ -2,11 +2,11 @@
   "openapi": "3.1.0",
   "info": {
     "title": "mini-Lago API (Numaris-native)",
-    "version": "2.0.0",
-    "description": "Motor de facturación domain-specific para Numaris. Entidades: Customer, Tax, Service (colapsa Plan+Sub+Charge+BM+AddOn), Unit (materializada), EventLog (audit), Invoice, CreditNote.\n\n**Auth**: Bearer en todos los `/api/v1/*` excepto health/openapi/discovery. Callbacks NetSuite usan HMAC-SHA256 (`X-NetSuite-Signature`).\n\n**Idempotency** en POST /invoices y POST /credit_notes vía header `Idempotency-Key` + `metadata.idempotency_key`."
+    "version": "3.0.0",
+    "description": "Motor de facturación domain-specific para Numaris.\n\n**Modelo v3:**\n- `Customer` posee el ciclo de facturación (`billing_time`, periodo). Tiene N services + N customer add-ons flat.\n- `Service` posee units + per-unit pricing (monthly + setup) + N service add-ons per-unit.\n- `Unit` materializada (no derivada de eventos).\n- `Invoice` es **por Customer por Period** — agrega fees de TODOS sus services + sus customer add-ons.\n\n**Auth**: Bearer en `/api/v1/*` (excepto health/openapi/discovery). Callbacks NetSuite con HMAC-SHA256.\n\n**Idempotency** en POST /invoices y /credit_notes."
   },
   "servers": [
-    { "url": "https://billing2-production.up.railway.app", "description": "Railway production" },
+    { "url": "https://billing2-production.up.railway.app", "description": "Railway prod" },
     { "url": "http://localhost:3000", "description": "Local dev" }
   ],
   "components": {
@@ -15,43 +15,25 @@
       "NetSuiteSignature": { "type": "apiKey", "in": "header", "name": "X-NetSuite-Signature" }
     },
     "schemas": {
-      "Error": {
-        "type": "object",
-        "properties": {
-          "status": { "type": "integer" },
-          "error": { "type": "string" },
-          "code": { "type": "string" },
-          "error_details": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } }
-        }
-      },
-      "Meta": {
-        "type": "object",
-        "properties": {
-          "current_page": { "type": "integer" },
-          "next_page": { "type": ["integer", "null"] },
-          "prev_page": { "type": ["integer", "null"] },
-          "total_pages": { "type": "integer" },
-          "total_count": { "type": "integer" }
-        }
-      },
+      "Error": { "type": "object", "properties": { "status": { "type": "integer" }, "error": { "type": "string" }, "code": { "type": "string" }, "error_details": { "type": "object" } } },
+      "Meta": { "type": "object", "properties": { "current_page": { "type": "integer" }, "next_page": { "type": ["integer", "null"] }, "prev_page": { "type": ["integer", "null"] }, "total_pages": { "type": "integer" }, "total_count": { "type": "integer" } } },
       "Customer": {
         "type": "object",
+        "description": "Owns the billing cycle. Has N services and N customer-level flat add-ons.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "external_id": { "type": "string" },
-          "sequential_id": { "type": "integer" },
-          "slug": { "type": "string" },
           "name": { "type": "string" },
-          "email": { "type": ["string", "null"] },
-          "phone": { "type": ["string", "null"] },
-          "tax_identification_number": { "type": ["string", "null"] },
-          "address_line1": { "type": ["string", "null"] },
-          "city": { "type": ["string", "null"] },
-          "country": { "type": ["string", "null"] },
           "currency": { "type": "string" },
+          "country": { "type": ["string", "null"] },
           "timezone": { "type": ["string", "null"] },
           "applicable_timezone": { "type": "string" },
-          "metadata": { "type": "object" },
+          "tax_identification_number": { "type": ["string", "null"] },
+          "status": { "type": "string", "enum": ["pending", "active", "terminated"] },
+          "billing_time": { "type": "string", "enum": ["calendar", "anniversary"] },
+          "subscription_at": { "type": "string", "format": "date-time" },
+          "current_billing_period_started_at": { "type": ["string", "null"], "format": "date-time" },
+          "current_billing_period_ending_at": { "type": ["string", "null"], "format": "date-time" },
           "taxes": { "type": "array", "items": { "$ref": "#/components/schemas/Tax" } }
         }
       },
@@ -61,167 +43,105 @@
         "properties": {
           "external_id": { "type": "string" },
           "name": { "type": "string" },
-          "currency": { "type": "string", "example": "MXN" },
-          "country": { "type": "string", "example": "MX" },
-          "timezone": { "type": "string", "example": "America/Mexico_City" },
+          "currency": { "type": "string" },
+          "country": { "type": "string" },
+          "timezone": { "type": "string" },
           "tax_identification_number": { "type": "string" },
-          "email": { "type": "string" },
-          "phone": { "type": "string" },
-          "address_line1": { "type": "string" },
-          "city": { "type": "string" },
-          "metadata": { "type": "object" },
-          "tax_codes": { "type": "array", "items": { "type": "string" }, "description": "Reemplazo total (D2)." }
+          "billing_time": { "type": "string", "enum": ["calendar", "anniversary"], "default": "calendar" },
+          "subscription_at": { "type": "string", "format": "date-time" },
+          "tax_codes": { "type": "array", "items": { "type": "string" } }
         }
       },
-      "Tax": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "description": { "type": ["string", "null"] },
-          "rate": { "type": "number", "example": 16.0 }
-        }
-      },
-      "TaxWriteable": {
-        "type": "object",
-        "required": ["code", "name", "rate"],
-        "properties": {
-          "code": { "type": "string", "example": "iva-mx-16" },
-          "name": { "type": "string", "example": "IVA México" },
-          "description": { "type": "string" },
-          "rate": { "oneOf": [{ "type": "string" }, { "type": "number" }], "example": "16" }
-        }
-      },
+      "Tax": { "type": "object", "properties": { "id": { "type": "string" }, "code": { "type": "string" }, "name": { "type": "string" }, "rate": { "type": "number" } } },
+      "TaxWriteable": { "type": "object", "required": ["code", "name", "rate"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "rate": { "oneOf": [{ "type": "string" }, { "type": "number" }] } } },
       "Service": {
         "type": "object",
-        "description": "Numaris-native: 1 customer ↔ N services. Cada service tiene su propia tarifa mensual por unidad + setup one-off.",
+        "description": "Owns units + per-unit pricing. Does NOT own the billing cycle (the customer does).",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "code": { "type": "string" },
           "name": { "type": "string" },
-          "description": { "type": ["string", "null"] },
           "customer_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string" },
           "monthly_unit_amount_cents": { "type": "integer" },
           "setup_unit_amount_cents": { "type": "integer" },
-          "status": { "type": "string", "enum": ["pending", "active", "terminated"] },
-          "billing_time": { "type": "string", "enum": ["calendar", "anniversary"] },
-          "subscription_at": { "type": "string", "format": "date-time" },
-          "started_at": { "type": ["string", "null"], "format": "date-time" },
-          "current_billing_period_started_at": { "type": ["string", "null"], "format": "date-time" },
-          "current_billing_period_ending_at": { "type": ["string", "null"], "format": "date-time" },
-          "taxes": { "type": "array", "items": { "$ref": "#/components/schemas/Tax" }, "description": "Si vacío, hereda taxes del customer." },
-          "metadata": { "type": "object" }
+          "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
       "ServiceWriteable": {
         "type": "object",
         "required": ["code", "name", "customer_external_id"],
         "properties": {
-          "code": { "type": "string", "example": "combustible-foo" },
+          "code": { "type": "string" },
           "name": { "type": "string" },
-          "description": { "type": "string" },
           "customer_external_id": { "type": "string" },
-          "currency": { "type": "string", "description": "Default: customer.currency." },
-          "monthly_unit_amount_cents": { "type": "integer", "minimum": 0, "example": 45000 },
-          "setup_unit_amount_cents": { "type": "integer", "minimum": 0, "example": 120000 },
-          "billing_time": { "type": "string", "enum": ["calendar", "anniversary"], "default": "calendar" },
-          "subscription_at": { "type": "string", "format": "date-time", "description": "Si es futuro → status=pending." },
-          "tax_codes": { "type": "array", "items": { "type": "string" }, "description": "Si vacío, usa los del customer." },
-          "metadata": { "type": "object" }
+          "currency": { "type": "string" },
+          "monthly_unit_amount_cents": { "type": "integer", "minimum": 0 },
+          "setup_unit_amount_cents": { "type": "integer", "minimum": 0 },
+          "tax_codes": { "type": "array", "items": { "type": "string" } }
         }
       },
-      "AddOn": {
+      "ServiceAddOn": {
         "type": "object",
-        "description": "Modificador recurrente adjunto al service. Genera 1 fee adicional por invoice mientras esté activo (prorrateado).",
+        "description": "Per-unit recurring modifier attached to a Service. Genera 1 fee 'service_addon' por invoice mientras esté activo.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "service_id": { "type": "string", "format": "uuid" },
           "code": { "type": "string" },
           "name": { "type": "string" },
-          "description": { "type": ["string", "null"] },
-          "pricing_type": { "type": "string", "enum": ["per_unit_monthly", "flat_monthly"] },
+          "pricing_type": { "type": "string", "enum": ["per_unit_monthly"], "description": "Solo per_unit_monthly en v3." },
           "amount_cents": { "type": "integer" },
           "active_from": { "type": "string", "format": "date-time" },
-          "active_to": { "type": ["string", "null"], "format": "date-time", "description": "null = activo." },
-          "status": { "type": "string", "enum": ["active", "terminated"] },
-          "metadata": { "type": "object" }
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "status": { "type": "string", "enum": ["active", "terminated"] }
+        }
+      },
+      "CustomerAddOn": {
+        "type": "object",
+        "description": "Flat recurring modifier attached to a Customer (independiente de services y units).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "customer_id": { "type": "string", "format": "uuid" },
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "pricing_type": { "type": "string", "enum": ["flat_monthly"] },
+          "amount_cents": { "type": "integer" },
+          "active_from": { "type": "string", "format": "date-time" },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
       "Unit": {
         "type": "object",
-        "description": "Unidad facturable materializada (no derivada de eventos).",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "service_id": { "type": "string", "format": "uuid" },
           "external_id": { "type": "string" },
           "label": { "type": ["string", "null"] },
           "active_from": { "type": "string", "format": "date-time" },
-          "active_to": { "type": ["string", "null"], "format": "date-time", "description": "null = activa." },
-          "setup_billed_at": { "type": ["string", "null"], "format": "date-time", "description": "null = setup pendiente; se cobrará en la próxima factura." },
-          "status": { "type": "string", "enum": ["active", "terminated"] },
-          "metadata": { "type": "object" }
-        }
-      },
-      "UnitWriteable": {
-        "type": "object",
-        "required": ["service_code", "external_id"],
-        "properties": {
-          "service_code": { "type": "string" },
-          "external_id": { "type": "string" },
-          "label": { "type": "string" },
-          "active_from": { "type": "string", "format": "date-time" },
-          "metadata": { "type": "object" }
-        }
-      },
-      "Event": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "transaction_id": { "type": "string" },
-          "service_id": { "type": "string", "format": "uuid" },
-          "unit_id": { "type": ["string", "null"], "format": "uuid" },
-          "unit_external_id": { "type": "string" },
-          "unit_label": { "type": ["string", "null"] },
-          "operation_type": { "type": "string", "enum": ["add", "remove"] },
-          "kind": { "type": ["string", "null"] },
-          "timestamp": { "type": "string", "format": "date-time" },
-          "properties": { "type": "object" }
-        }
-      },
-      "EventWriteable": {
-        "type": "object",
-        "required": ["transaction_id", "service_code", "operation_type", "unit_external_id", "timestamp"],
-        "properties": {
-          "transaction_id": { "type": "string" },
-          "service_code": { "type": "string" },
-          "operation_type": { "type": "string", "enum": ["add", "remove"] },
-          "unit_external_id": { "type": "string" },
-          "unit_label": { "type": "string" },
-          "timestamp": { "type": "integer", "description": "Unix epoch en SEGUNDOS." },
-          "kind": { "type": "string" },
-          "properties": { "type": "object" }
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "setup_billed_at": { "type": ["string", "null"], "format": "date-time" },
+          "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
       "InvoiceWriteable": {
         "type": "object",
-        "required": ["service_code"],
+        "required": ["customer_external_id"],
         "properties": {
-          "service_code": { "type": "string" },
-          "period_from": { "type": "string", "format": "date-time", "description": "Si se omite, usa el periodo actual del service." },
+          "customer_external_id": { "type": "string" },
+          "period_from": { "type": "string", "format": "date-time" },
           "period_to": { "type": "string", "format": "date-time" },
           "metadata": { "type": "object", "properties": { "idempotency_key": { "type": "string" } } }
         }
       },
       "Invoice": {
         "type": "object",
+        "description": "Per Customer per Period. Agrega fees de TODOS los services + customer add-ons del customer.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "sequential_id": { "type": "integer" },
-          "number": { "type": ["string", "null"], "description": "Folio fiscal NetSuite." },
+          "number": { "type": ["string", "null"] },
           "customer_id": { "type": "string", "format": "uuid" },
-          "service_id": { "type": ["string", "null"], "format": "uuid" },
           "status": { "type": "string", "enum": ["calculated", "finalized", "voided"] },
           "external_dispatch_status": { "type": "string", "enum": ["pending", "dispatched", "confirmed", "failed"] },
           "currency": { "type": "string" },
@@ -231,42 +151,25 @@
           "period_from": { "type": ["string", "null"], "format": "date-time" },
           "period_to": { "type": ["string", "null"], "format": "date-time" },
           "fees": { "type": "array", "items": { "$ref": "#/components/schemas/Fee" } },
-          "units_annex": { "type": "array", "items": { "$ref": "#/components/schemas/UnitsAnnexEntry" } },
-          "applied_taxes": { "type": "array", "items": { "type": "object" } },
-          "external_invoice": { "type": ["object", "null"] }
+          "units_annex": { "type": "array" },
+          "applied_taxes": { "type": "array" }
         }
       },
       "Fee": {
         "type": "object",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
-          "kind": { "type": "string", "enum": ["monthly", "setup"] },
+          "service_id": { "type": ["string", "null"], "format": "uuid" },
+          "service_add_on_id": { "type": ["string", "null"], "format": "uuid" },
+          "customer_add_on_id": { "type": ["string", "null"], "format": "uuid" },
+          "kind": { "type": "string", "enum": ["monthly", "setup", "service_addon", "customer_addon"] },
           "description": { "type": "string" },
-          "units": { "type": "string", "description": "String decimal 4 dígitos." },
+          "units": { "type": "string" },
           "unit_amount_cents": { "type": "integer" },
           "amount_cents": { "type": "integer" },
           "taxes_amount_cents": { "type": "integer" },
           "total_amount_cents": { "type": "integer" },
-          "billed_units_detail": { "type": "array", "items": { "$ref": "#/components/schemas/BilledUnitDetail" } }
-        }
-      },
-      "BilledUnitDetail": {
-        "type": "object",
-        "properties": {
-          "external_id": { "type": "string" },
-          "label": { "type": ["string", "null"] },
-          "active_from": { "type": "string", "format": "date-time" },
-          "active_to": { "type": ["string", "null"], "format": "date-time" },
-          "billed_fraction": { "type": "string", "description": "String decimal 4 dígitos (eg. 0.6129)." },
-          "amount_cents": { "type": "integer" }
-        }
-      },
-      "UnitsAnnexEntry": {
-        "type": "object",
-        "properties": {
-          "external_id": { "type": "string" },
-          "label": { "type": ["string", "null"] },
-          "fees": { "type": "array", "items": { "type": "object", "properties": { "kind": { "type": "string" }, "amount_cents": { "type": "integer" } } } }
+          "billed_units_detail": { "type": "array" }
         }
       },
       "CreditNoteWriteable": {
@@ -277,298 +180,91 @@
           "reason": { "type": "string", "enum": ["duplicated_charge", "product_unsatisfactory", "order_change", "order_cancellation", "fraudulent_charge", "other"] },
           "description": { "type": "string" },
           "credit_amount_cents": { "type": "integer" },
-          "refund_amount_cents": { "type": "integer" },
           "items": { "type": "array", "items": { "type": "object", "required": ["fee_id", "amount_cents"], "properties": { "fee_id": { "type": "string", "format": "uuid" }, "amount_cents": { "type": "integer", "minimum": 1 } } } }
         }
       },
-      "CreditNote": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "sequential_id": { "type": "integer" },
-          "number": { "type": ["string", "null"] },
-          "invoice_id": { "type": "string", "format": "uuid" },
-          "status": { "type": "string" },
-          "external_dispatch_status": { "type": "string" },
-          "reason": { "type": "string" },
-          "description": { "type": "string" },
-          "total_amount_cents": { "type": "integer" },
-          "taxes_amount_cents": { "type": "integer" }
-        }
-      },
-      "ExternalConfirmInvoice": {
-        "type": "object",
-        "required": ["external_invoice"],
-        "properties": {
-          "external_invoice": {
-            "type": "object",
-            "required": ["folio"],
-            "properties": {
-              "folio": { "type": "string" },
-              "uuid_cfdi": { "type": "string" },
-              "system": { "type": "string", "default": "netsuite" },
-              "netsuite_internal_id": { "type": "string" },
-              "pdf_url": { "type": "string", "format": "uri" },
-              "xml_url": { "type": "string", "format": "uri" },
-              "issued_at": { "type": "string", "format": "date-time" },
-              "due_date": { "type": "string", "format": "date" }
-            }
-          }
-        }
-      },
-      "ExternalConfirmCreditNote": {
-        "type": "object",
-        "required": ["external_credit_note"],
-        "properties": {
-          "external_credit_note": {
-            "type": "object",
-            "required": ["folio"],
-            "properties": {
-              "folio": { "type": "string" },
-              "uuid_cfdi": { "type": "string" },
-              "system": { "type": "string", "default": "netsuite" },
-              "netsuite_internal_id": { "type": "string" },
-              "issued_at": { "type": "string", "format": "date-time" }
-            }
-          }
-        }
-      }
+      "ExternalConfirmInvoice": { "type": "object", "required": ["external_invoice"], "properties": { "external_invoice": { "type": "object", "required": ["folio"], "properties": { "folio": { "type": "string" }, "uuid_cfdi": { "type": "string" }, "system": { "type": "string" }, "issued_at": { "type": "string", "format": "date-time" } } } } },
+      "ExternalConfirmCreditNote": { "type": "object", "required": ["external_credit_note"], "properties": { "external_credit_note": { "type": "object", "required": ["folio"], "properties": { "folio": { "type": "string" }, "uuid_cfdi": { "type": "string" }, "system": { "type": "string" } } } } }
     }
   },
   "security": [{ "BearerAuth": [] }],
   "paths": {
     "/health": { "get": { "summary": "Health check", "security": [], "tags": ["meta"], "responses": { "200": { "description": "OK" } } } },
-    "/openapi.json": { "get": { "summary": "OpenAPI 3.1 spec", "security": [], "tags": ["meta"], "responses": { "200": { "description": "JSON" } } } },
-    "/api/v1": { "get": { "summary": "Endpoint discovery (no auth)", "security": [], "tags": ["meta"], "responses": { "200": { "description": "Lista plana de endpoints" } } } },
+    "/openapi.json": { "get": { "summary": "OpenAPI spec", "security": [], "tags": ["meta"], "responses": { "200": { "description": "JSON" } } } },
+    "/api/v1": { "get": { "summary": "Endpoint discovery", "security": [], "tags": ["meta"], "responses": { "200": { "description": "Lista" } } } },
 
     "/api/v1/customers": {
-      "post": {
-        "summary": "Create / upsert customer por external_id (D1)",
-        "tags": ["customers"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/CustomerWriteable" } } } } } },
-        "responses": { "200": { "description": "Customer", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } } }
-      },
-      "get": {
-        "summary": "List customers (paginado)",
-        "tags": ["customers"],
-        "parameters": [
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
-        ],
-        "responses": { "200": { "description": "Lista" } }
-      }
+      "post": { "summary": "Create / upsert customer (con billing_time + subscription_at)", "tags": ["customers"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/CustomerWriteable" } } } } } }, "responses": { "200": { "description": "Customer" } } },
+      "get": { "summary": "List customers", "tags": ["customers"], "responses": { "200": { "description": "Lista" } } }
     },
     "/api/v1/customers/{externalId}": {
-      "get": { "summary": "Read customer", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Customer" }, "404": { "description": "customer_not_found" } } },
-      "delete": { "summary": "Delete customer (409 si tiene services activos)", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" }, "409": { "description": "customer_has_active_services" } } }
+      "get": { "summary": "Read customer", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Customer" } } },
+      "delete": { "summary": "Delete (409 si tiene services activos)", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
+    },
+    "/api/v1/customers/{externalId}/add-ons": {
+      "post": { "summary": "Create customer-level flat add-on", "tags": ["add-ons"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "type": "object", "required": ["code", "name", "amount_cents"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "amount_cents": { "type": "integer", "minimum": 0 }, "active_from": { "type": "string", "format": "date-time" } } } } } } } }, "responses": { "200": { "description": "CustomerAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "$ref": "#/components/schemas/CustomerAddOn" } } } } } } } },
+      "get": { "summary": "List customer add-ons", "tags": ["add-ons"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
+    },
+    "/api/v1/customer-add-ons/{id}": {
+      "get": { "summary": "Read customer add-on", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CustomerAddOn" } } },
+      "patch": { "summary": "Update (code is immutable)", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CustomerAddOn" } } },
+      "delete": { "summary": "Soft-terminate (active_to = now)", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Terminated" } } }
     },
 
     "/api/v1/taxes": {
       "post": { "summary": "Create tax", "tags": ["taxes"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "tax": { "$ref": "#/components/schemas/TaxWriteable" } } } } } }, "responses": { "200": { "description": "Tax" } } },
       "get": { "summary": "List taxes", "tags": ["taxes"], "responses": { "200": { "description": "Lista" } } }
     },
-    "/api/v1/taxes/{code}": {
-      "get": { "summary": "Read tax", "tags": ["taxes"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Tax" } } }
-    },
+    "/api/v1/taxes/{code}": { "get": { "summary": "Read tax", "tags": ["taxes"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Tax" } } } },
 
     "/api/v1/services": {
-      "post": {
-        "summary": "Create service (colapsa Plan+Sub+Charge+BM+AddOn)",
-        "tags": ["services"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/ServiceWriteable" } } } } } },
-        "responses": { "200": { "description": "Service", "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/Service" } } } } } } }
-      },
-      "get": {
-        "summary": "List services",
-        "tags": ["services"],
-        "parameters": [
-          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["pending", "active", "terminated"] } },
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
-        ],
-        "responses": { "200": { "description": "Lista" } }
-      }
+      "post": { "summary": "Create service (sin billing fields — heredados del customer)", "tags": ["services"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/ServiceWriteable" } } } } } }, "responses": { "200": { "description": "Service" } } },
+      "get": { "summary": "List services", "tags": ["services"], "parameters": [{ "name": "customer_external_id", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
     },
     "/api/v1/services/{code}": {
       "get": { "summary": "Read service", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service" } } },
-      "delete": { "summary": "Delete service (409 si tiene invoices — usa terminate en su lugar)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" }, "409": { "description": "service_has_invoices" } } }
+      "delete": { "summary": "Delete (409 si tiene fees — usa terminate)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
-    "/api/v1/services/{code}/terminate": {
-      "post": { "summary": "Terminate service + todas sus units activas", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service terminated" } } }
+    "/api/v1/services/{code}/terminate": { "post": { "summary": "Terminate service + sus units activas", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service terminated" } } } },
+    "/api/v1/services/{code}/add-ons": {
+      "post": { "summary": "Create service-level per-unit add-on", "tags": ["add-ons"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "type": "object", "required": ["code", "name", "amount_cents"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "amount_cents": { "type": "integer", "minimum": 0 }, "active_from": { "type": "string", "format": "date-time" } } } } } } } }, "responses": { "200": { "description": "ServiceAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "$ref": "#/components/schemas/ServiceAddOn" } } } } } } } },
+      "get": { "summary": "List service add-ons", "tags": ["add-ons"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
+    },
+    "/api/v1/service-add-ons/{id}": {
+      "get": { "summary": "Read service add-on", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "ServiceAddOn" } } },
+      "patch": { "summary": "Update (code is immutable)", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "ServiceAddOn" } } },
+      "delete": { "summary": "Soft-terminate", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Terminated" } } }
     },
 
     "/api/v1/units": {
-      "post": { "summary": "Create unit (alternativa a POST /events con operation_type=add)", "tags": ["units"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "unit": { "$ref": "#/components/schemas/UnitWriteable" } } } } } }, "responses": { "200": { "description": "Unit" } } },
-      "get": {
-        "summary": "List units",
-        "tags": ["units"],
-        "parameters": [
-          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } }
-        ],
-        "responses": { "200": { "description": "Lista" } }
-      }
+      "post": { "summary": "Create unit", "tags": ["units"], "responses": { "200": { "description": "Unit" } } },
+      "get": { "summary": "List units", "tags": ["units"], "parameters": [{ "name": "service_code", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } }], "responses": { "200": { "description": "Lista" } } }
     },
     "/api/v1/units/{id}": {
       "get": { "summary": "Read unit", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } },
-      "patch": { "summary": "Update unit (label, active_to, metadata)", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } }
+      "patch": { "summary": "Update label / active_to", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } }
     },
 
     "/api/v1/events": {
-      "post": {
-        "summary": "POST event (add o remove unit). Materializa la unidad en la tabla `units` como side effect.",
-        "tags": ["events"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "event": { "$ref": "#/components/schemas/EventWriteable" } } } } } },
-        "responses": { "200": { "description": "Event", "content": { "application/json": { "schema": { "type": "object", "properties": { "event": { "$ref": "#/components/schemas/Event" } } } } } } }
-      },
-      "get": {
-        "summary": "Event log (audit trail)",
-        "tags": ["events"],
-        "parameters": [
-          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
-          { "name": "unit_external_id", "in": "query", "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Lista" } }
-      }
+      "post": { "summary": "POST event (add/remove unit) — materializa unit como side-effect", "tags": ["events"], "responses": { "200": { "description": "Event" } } },
+      "get": { "summary": "Event log (audit)", "tags": ["events"], "responses": { "200": { "description": "Lista" } } }
     },
 
     "/api/v1/invoices": {
-      "post": {
-        "summary": "Calcular invoice del periodo actual del service",
-        "tags": ["invoices"],
-        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" }, "description": "Debe coincidir con metadata.idempotency_key." }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/InvoiceWriteable" } } } } } },
-        "responses": { "200": { "description": "Invoice", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/Invoice" } } } } } } }
-      },
-      "get": {
-        "summary": "List invoices",
-        "tags": ["invoices"],
-        "parameters": [
-          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
-          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "schema": { "type": "string" } }
-        ],
-        "responses": { "200": { "description": "Lista" } }
-      }
+      "post": { "summary": "Calcular invoice del customer (incluye TODOS sus services + customer add-ons)", "tags": ["invoices"], "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/InvoiceWriteable" } } } } } }, "responses": { "200": { "description": "Invoice" } } },
+      "get": { "summary": "List invoices", "tags": ["invoices"], "parameters": [{ "name": "customer_external_id", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
     },
-    "/api/v1/invoices/{id}": {
-      "get": { "summary": "Read invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Invoice" } } }
-    },
-    "/api/v1/invoices/{id}/void": {
-      "post": { "summary": "Void invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Invoice voided" } } }
-    },
-    "/api/v1/invoices/{id}/external-confirm": {
-      "post": {
-        "summary": "Callback NetSuite (HMAC-firmado)",
-        "tags": ["external-confirm"],
-        "security": [{ "NetSuiteSignature": [] }],
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmInvoice" } } } },
-        "responses": { "200": { "description": "Invoice finalized" }, "401": { "description": "invalid_signature" }, "403": { "description": "secret_not_configured" }, "409": { "description": "conflict_folio_changed" } }
-      }
-    },
+    "/api/v1/invoices/{id}": { "get": { "summary": "Read invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Invoice" } } } },
+    "/api/v1/invoices/{id}/void": { "post": { "summary": "Void invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "OK" } } } },
+    "/api/v1/invoices/{id}/external-confirm": { "post": { "summary": "Callback NetSuite (HMAC)", "tags": ["external-confirm"], "security": [{ "NetSuiteSignature": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmInvoice" } } } }, "responses": { "200": { "description": "Finalized" } } } },
 
     "/api/v1/credit_notes": {
-      "post": {
-        "summary": "Create credit note (solo sobre invoice finalized+confirmed)",
-        "tags": ["credit_notes"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNoteWriteable" } } } } } },
-        "responses": { "200": { "description": "CN" }, "422": { "description": "invoice_not_confirmed" } }
-      },
-      "get": { "summary": "List credit notes", "tags": ["credit_notes"], "parameters": [{ "name": "customer_external_id", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
+      "post": { "summary": "Create credit note (invoice debe estar finalized+confirmed)", "tags": ["credit_notes"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNoteWriteable" } } } } } }, "responses": { "200": { "description": "CN" } } },
+      "get": { "summary": "List credit notes", "tags": ["credit_notes"], "responses": { "200": { "description": "Lista" } } }
     },
-    "/api/v1/credit_notes/{id}": {
-      "get": { "summary": "Read credit note", "tags": ["credit_notes"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CN" } } }
-    },
-    "/api/v1/credit_notes/{id}/external-confirm": {
-      "post": {
-        "summary": "Callback NetSuite para CN (HMAC-firmado)",
-        "tags": ["external-confirm"],
-        "security": [{ "NetSuiteSignature": [] }],
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmCreditNote" } } } },
-        "responses": { "200": { "description": "CN finalized" } }
-      }
-    },
+    "/api/v1/credit_notes/{id}": { "get": { "summary": "Read credit note", "tags": ["credit_notes"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CN" } } } },
+    "/api/v1/credit_notes/{id}/external-confirm": { "post": { "summary": "Callback NetSuite CN", "tags": ["external-confirm"], "security": [{ "NetSuiteSignature": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmCreditNote" } } } }, "responses": { "200": { "description": "Finalized" } } } },
 
-    "/api/v1/services/{code}/add-ons": {
-      "post": {
-        "summary": "Crear add-on adjunto al service (modificador recurrente)",
-        "description": "Dos `pricing_type`:\n- `per_unit_monthly`: amount × unidades_activas, prorrateado por días.\n- `flat_monthly`: amount × días_activo del add-on / días_del_periodo, independiente del número de unidades.\n\nLifecycle vía `active_from` / `active_to` para que un add-on activado a mitad de periodo prorratee correctamente.",
-        "tags": ["add-ons"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "add_on": {
-                    "type": "object",
-                    "required": ["code", "name", "pricing_type", "amount_cents"],
-                    "properties": {
-                      "code": { "type": "string", "example": "historial-12m" },
-                      "name": { "type": "string", "example": "Historial 6→12 meses" },
-                      "description": { "type": "string" },
-                      "pricing_type": { "type": "string", "enum": ["per_unit_monthly", "flat_monthly"] },
-                      "amount_cents": { "type": "integer", "minimum": 0, "example": 5000 },
-                      "active_from": { "type": "string", "format": "date-time", "description": "Default: ahora." },
-                      "active_to": { "type": "string", "format": "date-time" },
-                      "metadata": { "type": "object" }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Add-on creado", "content": { "application/json": { "schema": { "type": "object", "properties": { "add_on": { "$ref": "#/components/schemas/AddOn" } } } } } },
-          "404": { "description": "service_not_found" }
-        }
-      },
-      "get": {
-        "summary": "List add-ons del service",
-        "tags": ["add-ons"],
-        "parameters": [
-          { "name": "code", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } },
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
-        ],
-        "responses": { "200": { "description": "Lista" } }
-      }
-    },
-    "/api/v1/add-ons/{id}": {
-      "get": {
-        "summary": "Read add-on por id",
-        "tags": ["add-ons"],
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "responses": { "200": { "description": "Add-on" } }
-      },
-      "patch": {
-        "summary": "Update name/description/amount/active_to (code y pricing_type son immutable)",
-        "tags": ["add-ons"],
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "responses": { "200": { "description": "Add-on" } }
-      },
-      "delete": {
-        "summary": "Soft-terminate (set active_to = now). Re-activable via PATCH active_to: null.",
-        "tags": ["add-ons"],
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "responses": { "200": { "description": "Add-on terminated" } }
-      }
-    },
-    "/api/v1/admin/reset": {
-      "post": {
-        "summary": "Hard reset destructivo (wipea data, preserva org)",
-        "tags": ["admin"],
-        "parameters": [{ "name": "X-Admin-Reset-Token", "in": "header", "required": true, "schema": { "type": "string" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["confirm"], "properties": { "confirm": { "type": "string", "description": "Debe = organization.slug." } } } } } },
-        "responses": { "200": { "description": "Reset OK" }, "403": { "description": "admin_reset_disabled | invalid_reset_token" } }
-      }
-    }
+    "/api/v1/admin/reset": { "post": { "summary": "Hard reset (wipea data, preserva org)", "tags": ["admin"], "parameters": [{ "name": "X-Admin-Reset-Token", "in": "header", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["confirm"], "properties": { "confirm": { "type": "string" } } } } } }, "responses": { "200": { "description": "OK" } } } }
   }
 }

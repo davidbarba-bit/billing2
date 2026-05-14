@@ -1,4 +1,4 @@
-// Service serializer.
+// Service serializer (v3 — no longer owns billing cycle).
 
 import type { Service, Tax } from '@prisma/client';
 import { isoUtc } from '../services/tz.js';
@@ -20,16 +20,7 @@ export function serializeService(service: ServiceWithLinks) {
       monthly_unit_amount_cents: service.monthlyUnitAmountCents,
       setup_unit_amount_cents: service.setupUnitAmountCents,
       status: service.status,
-      billing_time: service.billingTime,
-      subscription_at: isoUtc(service.subscriptionAt),
-      started_at: service.startedAt ? isoUtc(service.startedAt) : null,
       terminated_at: service.terminatedAt ? isoUtc(service.terminatedAt) : null,
-      current_billing_period_started_at: service.currentBillingPeriodStartedAt
-        ? isoUtc(service.currentBillingPeriodStartedAt)
-        : null,
-      current_billing_period_ending_at: service.currentBillingPeriodEndingAt
-        ? isoUtc(service.currentBillingPeriodEndingAt)
-        : null,
       metadata: service.metadata ?? {},
       taxes: service.taxLinks.map(({ tax }) => serializeTax(tax).tax),
       created_at: isoUtc(service.createdAt),

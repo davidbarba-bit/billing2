@@ -1,15 +1,12 @@
-// Customer routes (Numaris-native).
-//
-// Uses POST upsert by external_id, GET single + list, DELETE.
-// `tax_codes[]` is a total replacement on each write (matches the
-// declarative pattern from the spec D2).
+// Customer routes (v3 — owns billing cycle).
 
 import type { FastifyInstance } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, pathNotFound, validation } from '../errors.js';
 import { buildCustomerSlug } from '../services/slug.js';
-import { isValidIanaTimezone } from '../services/tz.js';
+import { applicableTimezone, isValidIanaTimezone } from '../services/tz.js';
+import { billingPeriodFor } from '../services/billing-engine.js';
 import { serializeCustomer, type CustomerWithLinks } from '../serializers/customer.js';
 
 type CustomerPayload = {
@@ -26,6 +23,8 @@ type CustomerPayload = {
   country?: string | null;
   currency?: string;
   timezone?: string | null;
+  billing_time?: 'calendar' | 'anniversary';
+  subscription_at?: string;
   metadata?: Record<string, unknown>;
   tax_codes?: string[];
 };
@@ -45,11 +44,13 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       if (payload.timezone && !isValidIanaTimezone(payload.timezone)) {
         throw validation({ timezone: ['invalid_iana'] });
       }
+      const billingTime = payload.billing_time;
+      if (billingTime !== undefined && billingTime !== 'calendar' && billingTime !== 'anniversary') {
+        throw validation({ billing_time: ['value_is_invalid'] });
+      }
 
       const taxes = payload.tax_codes !== undefined
-        ? await prisma.tax.findMany({
-            where: { organizationId: org.id, code: { in: payload.tax_codes } },
-          })
+        ? await prisma.tax.findMany({ where: { organizationId: org.id, code: { in: payload.tax_codes } } })
         : null;
       if (taxes && taxes.length !== payload.tax_codes!.length) {
         const found = new Set(taxes.map((t) => t.code));
@@ -69,15 +70,29 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
           const updated = await tx.customer.update({ where: { id: existing.id }, data: updates });
           if (payload.tax_codes !== undefined && taxes) {
             await tx.customerTaxLink.deleteMany({ where: { customerId: existing.id } });
-            await tx.customerTaxLink.createMany({
-              data: taxes.map((t) => ({ customerId: existing.id, taxId: t.id })),
-            });
+            await tx.customerTaxLink.createMany({ data: taxes.map((t) => ({ customerId: existing.id, taxId: t.id })) });
           }
           return updated;
         });
       } else {
         if (!payload.name) throw validation({ name: ['value_is_mandatory'] });
         if (!payload.currency) throw validation({ currency: ['value_is_mandatory'] });
+
+        const now = new Date();
+        const subscriptionAt = payload.subscription_at ? new Date(payload.subscription_at) : now;
+        if (Number.isNaN(subscriptionAt.getTime())) {
+          throw validation({ subscription_at: ['invalid_iso_datetime'] });
+        }
+        const isFuture = subscriptionAt.getTime() > now.getTime();
+        const status = isFuture ? 'pending' : 'active';
+        const startedAt = isFuture ? null : subscriptionAt;
+        const tz = applicableTimezone(payload.timezone, org.timezone);
+        const tempCustomer = {
+          billingTime: billingTime ?? 'calendar',
+          subscriptionAt,
+        } as unknown as import('@prisma/client').Customer;
+        const period = isFuture ? null : billingPeriodFor(tempCustomer, tz, now);
+
         customer = await prisma.$transaction(async (tx) => {
           const orgUpdated = await tx.organization.update({
             where: { id: org.id },
@@ -94,6 +109,12 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
               slug: buildCustomerSlug(orgUpdated.slug, sequentialId),
               name: payload.name!,
               currency: payload.currency!,
+              billingTime: billingTime ?? 'calendar',
+              subscriptionAt,
+              startedAt,
+              status,
+              currentBillingPeriodStartedAt: isFuture ? null : startedAt,
+              currentBillingPeriodEndingAt: period?.end ?? null,
             },
           });
           if (taxes && taxes.length > 0) {
@@ -185,9 +206,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
     method: 'PUT',
     url: '/api/v1/customers/:externalId',
     preHandler: authenticate,
-    handler: async () => {
-      throw pathNotFound();
-    },
+    handler: async () => { throw pathNotFound(); },
   });
 }
 
@@ -199,6 +218,7 @@ function buildCreateData(payload: CustomerPayload): Prisma.CustomerUncheckedCrea
     slug: '',
     name: '',
     currency: '',
+    subscriptionAt: new Date(),
     email: payload.email ?? null,
     phone: payload.phone ?? null,
     taxIdentificationNumber: payload.tax_identification_number ?? null,
@@ -227,6 +247,7 @@ function buildUpdateData(payload: CustomerPayload): Prisma.CustomerUpdateInput {
   if (payload.country !== undefined) updates.country = payload.country;
   if (payload.currency !== undefined) updates.currency = payload.currency;
   if (payload.timezone !== undefined) updates.timezone = payload.timezone;
+  if (payload.billing_time !== undefined) updates.billingTime = payload.billing_time;
   if (payload.metadata !== undefined) updates.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
   return updates;
 }

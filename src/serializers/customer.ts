@@ -1,4 +1,4 @@
-// Customer serializer (Numaris-native model).
+// Customer serializer (v3).
 
 import type { Customer, Organization, Tax } from '@prisma/client';
 import { applicableTimezone, isoUtc } from '../services/tz.js';
@@ -29,6 +29,15 @@ export function serializeCustomer(customer: CustomerWithLinks) {
       currency: customer.currency,
       timezone: customer.timezone ?? null,
       applicable_timezone: applicableTimezone(customer.timezone, customer.organization.timezone),
+      status: customer.status,
+      billing_time: customer.billingTime,
+      subscription_at: isoUtc(customer.subscriptionAt),
+      started_at: customer.startedAt ? isoUtc(customer.startedAt) : null,
+      terminated_at: customer.terminatedAt ? isoUtc(customer.terminatedAt) : null,
+      current_billing_period_started_at: customer.currentBillingPeriodStartedAt
+        ? isoUtc(customer.currentBillingPeriodStartedAt) : null,
+      current_billing_period_ending_at: customer.currentBillingPeriodEndingAt
+        ? isoUtc(customer.currentBillingPeriodEndingAt) : null,
       metadata: customer.metadata ?? {},
       taxes: customer.taxLinks.map(({ tax }) => serializeTax(tax).tax),
       created_at: isoUtc(customer.createdAt),
@@ -37,7 +46,6 @@ export function serializeCustomer(customer: CustomerWithLinks) {
   };
 }
 
-// Reduced embed used by invoice/credit-note responses.
 export function serializeEmbeddedCustomer(customer: CustomerWithLinks) {
   return {
     id: customer.id,

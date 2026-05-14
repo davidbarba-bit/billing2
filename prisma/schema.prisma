@@ -1,9 +1,10 @@
-// mini-Lago Prisma schema — Numaris-native model (v2 redesign).
+// mini-Lago Prisma schema — v3 redesign.
 //
-// This collapses the original Lago-shaped entities (Plan + Subscription +
-// Charge + BillableMetric + AddOn) into a single domain-specific entity:
-// `Service`. Units are materialized (not derived from events) so the
-// proration math is a simple table scan instead of an event-log replay.
+// Key change vs v2: invoices are now per Customer (not per Service). A
+// customer's invoice aggregates fees from ALL of its active services
+// (monthly + setup + service-level per-unit add-ons) plus its own flat
+// customer-level add-ons. The billing cycle (calendar / anniversary) lives
+// on the Customer, not the Service.
 
 generator client {
   provider = "prisma-client-js"
@@ -49,34 +50,43 @@ model Organization {
 }
 
 // ---------------------------------------------------------------------------
-// Customer.
+// Customer — owns the billing cycle.
 // ---------------------------------------------------------------------------
 
 model Customer {
-  id                      String   @id @default(uuid())
-  organizationId          String   @map("organization_id")
-  externalId              String   @map("external_id")
-  sequentialId            Int      @map("sequential_id")
-  slug                    String
-  name                    String
-  email                   String?
-  phone                   String?
-  taxIdentificationNumber String?  @map("tax_identification_number")
-  addressLine1            String?  @map("address_line1")
-  addressLine2            String?  @map("address_line2")
-  state                   String?
-  zipcode                 String?
-  city                    String?
-  country                 String?
-  currency                String
-  timezone                String?
-  metadata                Json     @default("{}")
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
+  id                            String    @id @default(uuid())
+  organizationId                String    @map("organization_id")
+  externalId                    String    @map("external_id")
+  sequentialId                  Int       @map("sequential_id")
+  slug                          String
+  name                          String
+  email                         String?
+  phone                         String?
+  taxIdentificationNumber       String?   @map("tax_identification_number")
+  addressLine1                  String?   @map("address_line1")
+  addressLine2                  String?   @map("address_line2")
+  state                         String?
+  zipcode                       String?
+  city                          String?
+  country                       String?
+  currency                      String
+  timezone                      String?
+  // Billing cycle (moved from Service in v3).
+  billingTime                   String    @default("calendar") @map("billing_time")
+  subscriptionAt                DateTime  @map("subscription_at")
+  startedAt                     DateTime? @map("started_at")
+  terminatedAt                  DateTime? @map("terminated_at")
+  currentBillingPeriodStartedAt DateTime? @map("current_billing_period_started_at")
+  currentBillingPeriodEndingAt  DateTime? @map("current_billing_period_ending_at")
+  status                        String    @default("active") // pending | active | terminated
+  metadata                      Json      @default("{}")
+  createdAt                     DateTime  @default(now()) @map("created_at")
+  updatedAt                     DateTime  @updatedAt @map("updated_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   taxLinks     CustomerTaxLink[]
   services     Service[]
+  addOns       CustomerAddOn[]
   invoices     Invoice[]
   creditNotes  CreditNote[]
 
@@ -85,7 +95,7 @@ model Customer {
 }
 
 // ---------------------------------------------------------------------------
-// Tax (still a separate entity — Numaris may use IVA + IEPS in the future).
+// Tax.
 // ---------------------------------------------------------------------------
 
 model Tax {
@@ -98,11 +108,11 @@ model Tax {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  organization     Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customers        CustomerTaxLink[]
-  services         ServiceTaxLink[]
-  appliedTaxes     AppliedTax[]
-  cnAppliedTaxes   CreditNoteAppliedTax[]
+  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customers      CustomerTaxLink[]
+  services       ServiceTaxLink[]
+  appliedTaxes   AppliedTax[]
+  cnAppliedTaxes CreditNoteAppliedTax[]
 
   @@unique([organizationId, code])
   @@map("taxes")
@@ -121,51 +131,32 @@ model CustomerTaxLink {
 }
 
 // ---------------------------------------------------------------------------
-// Service (Servicio) — the Numaris domain entity. Collapses everything that
-// used to be Plan + Subscription + Charge + BillableMetric + AddOn.
-//
-// Each customer can have N services (eg. "Combustible", "Tracking",
-// "Telemetría"). A service has:
-//   - a monthly per-unit price (`monthlyUnitAmountCents`) — billed prorated
-//     by the days each unit was active within the period.
-//   - a setup per-unit price (`setupUnitAmountCents`) — billed one-off the
-//     first time each unit is invoiced.
-//   - a billing rhythm (`billingTime` = calendar | anniversary) and current
-//     period dates.
-//
-// Units are tracked in the `Unit` table; events still flow through
-// EventLog as an audit trail but `Unit.activeFrom`/`activeTo` are the
-// source of truth.
+// Service — owns units + per-unit pricing. Does NOT own billing cycle (the
+// customer does, since one invoice aggregates many services).
 // ---------------------------------------------------------------------------
 
 model Service {
-  id                            String    @id @default(uuid())
-  organizationId                String    @map("organization_id")
-  customerId                    String    @map("customer_id")
-  code                          String
-  name                          String
-  description                   String?
-  currency                      String
-  monthlyUnitAmountCents        Int       @default(0) @map("monthly_unit_amount_cents")
-  setupUnitAmountCents          Int       @default(0) @map("setup_unit_amount_cents")
-  status                        String    @default("active")
-  billingTime                   String    @default("calendar") @map("billing_time")
-  subscriptionAt                DateTime  @map("subscription_at")
-  startedAt                     DateTime? @map("started_at")
-  terminatedAt                  DateTime? @map("terminated_at")
-  currentBillingPeriodStartedAt DateTime? @map("current_billing_period_started_at")
-  currentBillingPeriodEndingAt  DateTime? @map("current_billing_period_ending_at")
-  metadata                      Json      @default("{}")
-  createdAt                     DateTime  @default(now()) @map("created_at")
-  updatedAt                     DateTime  @updatedAt @map("updated_at")
+  id                     String    @id @default(uuid())
+  organizationId         String    @map("organization_id")
+  customerId             String    @map("customer_id")
+  code                   String
+  name                   String
+  description            String?
+  currency               String
+  monthlyUnitAmountCents Int       @default(0) @map("monthly_unit_amount_cents")
+  setupUnitAmountCents   Int       @default(0) @map("setup_unit_amount_cents")
+  status                 String    @default("active") // active | terminated
+  terminatedAt           DateTime? @map("terminated_at")
+  metadata               Json      @default("{}")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
   taxLinks     ServiceTaxLink[]
   units        Unit[]
-  addOns       AddOn[]
+  addOns       ServiceAddOn[]
   events       EventLog[]
-  invoices     Invoice[]
   fees         Fee[]
 
   @@unique([organizationId, code])
@@ -173,8 +164,6 @@ model Service {
   @@map("services")
 }
 
-// Service ↔ Tax association. If empty, the customer's tax_codes apply.
-// If present, overrides the customer-level taxes.
 model ServiceTaxLink {
   serviceId String   @map("service_id")
   taxId     String   @map("tax_id")
@@ -188,23 +177,16 @@ model ServiceTaxLink {
 }
 
 // ---------------------------------------------------------------------------
-// AddOn — recurring modifier attached to a Service (different from the Lago
-// AddOn concept that was deleted in v2). Two pricing types today:
-//
-//   - per_unit_monthly: amount × active_units, prorated by days.
-//   - flat_monthly:     amount × prorated days (independent of units).
-//
-// Lifecycle via activeFrom/activeTo so add-ons can be enabled mid-period
-// and the engine will prorate them correctly.
+// ServiceAddOn — per-unit recurring modifier attached to a Service.
+// Ej: "+$50/u por historial 12 meses".
 // ---------------------------------------------------------------------------
 
-model AddOn {
+model ServiceAddOn {
   id          String    @id @default(uuid())
   serviceId   String    @map("service_id")
   code        String
   name        String
   description String?
-  pricingType String    @map("pricing_type") // "per_unit_monthly" | "flat_monthly"
   amountCents Int       @map("amount_cents")
   activeFrom  DateTime  @map("active_from")
   activeTo    DateTime? @map("active_to")
@@ -217,18 +199,38 @@ model AddOn {
 
   @@unique([serviceId, code])
   @@index([serviceId, activeTo])
-  @@map("add_ons")
+  @@map("service_add_ons")
 }
 
 // ---------------------------------------------------------------------------
-// Unit (Unidad) — materialised state, not derived from events.
-//
-// `activeFrom` = first observed `add` event (or manual creation).
-// `activeTo` = null while the unit is still active; otherwise the
-//              effective baja date.
-// `setupBilledAt` = null until the setup fee has been invoiced; then the
-//                   timestamp of the invoice that captured it. Prevents
-//                   double-billing the setup line on subsequent periods.
+// CustomerAddOn — flat recurring modifier attached to a Customer.
+// Ej: "+$1000/mes por 10 reglas de evento" (independiente de services o
+// unidades).
+// ---------------------------------------------------------------------------
+
+model CustomerAddOn {
+  id          String    @id @default(uuid())
+  customerId  String    @map("customer_id")
+  code        String
+  name        String
+  description String?
+  amountCents Int       @map("amount_cents")
+  activeFrom  DateTime  @map("active_from")
+  activeTo    DateTime? @map("active_to")
+  metadata    Json      @default("{}")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  fees     Fee[]
+
+  @@unique([customerId, code])
+  @@index([customerId, activeTo])
+  @@map("customer_add_ons")
+}
+
+// ---------------------------------------------------------------------------
+// Unit — materialised, no event-replay.
 // ---------------------------------------------------------------------------
 
 model Unit {
@@ -252,8 +254,7 @@ model Unit {
 }
 
 // ---------------------------------------------------------------------------
-// EventLog — append-only audit trail. Each event mutates the Unit table
-// idempotently (by `transactionId`).
+// EventLog — append-only audit.
 // ---------------------------------------------------------------------------
 
 model EventLog {
@@ -264,8 +265,8 @@ model EventLog {
   unitId         String?  @map("unit_id")
   unitExternalId String   @map("unit_external_id")
   unitLabel      String?  @map("unit_label")
-  operationType  String   @map("operation_type") // "add" | "remove"
-  kind           String? // free-text from the cliente ("monthly-ping", "setup", etc.)
+  operationType  String   @map("operation_type") // add | remove
+  kind           String?
   timestamp      DateTime
   properties     Json     @default("{}")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -280,16 +281,19 @@ model EventLog {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice (Factura).
+// Invoice — per Customer per Period.
+//
+// Contains fees from all the customer's active services + customer-level
+// add-ons. No serviceId at the invoice level (fees reference services and
+// add-ons explicitly).
 // ---------------------------------------------------------------------------
 
 model Invoice {
   id                                String    @id @default(uuid())
   organizationId                    String    @map("organization_id")
   customerId                        String    @map("customer_id")
-  serviceId                         String?   @map("service_id")
   sequentialId                      Int       @map("sequential_id")
-  number                            String? // folio CFDI (null hasta external-confirm)
+  number                            String?
   issuingDate                       DateTime  @map("issuing_date") @db.Date
   paymentDueDate                    DateTime  @map("payment_due_date") @db.Date
   netPaymentTerm                    Int       @default(0) @map("net_payment_term")
@@ -321,7 +325,6 @@ model Invoice {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
-  service      Service?     @relation(fields: [serviceId], references: [id])
   fees         Fee[]
   appliedTaxes AppliedTax[]
   creditNotes  CreditNote[]
@@ -330,25 +333,26 @@ model Invoice {
 }
 
 // ---------------------------------------------------------------------------
-// Fee (Línea de factura).
+// Fee — line item on an invoice.
 //
 // `kind`:
-//   "monthly" — billed by service.monthlyUnitAmountCents × units (prorated).
-//   "setup"   — one-off; one fee per unit being setup-billed for the first
-//               time during this invoice.
-//   "manual"  — free-text extra line (caller-provided unit_amount / units).
+//   "monthly"        per_unit base monthly fee (1 per service per invoice)
+//   "setup"          per_unit one-off setup fee (1 per service per invoice)
+//   "service_addon"  per_unit recurring add-on on a service
+//   "customer_addon" flat recurring add-on on the customer
 // ---------------------------------------------------------------------------
 
 model Fee {
   id                String   @id @default(uuid())
   invoiceId         String   @map("invoice_id")
   serviceId         String?  @map("service_id")
-  addOnId           String?  @map("add_on_id")
-  kind              String // "monthly" | "setup" | "addon_per_unit_monthly" | "addon_flat_monthly"
+  serviceAddOnId    String?  @map("service_add_on_id")
+  customerAddOnId   String?  @map("customer_add_on_id")
+  kind              String
   description       String?
-  units             String // string decimal — 4 dígitos para monthly, "1.0000" para setup
+  units             String
   unitAmountCents   Int      @map("unit_amount_cents")
-  preciseUnitAmount String   @map("precise_unit_amount") // "450.00"
+  preciseUnitAmount String   @map("precise_unit_amount")
   amountCents       Int      @map("amount_cents")
   taxesAmountCents  Int      @default(0) @map("taxes_amount_cents")
   taxesRate         Decimal  @default(0) @map("taxes_rate") @db.Decimal(10, 4)
@@ -358,10 +362,11 @@ model Fee {
   position          Int      @default(0)
   createdAt         DateTime @default(now()) @map("created_at")
 
-  invoice Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  service Service?         @relation(fields: [serviceId], references: [id])
-  addOn   AddOn?           @relation(fields: [addOnId], references: [id])
-  cnItems CreditNoteItem[]
+  invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  service         Service?         @relation(fields: [serviceId], references: [id])
+  serviceAddOn    ServiceAddOn?    @relation(fields: [serviceAddOnId], references: [id])
+  customerAddOn   CustomerAddOn?   @relation(fields: [customerAddOnId], references: [id])
+  cnItems         CreditNoteItem[]
 
   @@index([invoiceId])
   @@map("fees")
@@ -387,7 +392,7 @@ model AppliedTax {
 }
 
 // ---------------------------------------------------------------------------
-// Credit note (Nota de crédito).
+// Credit note.
 // ---------------------------------------------------------------------------
 
 model CreditNote {
@@ -470,7 +475,7 @@ model CreditNoteAppliedTax {
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency store.
+// Idempotency.
 // ---------------------------------------------------------------------------
 
 model IdempotencyRecord {
