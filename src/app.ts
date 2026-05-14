@@ -113,7 +113,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   registerUnitRoutes(app, prisma);
   registerServiceAddOnRoutes(app, prisma);
   registerCustomerAddOnRoutes(app, prisma);
-  registerEventRoutes(app, prisma);
+  registerEventRoutes(app, prisma, { dispatcher, callbackBaseUrl });
   registerInvoiceRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerCreditNoteRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerExternalConfirmRoutes(app, prisma, { config: deps.config });

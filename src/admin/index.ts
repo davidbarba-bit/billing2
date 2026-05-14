@@ -302,7 +302,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Tax ID', escapeHtml(customer.taxIdentificationNumber ?? '—')],
       ['Taxes', customer.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '—'],
       ['Status', statusBadge(customer.status)],
-      ['Billing time', badge(customer.billingTime, 'blue')],
+      ['Intervalo', badge(`${customer.billingPeriodMonths}M`, 'blue')],
+      ['Día de cierre', `día ${customer.billingAnchorDay} del mes`],
+      ['No-recurrente', badge(customer.nonrecurringTrigger, customer.nonrecurringTrigger === 'immediate' ? 'green' : 'gray')],
       ['Subscription at', fmtDate(customer.subscriptionAt)],
       ['Started at', fmtDate(customer.startedAt)],
       ['Period start', fmtDate(customer.currentBillingPeriodStartedAt)],
@@ -433,8 +435,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Nombre', render: (s) => escapeHtml(s.name) },
           { label: 'Customer', render: (s) => escapeHtml(s.customer.externalId) },
           { label: 'Status', render: (s) => statusBadge(s.status) },
-          { label: 'Mensual /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
-          { label: 'Setup /u', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) },
+          { label: 'Modelo', render: (s) => badge(s.pricingModel, s.pricingModel === 'one_off' ? 'green' : 'blue') },
+          { label: 'Monto /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
+          { label: 'Setup /u', render: (s) => s.pricingModel === 'one_off' ? '—' : fmtMoney(s.setupUnitAmountCents, s.currency) },
           { label: 'Units', render: (s) => String(s._count.units) },
         ],
       }),
@@ -469,14 +472,22 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           <label class="block"><span class="text-sm text-gray-700">Nombre</span>
             <input required name="name" class="mt-1 block w-full rounded border-gray-300">
           </label>
-          <label class="block"><span class="text-sm text-gray-700">Mensual por unidad (cents)</span>
+          <label class="block col-span-2"><span class="text-sm text-gray-700">Pricing model</span>
+            <select required name="pricing_model" class="mt-1 block w-full rounded border-gray-300">
+              <option value="recurring" selected>recurring — renta por unidad cada periodo del customer (+ setup opcional)</option>
+              <option value="one_off">one_off — cargo único por unidad cuando aparece, no genera renta</option>
+            </select>
+          </label>
+          <label class="block"><span class="text-sm text-gray-700">Monto por unidad (cents)</span>
             <input required type="number" name="monthly_unit_amount_cents" value="45000" min="0" class="mt-1 block w-full rounded border-gray-300">
+            <span class="text-xs text-gray-500">recurring: cobro por periodo. one_off: cobro único.</span>
           </label>
           <label class="block"><span class="text-sm text-gray-700">Setup por unidad (cents)</span>
-            <input type="number" name="setup_unit_amount_cents" value="120000" min="0" class="mt-1 block w-full rounded border-gray-300">
+            <input type="number" name="setup_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
+            <span class="text-xs text-gray-500">Solo aplica a recurring. En one_off debe ser 0.</span>
           </label>
         </div>
-        <p class="text-xs text-gray-500">El ciclo de facturación (calendar / anniversary) se hereda del customer.</p>
+        <p class="text-xs text-gray-500">El ciclo de facturación (intervalo + día de cierre) lo define el customer.</p>
         <div>
           <span class="text-sm text-gray-700">Taxes (vacío = usa taxes del customer)</span>
           <div class="space-y-1 mt-1">${taxOptions || '<p class="text-sm text-gray-500">No hay taxes — créalos en /admin/taxes primero.</p>'}</div>
@@ -512,6 +523,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           name: body.name,
           description: (body.description as string) || undefined,
           currency: body.currency || 'MXN',
+          pricing_model: body.pricing_model || 'recurring',
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
           tax_codes: taxCodes,
@@ -551,8 +563,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Nombre', escapeHtml(service.name)],
       ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">${escapeHtml(service.customer.externalId)}</a>`],
       ['Status', statusBadge(service.status)],
-      ['Mensual /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency)],
-      ['Setup /unidad', fmtMoney(service.setupUnitAmountCents, service.currency)],
+      ['Pricing model', badge(service.pricingModel, service.pricingModel === 'one_off' ? 'green' : 'blue')],
+      ['Monto /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency) + (service.pricingModel === 'one_off' ? ' (one-off)' : ' /periodo')],
+      ['Setup /unidad', service.pricingModel === 'one_off' ? '<span class="text-gray-400">n/a (one_off)</span>' : fmtMoney(service.setupUnitAmountCents, service.currency)],
       ['Terminated at', fmtDate(service.terminatedAt)],
       ['Taxes (service-level)', service.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '<span class="text-gray-400">(hereda del customer)</span>'],
     ]);

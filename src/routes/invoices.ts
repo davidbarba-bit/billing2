@@ -20,7 +20,7 @@ import { DateTime } from 'luxon';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { applicableTimezone } from '../services/tz.js';
-import { billingPeriodFor, computeCustomerInvoice, markSetupsBilled } from '../services/billing-engine.js';
+import { billingPeriodFor, computeCustomerInvoice, markOneOffBilled, markSetupsBilled } from '../services/billing-engine.js';
 import { hashRequestBody, IdempotencyConflictError, lookupIdempotent, recordIdempotent } from '../services/idempotency.js';
 import { serializeInvoice, type InvoiceWithRelations } from '../serializers/invoice.js';
 import type { AppConfig } from '../config.js';
@@ -195,6 +195,9 @@ export function registerInvoiceRoutes(
           });
           if (fee.kind === 'setup' && fee.unitIds.length > 0) {
             await markSetupsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
+          }
+          if (fee.kind === 'one_off' && fee.unitIds.length > 0) {
+            await markOneOffBilled(tx as unknown as PrismaClient, fee.unitIds, now);
           }
         }
 

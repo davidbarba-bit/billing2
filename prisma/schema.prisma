@@ -71,8 +71,14 @@ model Customer {
   country                       String?
   currency                      String
   timezone                      String?
-  // Billing cycle (moved from Service in v3).
-  billingTime                   String    @default("calendar") @map("billing_time")
+  // v4: billing cycle anclado a día N + intervalo configurable. Eliminamos
+  // `billing_time` (calendar/anniversary) — siempre es calendario con día N.
+  billingPeriodMonths           Int       @default(1) @map("billing_period_months") // 1 | 3 | 6 | 12
+  billingAnchorDay              Int       @default(1) @map("billing_anchor_day") // 1..28
+  // Cómo cobrar units de servicios one-off cuando entran (primer ping):
+  //   "immediate"   → 1 invoice por ping, emitida al instante del POST /events
+  //   "next_cycle"  → unit pendiente hasta el cierre del ciclo, sale en la cycle invoice del customer
+  nonrecurringTrigger           String    @default("next_cycle") @map("nonrecurring_trigger")
   subscriptionAt                DateTime  @map("subscription_at")
   startedAt                     DateTime? @map("started_at")
   terminatedAt                  DateTime? @map("terminated_at")
@@ -143,6 +149,12 @@ model Service {
   name                   String
   description            String?
   currency               String
+  // v4: pricing_model decide cómo se cobra.
+  //   "recurring" → renta per_unit (monthlyUnitAmountCents) cada periodo del customer
+  //                 + setup opcional (setupUnitAmountCents) una vez por unit.
+  //   "one_off"   → cargo único per_unit (monthlyUnitAmountCents) cuando la unit aparece.
+  //                 setupUnitAmountCents debe ser 0 (no aplica en one_off).
+  pricingModel           String    @default("recurring") @map("pricing_model")
   monthlyUnitAmountCents Int       @default(0) @map("monthly_unit_amount_cents")
   setupUnitAmountCents   Int       @default(0) @map("setup_unit_amount_cents")
   status                 String    @default("active") // active | terminated
@@ -240,7 +252,11 @@ model Unit {
   label         String?
   activeFrom    DateTime  @map("active_from")
   activeTo      DateTime? @map("active_to")
+  // Gates de cobro one-off por unit:
+  //   setupBilledAt   → para services recurring + setup_unit_amount_cents > 0
+  //   oneoffBilledAt  → para services one_off (la unit no vuelve a aparecer en facturas)
   setupBilledAt DateTime? @map("setup_billed_at")
+  oneoffBilledAt DateTime? @map("oneoff_billed_at")
   metadata      Json      @default("{}")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")

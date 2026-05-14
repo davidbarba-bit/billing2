@@ -23,7 +23,9 @@ type CustomerPayload = {
   country?: string | null;
   currency?: string;
   timezone?: string | null;
-  billing_time?: 'calendar' | 'anniversary';
+  billing_period_months?: number; // 1 | 3 | 6 | 12
+  billing_anchor_day?: number;    // 1..28
+  nonrecurring_trigger?: 'immediate' | 'next_cycle';
   subscription_at?: string;
   metadata?: Record<string, unknown>;
   tax_codes?: string[];
@@ -44,9 +46,17 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       if (payload.timezone && !isValidIanaTimezone(payload.timezone)) {
         throw validation({ timezone: ['invalid_iana'] });
       }
-      const billingTime = payload.billing_time;
-      if (billingTime !== undefined && billingTime !== 'calendar' && billingTime !== 'anniversary') {
-        throw validation({ billing_time: ['value_is_invalid'] });
+      const periodMonths = payload.billing_period_months;
+      if (periodMonths !== undefined && ![1, 3, 6, 12].includes(periodMonths)) {
+        throw validation({ billing_period_months: ['must_be_1_3_6_or_12'] });
+      }
+      const anchorDay = payload.billing_anchor_day;
+      if (anchorDay !== undefined && (!Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 28)) {
+        throw validation({ billing_anchor_day: ['must_be_1_to_28'] });
+      }
+      const trigger = payload.nonrecurring_trigger;
+      if (trigger !== undefined && trigger !== 'immediate' && trigger !== 'next_cycle') {
+        throw validation({ nonrecurring_trigger: ['value_is_invalid'] });
       }
 
       const taxes = payload.tax_codes !== undefined
@@ -88,7 +98,8 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         const startedAt = isFuture ? null : subscriptionAt;
         const tz = applicableTimezone(payload.timezone, org.timezone);
         const tempCustomer = {
-          billingTime: billingTime ?? 'calendar',
+          billingPeriodMonths: periodMonths ?? 1,
+          billingAnchorDay: anchorDay ?? 1,
           subscriptionAt,
         } as unknown as import('@prisma/client').Customer;
         const period = isFuture ? null : billingPeriodFor(tempCustomer, tz, now);
@@ -109,7 +120,9 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
               slug: buildCustomerSlug(orgUpdated.slug, sequentialId),
               name: payload.name!,
               currency: payload.currency!,
-              billingTime: billingTime ?? 'calendar',
+              billingPeriodMonths: periodMonths ?? 1,
+              billingAnchorDay: anchorDay ?? 1,
+              nonrecurringTrigger: trigger ?? 'next_cycle',
               subscriptionAt,
               startedAt,
               status,
@@ -247,7 +260,9 @@ function buildUpdateData(payload: CustomerPayload): Prisma.CustomerUpdateInput {
   if (payload.country !== undefined) updates.country = payload.country;
   if (payload.currency !== undefined) updates.currency = payload.currency;
   if (payload.timezone !== undefined) updates.timezone = payload.timezone;
-  if (payload.billing_time !== undefined) updates.billingTime = payload.billing_time;
+  if (payload.billing_period_months !== undefined) updates.billingPeriodMonths = payload.billing_period_months;
+  if (payload.billing_anchor_day !== undefined) updates.billingAnchorDay = payload.billing_anchor_day;
+  if (payload.nonrecurring_trigger !== undefined) updates.nonrecurringTrigger = payload.nonrecurring_trigger;
   if (payload.metadata !== undefined) updates.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
   return updates;
 }

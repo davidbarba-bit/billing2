@@ -67,7 +67,9 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         country: 'MX',
         timezone: tz,
         taxIdentificationNumber: 'CEM250101AAA',
-        billingTime: 'calendar',
+        billingPeriodMonths: 1,
+        billingAnchorDay: 1,
+        nonrecurringTrigger: 'next_cycle',
         subscriptionAt: periodStartDate,
         startedAt: periodStartDate,
         status: 'active',
@@ -106,6 +108,27 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         currency: 'MXN',
         monthlyUnitAmountCents: 45000,
         setupUnitAmountCents: 120000,
+        status: 'active',
+      },
+    });
+  }
+
+  // Service one_off de ejemplo (pago por adelantado, una vez por unit).
+  let oneOffService = await prisma.service.findUnique({
+    where: { organizationId_code: { organizationId: org.id, code: 'instalacion-gps' } },
+  });
+  if (!oneOffService) {
+    oneOffService = await prisma.service.create({
+      data: {
+        organizationId: org.id,
+        customerId: customer.id,
+        code: 'instalacion-gps',
+        name: 'Instalación inicial GPS',
+        description: 'Cargo único por instalación: MX$3500 por unidad nueva. Modo next_cycle: sale en la factura del periodo cuando aparece la unit.',
+        currency: 'MXN',
+        pricingModel: 'one_off',
+        monthlyUnitAmountCents: 350000,
+        setupUnitAmountCents: 0,
         status: 'active',
       },
     });

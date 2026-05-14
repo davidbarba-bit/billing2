@@ -17,6 +17,7 @@ export function serializeService(service: ServiceWithLinks) {
       description: service.description ?? null,
       customer_id: service.customerId,
       currency: service.currency,
+      pricing_model: service.pricingModel,
       monthly_unit_amount_cents: service.monthlyUnitAmountCents,
       setup_unit_amount_cents: service.setupUnitAmountCents,
       status: service.status,

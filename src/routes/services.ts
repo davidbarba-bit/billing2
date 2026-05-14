@@ -12,6 +12,7 @@ type ServicePayload = {
   name?: string;
   description?: string | null;
   currency?: string;
+  pricing_model?: 'recurring' | 'one_off';
   monthly_unit_amount_cents?: number;
   setup_unit_amount_cents?: number;
   tax_codes?: string[];
@@ -46,10 +47,20 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       });
       if (existing) throw validation({ code: ['value_already_exist'] });
 
+      const pricingModel = payload.pricing_model ?? 'recurring';
+      if (pricingModel !== 'recurring' && pricingModel !== 'one_off') {
+        throw validation({ pricing_model: ['value_is_invalid'] });
+      }
       const monthlyAmount = payload.monthly_unit_amount_cents ?? 0;
       const setupAmount = payload.setup_unit_amount_cents ?? 0;
       if (monthlyAmount < 0 || setupAmount < 0) {
         throw validation({ amount: ['must_be_non_negative'] });
+      }
+      if (pricingModel === 'one_off' && setupAmount > 0) {
+        throw validation({ setup_unit_amount_cents: ['must_be_zero_for_one_off'] });
+      }
+      if (pricingModel === 'one_off' && monthlyAmount === 0) {
+        throw validation({ monthly_unit_amount_cents: ['must_be_positive_for_one_off'] });
       }
 
       const taxes = payload.tax_codes
@@ -72,6 +83,7 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
             name: payload.name!,
             description: payload.description ?? null,
             currency,
+            pricingModel,
             monthlyUnitAmountCents: monthlyAmount,
             setupUnitAmountCents: setupAmount,
             metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,

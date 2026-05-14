@@ -4,9 +4,10 @@
 
 Motor de facturación domain-specific para **Numaris** (rastreo flotillas en LATAM).
 Calcula invoices por uso real + las despacha a NetSuite. Construido v1 contra el
-spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v3 Numaris-native**
-para reflejar cómo realmente se factura (un solo invoice por cliente por
-periodo, agregando cargos de todos sus servicios + add-ons).
+spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v4 Numaris-native**:
+un solo invoice por cliente por periodo agregando cargos de todos sus servicios
+recurrentes + add-ons, con soporte de servicios one-off (cargo único por unidad)
+en dos modos: emisión inmediata por ping o acumulación al cierre del ciclo.
 
 Stack:
 - Node 20+ / TypeScript / ES modules.
@@ -17,64 +18,91 @@ Stack:
 
 ---
 
-## El modelo de dominio (v3)
+## El modelo de dominio (v4)
 
-El cambio mental crítico: **un cliente recibe UNA factura al mes** que cubre
-TODO lo que le facturas (todos sus servicios contratados + sus add-ons a nivel
-cliente), no una factura por servicio. Esto se modela así:
+El cambio mental crítico: **un cliente recibe UNA factura por periodo** que cubre
+TODO lo que le facturas (todos sus servicios recurrentes contratados + sus
+add-ons a nivel cliente). Adicionalmente puede recibir facturas individuales
+por servicios one-off cuando está configurado en modo `immediate`.
 
 ```
 Organization (Numaris)
    └── Customer (cada cliente final: "Carga Express MX", "Transportes Norte", ...)
-         │   ├── billing_time:  calendar | anniversary   ← el ciclo es del CLIENTE
+         │   ├── billing_period_months: 1 | 3 | 6 | 12   ← intervalo del ciclo
+         │   ├── billing_anchor_day: 1..28              ← día de cierre del periodo
+         │   ├── nonrecurring_trigger: immediate | next_cycle  ← cómo facturar one-offs
          │   ├── subscription_at, current_billing_period_started_at / _ending_at
          │   └── status: pending | active | terminated
          │
          ├── Service[]          ← cada producto contratado por el cliente
-         │     ├── monthly_unit_amount_cents   (ej. $450/u/mes)
-         │     ├── setup_unit_amount_cents     (ej. $1200/u one-off)
+         │     ├── pricing_model: recurring | one_off
+         │     ├── monthly_unit_amount_cents   (recurring: por periodo / one_off: cargo único)
+         │     ├── setup_unit_amount_cents     (sólo recurring; 0 en one_off)
          │     ├── status: active | terminated
          │     ├── Unit[]       ← cada cosa rastreada (camión, GPS, etc.)
          │     │     ├── external_id, label
-         │     │     ├── active_from, active_to    ← define el prorrateo
-         │     │     └── setup_billed_at           ← gate del setup fee
-         │     └── ServiceAddOn[]               ← modifier per-unit
-         │           ├── amount_cents (por unidad por mes)
+         │     │     ├── active_from, active_to    ← define el prorrateo recurring
+         │     │     ├── setup_billed_at           ← gate del setup fee (recurring)
+         │     │     └── oneoff_billed_at          ← gate del cobro one_off
+         │     └── ServiceAddOn[]               ← modifier per-unit (solo recurring)
+         │           ├── amount_cents (por unidad por periodo)
          │           ├── active_from, active_to
-         │           └── ej. "Historial 12 meses +$50/u/mes"
+         │           └── ej. "Historial 12 meses +$50/u/periodo"
          │
          └── CustomerAddOn[]    ← modifier flat (NO depende de units o services)
-               ├── amount_cents (flat por mes)
+               ├── amount_cents (flat por periodo)
                ├── active_from, active_to
-               └── ej. "10 reglas de evento +$1000/mes"
+               └── ej. "10 reglas de evento +$1000/periodo"
 
-   └── Tax[]                    ← IVA MX 16% — se aplica al total del invoice
+   └── Tax[]                    ← IVA MX 16% — se aplica al total de cada invoice
 ```
 
-### Cómo se calcula un invoice (POST /api/v1/invoices)
+### Cómo se factura
 
-Recibe un `customer_external_id` y opcionalmente un periodo override. Si no
-recibe periodo, usa el periodo vigente del customer.
+Hay **dos flujos de invoice** distintos:
+
+**A. Cycle invoice — POST /api/v1/invoices**
+
+Recibe `customer_external_id`. Calcula el periodo vigente del customer
+(según `billing_period_months` + `billing_anchor_day`, con prorrateo del primer
+periodo "stub" si subscription_at no cae en el anchor).
 
 Para ese customer + periodo:
-1. **Por cada Service activo del customer:**
-   - 1 fee `monthly` (suma del per-unit mensual prorrateado por cada unidad activa).
-   - 1 fee `setup` (por cada unidad con `setup_billed_at = null` se cobra el setup, luego se marca como cobrado).
+1. **Por cada Service `recurring` activo del customer:**
+   - 1 fee `monthly` (per-unit prorrateado por cada unidad activa en el periodo).
+   - 1 fee `setup` (por cada unidad con `setup_billed_at = null`; luego marca billed).
    - 1 fee `service_addon` por cada ServiceAddOn vigente (per-unit prorrateado).
-2. **Por cada CustomerAddOn vigente:** 1 fee `customer_addon` flat (prorrateado solo si el add-on inició a mitad del periodo).
-3. **Taxes**: se aplica el stack de taxes del Customer (IVA MX 16% por default) sobre el subtotal.
+2. **Por cada Service `one_off` activo, si `customer.nonrecurring_trigger == 'next_cycle'`:**
+   - 1 fee `one_off` con todas las units cuya `oneoff_billed_at = null` y `active_from`
+     cayó dentro del periodo. Luego marca billed (no volverán a aparecer).
+3. **Por cada CustomerAddOn vigente:** 1 fee `customer_addon` flat (prorrateado).
+4. **Taxes**: stack del Customer (IVA MX 16% por default) sobre el subtotal.
+
+**B. One-off immediate invoice — POST /api/v1/events (side-effect)**
+
+Si el evento crea/re-activa una Unit en un Service con `pricing_model='one_off'`
+**y** el Customer tiene `nonrecurring_trigger='immediate'` **y** la unit no había
+sido cobrada antes (`oneoff_billed_at = null`):
+- Se emite automáticamente UNA invoice individual con SOLO esa unit.
+- Se marca la unit como cobrada.
+- Se despacha a NetSuite en background.
+- El response del POST /events incluye `triggered_invoice_id`.
+
+Esto significa que un día con 1000 pings genera 1000 invoices + 1000 dispatches.
+Re-pings (re-activaciones) de una unit ya cobrada NO emiten nueva invoice.
 
 Resultado: un invoice con N fees clasificados por `kind ∈ {monthly, setup, service_addon, customer_addon}`, su `units_annex` consolidado y los `applied_taxes`.
 
 ### Ejemplo real (escenario seed Numaris)
 
 ```
-Customer: Carga Express MX  (calendar, IVA 16%)
-  └── Service: Combustible Carga Express ($450/u/mes + setup $1200/u)
-        ├── Unit Camión 001  (todo el mes)
-        ├── Unit Camión 002  (entra día 12, setup pendiente)
-        ├── Unit Camión 003  (sale día 30, setup ya cobrado)
-        └── ServiceAddOn: Historial 12m  (+$50/u/mes)
+Customer: Carga Express MX (intervalo 1M, anchor día 1, trigger next_cycle, IVA 16%)
+  ├── Service recurring: Combustible Carga Express ($450/u/mes + setup $1200/u)
+  │     ├── Unit Camión 001  (todo el mes)
+  │     ├── Unit Camión 002  (entra día 12, setup pendiente)
+  │     ├── Unit Camión 003  (sale día 30, setup ya cobrado)
+  │     └── ServiceAddOn: Historial 12m  (+$50/u/mes)
+  ├── Service one_off: Instalación inicial GPS ($3500/u, sin recurrencia)
   └── CustomerAddOn: Reglas 10  ($1000/mes flat)
 
 POST /api/v1/invoices {customer_external_id: "carga-express-mx"}
@@ -88,6 +116,11 @@ POST /api/v1/invoices {customer_external_id: "carga-express-mx"}
      IVA 16%         55845
      total          404875
 ```
+
+Si el customer fuera `nonrecurring_trigger='immediate'`, cada nueva unit del
+service "Instalación GPS" emitiría su propia invoice de $3500 + IVA al
+momento del ping. En modo `next_cycle` (default), las units de ese service
+se acumulan y salen como un fee `one_off` adicional en la próxima cycle invoice.
 
 ---
 
@@ -126,30 +159,55 @@ facturarle:
   code: iva-mx-16   name: "IVA México"   rate: 16
 ```
 
-**2. Crear el customer**
+**2. Crear el customer** (vía API hoy — el form admin todavía no existe)
+```bash
+curl -X POST $HOST/api/v1/customers \
+  -H 'Authorization: Bearer $API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"customer": {
+    "external_id":            "transportes-norte",
+    "name":                   "Transportes del Norte SA",
+    "currency":               "MXN",
+    "timezone":               "America/Monterrey",
+    "tax_identification_number": "TNS250101AAA",
+    "billing_period_months":  3,                   // 1 | 3 | 6 | 12
+    "billing_anchor_day":     1,                   // 1..28 — día de cierre
+    "nonrecurring_trigger":   "next_cycle",        // immediate | next_cycle
+    "subscription_at":        "2026-06-01T00:00:00Z",
+    "tax_codes":              ["iva-mx-16"]
+  }}'
 ```
-/admin/customers → "+ Nuevo customer"
-  external_id:       transportes-norte
-  name:              "Transportes del Norte SA"
-  currency:          MXN
-  timezone:          America/Monterrey
-  tax_identification_number: TNS250101AAA
-  billing_time:      calendar               ← cobra el 1° del mes
-  subscription_at:   2026-06-01T00:00:00Z   ← fecha de arranque
-  tax_codes:         [iva-mx-16]
-```
-Si `subscription_at` es futuro → status `pending` y el cron lo activará automáticamente al llegar la fecha. Si es presente/pasado → status `active` desde el día 1.
+- `billing_period_months` = largo del ciclo (3 = trimestral).
+- `billing_anchor_day` = día del mes en que cierra (1 = día 1 de mes).
+- `nonrecurring_trigger` = cómo se facturan units de services one-off:
+  `immediate` (1 invoice por ping) o `next_cycle` (acumular hasta cierre).
+- Si `subscription_at` es futuro → status `pending` (cron lo activa al llegar la fecha).
+- Si `subscription_at` no cae en `billing_anchor_day`, el primer periodo es un
+  stub corto desde `subscription_at` hasta el próximo anchor (con prorrateo).
 
 **3. Crear el / los services del customer**
+
+Service RECURRENTE (renta por periodo):
 ```
 /admin/services → "+ Nuevo service"
-  code:                       combustible-transportes-norte
   customer_external_id:       transportes-norte
+  code:                       combustible-transportes-norte
   name:                       "Servicio Combustible"
-  currency:                   MXN
-  monthly_unit_amount_cents:  45000        ← $450 / unidad / mes
-  setup_unit_amount_cents:    120000       ← $1200 / unidad one-off
+  pricing_model:              recurring
+  monthly_unit_amount_cents:  45000        ← $450 / unidad / periodo (1 mes, 3M, 6M, 12M según customer)
+  setup_unit_amount_cents:    120000       ← $1200 / unidad one-off al primer ping
   tax_codes:                  []           ← vacío = hereda los del customer
+```
+
+Service ONE-OFF (cargo único por unidad cuando aparece):
+```
+/admin/services → "+ Nuevo service"
+  customer_external_id:       transportes-norte
+  code:                       instalacion-gps-transportes-norte
+  name:                       "Instalación GPS"
+  pricing_model:              one_off
+  monthly_unit_amount_cents:  350000       ← $3500 cargo único por unidad
+  setup_unit_amount_cents:    0            ← debe ser 0 en one_off
 ```
 
 **4. Agregar las units (los camiones, los GPS, lo que rastrees)**
@@ -211,12 +269,12 @@ Apunta tu generador de cliente a `https://<host>/openapi.json`.
 ## Endpoints
 
 ### Customers
-- `POST /api/v1/customers` — upsert por `external_id` (acepta `billing_time`, `subscription_at`)
+- `POST /api/v1/customers` — upsert por `external_id`. Acepta `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), `nonrecurring_trigger` (immediate | next_cycle), `subscription_at`.
 - `GET /api/v1/customers` (paginado), `GET /api/v1/customers/:external_id`
 - `DELETE /api/v1/customers/:external_id` (409 si tiene services activos)
 
 ### Services
-- `POST /api/v1/services` — alta atada a un customer (sin billing fields, se heredan)
+- `POST /api/v1/services` — alta atada a un customer. Acepta `pricing_model` (recurring | one_off). En one_off, `setup_unit_amount_cents` debe ser 0 y `monthly_unit_amount_cents` > 0.
 - `GET /api/v1/services` (filtros `customer_external_id`, `status`), `GET /api/v1/services/:code`
 - `POST /api/v1/services/:code/terminate` — marca terminated + cierra units activas
 - `DELETE /api/v1/services/:code` (409 si tiene fees emitidas)
@@ -232,15 +290,16 @@ Apunta tu generador de cliente a `https://<host>/openapi.json`.
 - `GET / PATCH / DELETE /api/v1/customer-add-ons/:id`
 
 ### Units & events
-- `POST /api/v1/events` — add/remove (materializa unit + audit)
+- `POST /api/v1/events` — add/remove (materializa unit + audit). **Side-effect v4**: si la unit pertenece a un service `one_off` y el customer tiene `nonrecurring_trigger='immediate'`, emite invoice individual + dispatch a NetSuite. El response incluye `triggered_invoice_id`.
 - `GET /api/v1/events` — audit log
 - `POST / GET / PATCH /api/v1/units[/:id]` — CRUD directo
 
 ### Taxes
 - `POST /api/v1/taxes`, `GET /api/v1/taxes`, `GET /api/v1/taxes/:code`
 
-### Invoices (per customer per period)
-- `POST /api/v1/invoices` — `{ customer_external_id, period_from?, period_to?, metadata: { idempotency_key } }`
+### Invoices
+- `POST /api/v1/invoices` — cycle invoice del customer. `{ customer_external_id, period_from?, period_to?, metadata: { idempotency_key } }`. Agrega fees de services recurring + one_offs en modo next_cycle + customer add-ons.
+- One-off **immediate** invoices: no se crean por este endpoint — se emiten automáticamente vía `POST /api/v1/events` (1 por ping).
 - `GET /api/v1/invoices` (filtros `customer_external_id`, `status`), `GET /api/v1/invoices/:id`
 - `POST /api/v1/invoices/:id/void`
 - `POST /api/v1/invoices/:id/external-confirm` — callback NetSuite (HMAC)
@@ -322,11 +381,12 @@ npm run typecheck
 ```
 
 Suite actual:
-- `tests/behavior/v3-billing.test.ts` — 3 casos del modelo v3 (seed completo, customer add-on independiente de units, terminated add-on excluido).
+- `tests/behavior/v4-intervals-oneoff.test.ts` — 7 casos v4: intervalo 3M, stub primer periodo, one_off + next_cycle (acumula y marca billed), one_off + immediate (emite invoice individual desde /events), re-ping no duplica, validaciones (setup>0 en one_off, intervalo fuera de {1,3,6,12}).
+- `tests/behavior/v3-billing.test.ts` — 3 casos del modelo v3 base (seed completo, customer add-on independiente de units, terminated add-on excluido).
 - `tests/behavior/admin-reset.test.ts` — 6 casos del hard-reset (preserva org, resetea counters, sequential_ids arrancan en 1).
 - `tests/unit/*` — rounding, tz, HMAC.
 
-22/22 verde en la última ejecución.
+29/29 verde en la última ejecución.
 
 ---
 
@@ -362,5 +422,6 @@ Tiempo total ~2 min. Costo: 0 en repos públicos.
 - `20260512_init` — v1 baseline (modelo Lago con plans/subscriptions/billable_metrics).
 - `20260513_v2_numaris_native` — v2: drop Lago, modelo Numaris-native (Service con billing fields, AddOn unificado).
 - `20260514_v3_customer_invoices` — v3: invoices por Customer, billing fields se mueven a Customer, AddOn se separa en ServiceAddOn + CustomerAddOn.
+- `20260514_v4_intervals_and_oneoff` — v4: drop `billing_time`. Customer gana `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), `nonrecurring_trigger`. Service gana `pricing_model` (recurring/one_off). Unit gana `oneoff_billed_at`. Fee.kind gana `one_off`.
 
-Cada migración es destructiva sobre la anterior. En prod, después de aplicar v3 ejecuta el **Hard reset** desde el admin y re-seedea para tener data limpia.
+Cada migración es destructiva sobre la anterior. En prod, después de aplicar v4 ejecuta el **Hard reset** desde el admin y re-seedea para tener data limpia.

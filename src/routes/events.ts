@@ -1,28 +1,42 @@
-// Event log route — append-only with side effects on the Unit table.
+// Event log route — append-only con side-effects sobre Unit.
+// Cuando aplica, también emite invoices individuales por ping (v4 one_off + immediate).
 //
 // POST /api/v1/events
 //   {
 //     "event": {
-//       "transaction_id": "...",  // unique per org (retry-safe)
+//       "transaction_id": "...",
 //       "service_code": "...",
 //       "operation_type": "add" | "remove",
 //       "unit_external_id": "...",
-//       "unit_label": "...",      // optional; persisted on the Unit row
-//       "timestamp": 1747080000,  // Unix epoch in seconds (rejects ISO)
-//       "kind": "...",            // free-text
-//       "properties": { ... }     // passthrough JSON blob
+//       "unit_label": "...",
+//       "timestamp": 1747080000,
+//       "kind": "...",
+//       "properties": { ... }
 //     }
 //   }
 //
-// `add`    → upserts the Unit (creates if absent; clears activeTo if already
-//            present and previously terminated).
-// `remove` → sets Unit.activeTo to the event timestamp.
+// Side-effects:
+//   - `add`    → upsert Unit; clear activeTo si re-activa.
+//   - `remove` → set Unit.activeTo = timestamp.
+//   - Si el event creó/re-activó una Unit en un service con
+//     pricing_model='one_off' Y el customer tiene
+//     nonrecurring_trigger='immediate' Y la unit todavía no fue cobrada
+//     (oneoff_billed_at = null), entonces se emite UNA invoice individual
+//     para esa unit y se dispatcha a NetSuite. El response incluye
+//     `triggered_invoice_id`.
 
 import type { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { notFound, validation } from '../errors.js';
 import { serializeEvent } from '../serializers/event.js';
+import {
+  computeOneOffPingInvoice,
+  markOneOffBilled,
+  persistComputedInvoice,
+} from '../services/billing-engine.js';
+import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 
 type EventPayload = {
   transaction_id?: string;
@@ -35,7 +49,11 @@ type EventPayload = {
   properties?: Record<string, unknown>;
 };
 
-export function registerEventRoutes(app: FastifyInstance, prisma: PrismaClient): void {
+export function registerEventRoutes(
+  app: FastifyInstance,
+  prisma: PrismaClient,
+  opts?: { dispatcher?: NetSuiteDispatcher; callbackBaseUrl?: string },
+): void {
   const authenticate = buildAuthHook(prisma);
 
   app.route({
@@ -51,9 +69,7 @@ export function registerEventRoutes(app: FastifyInstance, prisma: PrismaClient):
       if (!payload.service_code) throw validation({ service_code: ['value_is_mandatory'] });
       if (!payload.unit_external_id) throw validation({ unit_external_id: ['value_is_mandatory'] });
       const op = payload.operation_type;
-      if (op !== 'add' && op !== 'remove') {
-        throw validation({ operation_type: ['value_is_invalid'] });
-      }
+      if (op !== 'add' && op !== 'remove') throw validation({ operation_type: ['value_is_invalid'] });
       if (payload.timestamp === undefined || payload.timestamp === null) {
         throw validation({ timestamp: ['value_is_mandatory'] });
       }
@@ -71,36 +87,28 @@ export function registerEventRoutes(app: FastifyInstance, prisma: PrismaClient):
 
       const service = await prisma.service.findUnique({
         where: { organizationId_code: { organizationId: org.id, code: payload.service_code } },
+        include: { customer: { include: { taxLinks: { include: { tax: true } } } } },
       });
       if (!service) throw notFound('service');
 
       const timestamp = new Date(payload.timestamp * 1000);
 
-      const event = await prisma.$transaction(async (tx) => {
-        // Materialise: ensure unit exists; mutate active_from/to as needed.
+      const result = await prisma.$transaction(async (tx) => {
         const unit = await tx.unit.upsert({
           where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id! } },
           create: {
             serviceId: service.id,
             externalId: payload.unit_external_id!,
             label: payload.unit_label ?? null,
-            activeFrom: op === 'add' ? timestamp : timestamp,
+            activeFrom: timestamp,
             activeTo: op === 'remove' ? timestamp : null,
           },
           update: op === 'add'
-            ? {
-                // Re-activation: clear activeTo, refresh label if provided.
-                activeTo: null,
-                ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}),
-              }
-            : {
-                // Removal: stamp activeTo (only if not already terminated earlier).
-                activeTo: timestamp,
-                ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}),
-              },
+            ? { activeTo: null, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) }
+            : { activeTo: timestamp, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) },
         });
 
-        return tx.eventLog.create({
+        const event = await tx.eventLog.create({
           data: {
             organizationId: org.id,
             transactionId: payload.transaction_id!,
@@ -114,9 +122,80 @@ export function registerEventRoutes(app: FastifyInstance, prisma: PrismaClient):
             properties: (payload.properties ?? {}) as object,
           },
         });
+
+        // Trigger immediate one-off invoice si aplica.
+        let triggeredInvoiceId: string | null = null;
+        const isImmediateOneOff = op === 'add'
+          && service.pricingModel === 'one_off'
+          && service.customer.nonrecurringTrigger === 'immediate'
+          && unit.oneoffBilledAt === null;
+
+        if (isImmediateOneOff) {
+          const taxes = service.customer.taxLinks.map((l) => l.tax);
+          const computed = computeOneOffPingInvoice({ service, unit, taxes });
+
+          const orgUpdate = await tx.organization.update({
+            where: { id: org.id },
+            data: { invoiceCounter: { increment: 1 } },
+            select: { invoiceCounter: true },
+          });
+
+          const issuingDate = new Date(timestamp.getFullYear(), timestamp.getMonth(), timestamp.getDate());
+          const invoice = await tx.invoice.create({
+            data: {
+              organizationId: org.id,
+              customerId: service.customer.id,
+              sequentialId: orgUpdate.invoiceCounter,
+              currency: service.customer.currency,
+              status: 'calculated',
+              externalDispatchStatus: 'pending',
+              paymentStatus: 'pending',
+              issuingDate,
+              paymentDueDate: issuingDate,
+              feesAmountCents: computed.feesAmountCents,
+              taxesAmountCents: computed.taxesAmountCents,
+              totalAmountCents: computed.totalAmountCents,
+              periodFrom: timestamp,
+              periodTo: timestamp,
+              unitsAnnex: computed.unitsAnnex as object,
+              metadata: { trigger: 'one_off_immediate', transaction_id: payload.transaction_id } as object,
+              idempotencyKey: `event:${payload.transaction_id}`,
+            },
+          });
+
+          await persistComputedInvoice(tx, invoice.id, computed);
+
+          for (const { tax, amountCents } of computed.appliedTaxes) {
+            await tx.appliedTax.create({
+              data: {
+                invoiceId: invoice.id,
+                taxId: tax.id,
+                taxName: tax.name,
+                taxCode: tax.code,
+                taxRate: tax.rate as unknown as Decimal,
+                taxDescription: tax.description,
+                amountCents,
+                amountCurrency: service.customer.currency,
+                feesAmountCents: computed.feesAmountCents,
+              },
+            });
+          }
+
+          await markOneOffBilled(tx as unknown as PrismaClient, [unit.id], timestamp);
+          triggeredInvoiceId = invoice.id;
+        }
+
+        return { event, triggeredInvoiceId };
       });
 
-      reply.send(serializeEvent(event));
+      // Dispatch async (fuera de la transacción) si hubo invoice.
+      if (result.triggeredInvoiceId && opts?.dispatcher && opts.callbackBaseUrl) {
+        dispatchInBackground(prisma, org, result.triggeredInvoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
+      }
+
+      const response = serializeEvent(result.event);
+      if (result.triggeredInvoiceId) (response as Record<string, unknown>).triggered_invoice_id = result.triggeredInvoiceId;
+      reply.send(response);
     },
   });
 
@@ -142,12 +221,7 @@ export function registerEventRoutes(app: FastifyInstance, prisma: PrismaClient):
       }
       if (q.unit_external_id) where.unitExternalId = q.unit_external_id;
       const [items, totalCount] = await Promise.all([
-        prisma.eventLog.findMany({
-          where,
-          orderBy: { timestamp: 'desc' },
-          take: perPage,
-          skip: (page - 1) * perPage,
-        }),
+        prisma.eventLog.findMany({ where, orderBy: { timestamp: 'desc' }, take: perPage, skip: (page - 1) * perPage }),
         prisma.eventLog.count({ where }),
       ]);
       const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
@@ -163,4 +237,68 @@ export function registerEventRoutes(app: FastifyInstance, prisma: PrismaClient):
       });
     },
   });
+}
+
+// Dispatch NetSuite "fire and forget" para no bloquear el response del ping.
+function dispatchInBackground(
+  prisma: PrismaClient,
+  org: { id: string; netsuiteAccountId?: string | null },
+  invoiceId: string,
+  dispatcher: NetSuiteDispatcher,
+  callbackBaseUrl: string,
+  log: { error: (data: unknown, msg?: string) => void },
+): void {
+  void (async () => {
+    try {
+      const invoice = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        include: { customer: { include: { taxLinks: { include: { tax: true } } } }, fees: true },
+      });
+      if (!invoice) return;
+      const orgRow = await prisma.organization.findUnique({ where: { id: org.id } });
+      if (!orgRow) return;
+      const dispatchPayload = {
+        external_id: invoice.id,
+        minilago_invoice_id: invoice.id,
+        issued_at: invoice.createdAt.toISOString(),
+        currency: invoice.currency,
+        customer: {
+          external_id: invoice.customer.externalId,
+          name: invoice.customer.name,
+          tax_identification_number: invoice.customer.taxIdentificationNumber,
+          country: invoice.customer.country,
+          tax_codes: invoice.customer.taxLinks.map((l) => l.tax.code),
+        },
+        billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
+        lines: invoice.fees.map((f) => ({
+          fee_id: f.id, service_id: f.serviceId, kind: f.kind,
+          description: f.description, units: f.units,
+          unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
+          taxes_amount_cents: f.taxesAmountCents, total_amount_cents: f.totalAmountCents,
+          billed_units_detail: f.billedUnitsDetail,
+        })),
+        units_annex: invoice.unitsAnnex,
+        totals: {
+          fees_amount_cents: invoice.feesAmountCents,
+          taxes_amount_cents: invoice.taxesAmountCents,
+          total_amount_cents: invoice.totalAmountCents,
+        },
+        metadata: invoice.metadata ?? {},
+        callback_url: `${callbackBaseUrl}/api/v1/invoices/${invoice.id}/external-confirm`,
+      };
+      const result = await dispatcher.dispatch(orgRow, dispatchPayload, 'invoice');
+      await prisma.invoice.update({
+        where: { id: invoice.id },
+        data: result.status === 'accepted'
+          ? { externalDispatchStatus: 'dispatched', netsuiteDispatchId: result.netsuiteInternalId ?? null }
+          : { externalDispatchStatus: 'failed', externalDispatchError: result.error ?? 'dispatch_failed' },
+      });
+    } catch (err) {
+      log.error({ err }, 'one_off_immediate dispatch failed');
+      await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: { externalDispatchStatus: 'failed', externalDispatchError: err instanceof Error ? err.message : String(err) },
+      }).catch(() => undefined);
+    }
+  })();
 }
