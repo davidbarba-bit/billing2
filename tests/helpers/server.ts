@@ -21,20 +21,15 @@ export type Harness = {
 // Order matters because of FK cascades.
 const TABLES = [
   'idempotency_records',
-  'credit_note_applied_taxes',
   'credit_note_items',
   'credit_notes',
-  'applied_taxes',
   'fees',
   'invoices',
   'event_log',
   'units',
   'service_add_ons',
   'customer_add_ons',
-  'service_tax_links',
   'services',
-  'customer_tax_links',
-  'taxes',
   'customers',
   'organizations',
 ];

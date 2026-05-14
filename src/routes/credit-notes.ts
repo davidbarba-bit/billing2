@@ -2,12 +2,10 @@
 
 import type { FastifyInstance } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { Decimal } from '@prisma/client/runtime/library';
 import { DateTime } from 'luxon';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { applicableTimezone } from '../services/tz.js';
-import { bankersRound } from '../services/rounding.js';
 import { serializeCreditNote, type CreditNoteWithRelations } from '../serializers/credit-note.js';
 import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
@@ -56,10 +54,7 @@ export function registerCreditNoteRoutes(
 
       const invoice = await prisma.invoice.findFirst({
         where: { id: payload.invoice_id, organizationId: org.id },
-        include: {
-          fees: true,
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-        },
+        include: { fees: true, customer: true },
       });
       if (!invoice) throw notFound('invoice');
       if (invoice.status !== 'finalized' || invoice.externalDispatchStatus !== 'confirmed') {
@@ -81,15 +76,12 @@ export function registerCreditNoteRoutes(
         }
       }
 
-      // Tax stack is always customer-level in v3.
-      const taxes = invoice.customer.taxLinks.map((l) => l.tax);
-      const subTotal = payload.items.reduce((acc, i) => acc + i.amount_cents, 0);
-      const totalRate = taxes.reduce((acc, t) => acc + Number(t.rate), 0);
-      const taxesAmountCents = bankersRound(subTotal * (totalRate / 100));
-      const totalAmountCents = subTotal + taxesAmountCents;
+      // v5: mini-Lago no calcula impuestos. El total es la suma neta de items;
+      // NetSuite calcula los taxes al emitir el CFDI de la credit note.
+      const totalAmountCents = payload.items.reduce((acc, i) => acc + i.amount_cents, 0);
 
-      if (payload.credit_amount_cents !== undefined && Math.abs(payload.credit_amount_cents - totalAmountCents) > 5) {
-        throw validation({ credit_amount_cents: ['must_equal_subtotal_plus_taxes'] });
+      if (payload.credit_amount_cents !== undefined && payload.credit_amount_cents !== totalAmountCents) {
+        throw validation({ credit_amount_cents: ['must_equal_sum_of_items'] });
       }
 
       const tz = applicableTimezone(invoice.customer.timezone, org.timezone);
@@ -116,12 +108,9 @@ export function registerCreditNoteRoutes(
             description: payload.description ?? null,
             currency: invoice.currency,
             totalAmountCents,
-            taxesAmountCents,
-            subTotalExcludingTaxesAmountCents: subTotal,
             balanceAmountCents: totalAmountCents,
             creditAmountCents: payload.credit_amount_cents ?? totalAmountCents,
             refundAmountCents: payload.refund_amount_cents ?? 0,
-            taxesRate: new Decimal(totalRate) as unknown as Prisma.Decimal,
             issuingDate,
             idempotencyMarker: idemMarker,
           },
@@ -133,23 +122,6 @@ export function registerCreditNoteRoutes(
               feeId: it.fee_id,
               amountCents: it.amount_cents,
               amountCurrency: invoice.currency,
-            },
-          });
-        }
-        for (const tax of taxes) {
-          const base = subTotal;
-          const amt = bankersRound(base * (Number(tax.rate) / 100));
-          await tx.creditNoteAppliedTax.create({
-            data: {
-              creditNoteId: created.id,
-              taxId: tax.id,
-              taxName: tax.name,
-              taxCode: tax.code,
-              taxRate: tax.rate,
-              taxDescription: tax.description,
-              amountCents: amt,
-              amountCurrency: invoice.currency,
-              baseAmountCents: base,
             },
           });
         }
@@ -228,16 +200,14 @@ function parseIdemMarker(description: string): string | null {
 
 function cnInclude() {
   return {
-    customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+    customer: { include: { organization: true } },
     invoice: {
       include: {
-        customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+        customer: { include: { organization: true } },
         fees: true,
-        appliedTaxes: true,
       },
     },
     items: { include: { fee: true } },
-    appliedTaxes: true,
   };
 }
 

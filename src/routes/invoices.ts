@@ -82,7 +82,6 @@ export function registerInvoiceRoutes(
 
       const customer = await prisma.customer.findUnique({
         where: { organizationId_externalId: { organizationId: org.id, externalId: payload.customer_external_id } },
-        include: { taxLinks: { include: { tax: true } } },
       });
       if (!customer) throw notFound('customer');
 
@@ -137,9 +136,8 @@ export function registerInvoiceRoutes(
           take: perPage,
           skip: (page - 1) * perPage,
           include: {
-            customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+            customer: { include: { organization: true } },
             fees: true,
-            appliedTaxes: true,
           },
         }),
         prisma.invoice.count({ where }),
@@ -194,9 +192,8 @@ async function loadInvoice(prisma: PrismaClient, id: string): Promise<InvoiceWit
   const invoice = await prisma.invoice.findUnique({
     where: { id },
     include: {
-      customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+      customer: { include: { organization: true } },
       fees: true,
-      appliedTaxes: true,
     },
   });
   if (!invoice) throw notFound('invoice');

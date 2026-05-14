@@ -7,7 +7,6 @@ import { ApiError, serializeError } from './errors.js';
 import type { AppConfig } from './config.js';
 import { getPrisma } from './db.js';
 import { registerCustomerRoutes } from './routes/customers.js';
-import { registerTaxRoutes } from './routes/taxes.js';
 import { registerServiceRoutes } from './routes/services.js';
 import { registerUnitRoutes } from './routes/units.js';
 import { registerServiceAddOnRoutes } from './routes/service-add-ons.js';
@@ -108,7 +107,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Domain routes.
   registerCustomerRoutes(app, prisma);
-  registerTaxRoutes(app, prisma);
   registerServiceRoutes(app, prisma);
   registerUnitRoutes(app, prisma);
   registerServiceAddOnRoutes(app, prisma);

@@ -6,14 +6,12 @@
 // existente con `created: false` en vez de emitir un duplicado. Es lo que
 // permite que el cron pueda correr cada minuto sin riesgo de doble facturación.
 
-import type { Decimal } from '@prisma/client/runtime/library';
 import type {
   Customer,
   Invoice,
   Organization,
   Prisma,
   PrismaClient,
-  Tax,
 } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { applicableTimezone } from './tz.js';
@@ -25,7 +23,7 @@ export type EmitCycleInvoiceOptions = {
   dispatcher?: NetSuiteDispatcher;
   callbackBaseUrl?: string;
   org: Organization;
-  customer: Customer & { taxLinks: Array<{ tax: Tax }> };
+  customer: Customer;
   // Sobreescribe el periodo (override manual). Si se omite, usa el periodo
   // vigente del customer (calculado con billingPeriodFor).
   periodOverride?: { from: Date; to: Date } | null;
@@ -72,14 +70,13 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     include: {
       services: {
         where: { status: 'active' },
-        include: { units: true, addOns: true, taxLinks: { include: { tax: true } } },
+        include: { units: true, addOns: true },
       },
       addOns: { where: { activeTo: null } },
     },
   });
   if (!fullCustomer) throw new Error(`customer ${customer.id} not found`);
 
-  const taxes = customer.taxLinks.map((l) => l.tax);
   const customerAddOns = await prisma.customerAddOn.findMany({
     where: {
       customerId: customer.id,
@@ -92,7 +89,6 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     customer,
     services: fullCustomer.services,
     customerAddOns,
-    taxes,
     periodStart: period.start,
     periodEnd: period.end,
     daysInPeriod: period.daysInPeriod,
@@ -119,8 +115,6 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
         issuingDate,
         paymentDueDate: issuingDate,
         feesAmountCents: computed.feesAmountCents,
-        taxesAmountCents: computed.taxesAmountCents,
-        totalAmountCents: computed.totalAmountCents,
         periodFrom: period.start,
         periodTo: period.end,
         unitsAnnex: computed.unitsAnnex as object,
@@ -136,22 +130,6 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
       if (fee.kind === 'one_off' && fee.unitIds.length > 0) await markOneOffBilled(tx as unknown as PrismaClient, fee.unitIds, now);
     }
 
-    for (const { tax, amountCents } of computed.appliedTaxes) {
-      await tx.appliedTax.create({
-        data: {
-          invoiceId: invoice.id,
-          taxId: tax.id,
-          taxName: tax.name,
-          taxCode: tax.code,
-          taxRate: tax.rate as unknown as Decimal,
-          taxDescription: tax.description,
-          amountCents,
-          amountCurrency: customer.currency,
-          feesAmountCents: computed.feesAmountCents,
-        },
-      });
-    }
-
     return invoice;
   });
 
@@ -160,12 +138,11 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     try {
       const hydrated = await prisma.invoice.findUnique({
         where: { id: created.id },
-        include: {
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-          fees: true,
-        },
+        include: { customer: true, fees: true },
       });
       if (hydrated) {
+        // Payload a NetSuite: SOLO montos netos (sin IVA). NetSuite calcula
+        // los impuestos según la configuración fiscal del cliente.
         const dispatchPayload = {
           external_id: hydrated.id,
           minilago_invoice_id: hydrated.id,
@@ -176,7 +153,6 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
             name: hydrated.customer.name,
             tax_identification_number: hydrated.customer.taxIdentificationNumber,
             country: hydrated.customer.country,
-            tax_codes: hydrated.customer.taxLinks.map((l) => l.tax.code),
           },
           billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
           lines: hydrated.fees.map((f) => ({
@@ -184,15 +160,10 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
             service_add_on_id: f.serviceAddOnId, customer_add_on_id: f.customerAddOnId,
             kind: f.kind, description: f.description, units: f.units,
             unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
-            taxes_amount_cents: f.taxesAmountCents, total_amount_cents: f.totalAmountCents,
             billed_units_detail: f.billedUnitsDetail,
           })),
           units_annex: hydrated.unitsAnnex,
-          totals: {
-            fees_amount_cents: hydrated.feesAmountCents,
-            taxes_amount_cents: hydrated.taxesAmountCents,
-            total_amount_cents: hydrated.totalAmountCents,
-          },
+          totals: { fees_amount_cents: hydrated.feesAmountCents },
           metadata: hydrated.metadata ?? {},
           callback_url: `${callbackBaseUrl}/api/v1/invoices/${hydrated.id}/external-confirm`,
         };

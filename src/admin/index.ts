@@ -151,7 +151,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
-    const [customers, services, activeServices, units, activeUnits, events, invoices, invCalc, invDispatched, invConfirmed, creditNotes, taxes] = await Promise.all([
+    const [customers, services, activeServices, units, activeUnits, events, invoices, invCalc, invDispatched, invConfirmed, creditNotes] = await Promise.all([
       prisma.customer.count({ where: { organizationId: org.id } }),
       prisma.service.count({ where: { organizationId: org.id } }),
       prisma.service.count({ where: { organizationId: org.id, status: 'active' } }),
@@ -163,7 +163,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       prisma.invoice.count({ where: { organizationId: org.id, externalDispatchStatus: 'dispatched' } }),
       prisma.invoice.count({ where: { organizationId: org.id, externalDispatchStatus: 'confirmed' } }),
       prisma.creditNote.count({ where: { organizationId: org.id } }),
-      prisma.tax.count({ where: { organizationId: org.id } }),
     ]);
 
     const counts = `
@@ -174,7 +173,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         ${counter('Events', events, '/admin/events')}
         ${counter('Invoices', invoices, '/admin/invoices')}
         ${counter('Credit notes', creditNotes, '/admin/credit-notes')}
-        ${counter('Taxes', taxes, '/admin/taxes')}
         ${counter('Dispatch confirmed', invConfirmed)}
       </div>
       <div class="grid grid-cols-3 gap-4 mb-6">
@@ -247,7 +245,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const customers = await prisma.customer.findMany({
       where: { organizationId: org.id },
       orderBy: { createdAt: 'desc' },
-      include: { taxLinks: { include: { tax: true } } },
     });
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
@@ -262,7 +259,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Currency', render: (c) => escapeHtml(c.currency) },
           { label: 'Country', render: (c) => escapeHtml(c.country ?? '—') },
           { label: 'Timezone', render: (c) => escapeHtml(c.timezone ?? '—') },
-          { label: 'Taxes', render: (c) => c.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '—' },
           { label: 'Creado', render: (c) => fmtDate(c.createdAt) },
         ],
       }),
@@ -277,7 +273,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       where: { organizationId_externalId: { organizationId: org.id, externalId } },
       include: {
         organization: true,
-        taxLinks: { include: { tax: true } },
         services: { orderBy: { createdAt: 'desc' } },
         addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }] },
         invoices: { orderBy: { createdAt: 'desc' } },
@@ -300,7 +295,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Country', escapeHtml(customer.country ?? '—')],
       ['Timezone', escapeHtml(customer.timezone ?? '—')],
       ['Tax ID', escapeHtml(customer.taxIdentificationNumber ?? '—')],
-      ['Taxes', customer.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '—'],
       ['Status', statusBadge(customer.status)],
       ['Intervalo', badge(`${customer.billingPeriodMonths}M`, 'blue')],
       ['Día de cierre', `día ${customer.billingAnchorDay} del mes`],
@@ -381,7 +375,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         { label: 'Folio', render: (i) => i.number ? `<code>${escapeHtml(i.number)}</code>` : '<span class="text-gray-400">—</span>' },
         { label: 'Status', render: (i) => statusBadge(i.status) },
         { label: 'Dispatch', render: (i) => statusBadge(i.externalDispatchStatus) },
-        { label: 'Total', render: (i) => fmtMoney(i.totalAmountCents, i.currency) },
+        { label: 'Total', render: (i) => fmtMoney(i.feesAmountCents, i.currency) },
         { label: 'Emitida', render: (i) => fmtDateOnly(i.issuingDate) },
       ],
     });
@@ -449,13 +443,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const q = request.query as { customer?: string };
     const customers = await prisma.customer.findMany({ where: { organizationId: org.id }, orderBy: { externalId: 'asc' } });
-    const taxes = await prisma.tax.findMany({ where: { organizationId: org.id }, orderBy: { code: 'asc' } });
     const flash = readFlash(request, reply);
     const customerOptions = customers.map((c) =>
       `<option value="${escapeHtml(c.externalId)}" ${q.customer === c.externalId ? 'selected' : ''}>${escapeHtml(c.externalId)} · ${escapeHtml(c.name)}</option>`,
-    ).join('');
-    const taxOptions = taxes.map((t) =>
-      `<label class="block"><input type="checkbox" name="tax_codes" value="${escapeHtml(t.code)}"> ${escapeHtml(t.code)} (${Number(t.rate)}%)</label>`,
     ).join('');
     const form = `
       <form method="post" action="/admin/services" class="space-y-4 max-w-3xl">
@@ -487,11 +477,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <span class="text-xs text-gray-500">Solo aplica a recurring. En one_off debe ser 0.</span>
           </label>
         </div>
-        <p class="text-xs text-gray-500">El ciclo de facturación (intervalo + día de cierre) lo define el customer.</p>
-        <div>
-          <span class="text-sm text-gray-700">Taxes (vacío = usa taxes del customer)</span>
-          <div class="space-y-1 mt-1">${taxOptions || '<p class="text-sm text-gray-500">No hay taxes — créalos en /admin/taxes primero.</p>'}</div>
-        </div>
+        <p class="text-xs text-gray-500">El ciclo de facturación lo define el customer. <strong>Los impuestos los calcula NetSuite</strong> según la configuración fiscal del cliente; mini-Lago solo envía montos netos.</p>
         <label class="block"><span class="text-sm text-gray-700">Descripción</span>
           <input name="description" class="mt-1 block w-full rounded border-gray-300">
         </label>
@@ -507,11 +493,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   app.post('/admin/services', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
-    const body = request.body as Record<string, string | string[]>;
-    let taxCodes: string[] | undefined;
-    if (Array.isArray(body.tax_codes)) taxCodes = body.tax_codes;
-    else if (typeof body.tax_codes === 'string' && body.tax_codes) taxCodes = [body.tax_codes];
-
+    const body = request.body as Record<string, string>;
     const result = await app.inject({
       method: 'POST',
       url: '/api/v1/services',
@@ -526,7 +508,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           pricing_model: body.pricing_model || 'recurring',
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
-          tax_codes: taxCodes,
         },
       },
     });
@@ -546,7 +527,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       where: { organizationId_code: { organizationId: org.id, code: svcCode } },
       include: {
         customer: true,
-        taxLinks: { include: { tax: true } },
         units: { orderBy: [{ activeFrom: 'desc' }] },
         addOns: { orderBy: [{ activeFrom: 'desc' }] },
       },
@@ -567,7 +547,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Monto /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency) + (service.pricingModel === 'one_off' ? ' (one-off)' : ' /periodo')],
       ['Setup /unidad', service.pricingModel === 'one_off' ? '<span class="text-gray-400">n/a (one_off)</span>' : fmtMoney(service.setupUnitAmountCents, service.currency)],
       ['Terminated at', fmtDate(service.terminatedAt)],
-      ['Taxes (service-level)', service.taxLinks.map((l) => badge(l.tax.code, 'blue')).join(' ') || '<span class="text-gray-400">(hereda del customer)</span>'],
     ]);
 
     const unitsBlock = table({
@@ -853,7 +832,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Period', render: (i) => i.periodFrom && i.periodTo ? `${fmtDateOnly(i.periodFrom)} → ${fmtDateOnly(i.periodTo)}` : '—' },
           { label: 'Status', render: (i) => statusBadge(i.status) },
           { label: 'Dispatch', render: (i) => statusBadge(i.externalDispatchStatus) },
-          { label: 'Total', render: (i) => fmtMoney(i.totalAmountCents, i.currency) },
+          { label: 'Total', render: (i) => fmtMoney(i.feesAmountCents, i.currency) },
           { label: 'Emitida', render: (i) => fmtDateOnly(i.issuingDate) },
         ],
       }),
@@ -866,7 +845,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const { id } = request.params as { id: string };
     const invoice = await prisma.invoice.findFirst({
       where: { id, organizationId: org.id },
-      include: { customer: true, fees: { orderBy: { position: 'asc' } }, appliedTaxes: true },
+      include: { customer: true, fees: { orderBy: { position: 'asc' } } },
     });
     if (!invoice) {
       reply.status(404).type('text/html').send(layout({
@@ -886,9 +865,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Currency', escapeHtml(invoice.currency)],
       ['Period from', fmtDate(invoice.periodFrom)],
       ['Period to', fmtDate(invoice.periodTo)],
-      ['Fees', fmtMoney(invoice.feesAmountCents, invoice.currency)],
-      ['Taxes', fmtMoney(invoice.taxesAmountCents, invoice.currency)],
-      ['Total', `<b>${fmtMoney(invoice.totalAmountCents, invoice.currency)}</b>`],
+      ['Fees (neto)', `<b>${fmtMoney(invoice.feesAmountCents, invoice.currency)}</b>`],
+      ['Impuestos', '<span class="text-gray-400">Los calcula NetSuite al emitir el CFDI</span>'],
       ['Emitida', fmtDateOnly(invoice.issuingDate)],
       ['External error', invoice.externalDispatchError ? `<span class="text-red-700">${escapeHtml(invoice.externalDispatchError)}</span>` : '—'],
     ]);
@@ -900,9 +878,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         { label: 'Descripción', render: (f) => escapeHtml(f.description ?? '') },
         { label: 'Units', render: (f) => `<code>${escapeHtml(f.units)}</code>` },
         { label: '$/u', render: (f) => `$${escapeHtml(f.preciseUnitAmount)}` },
-        { label: 'Amount', render: (f) => fmtMoney(f.amountCents, invoice.currency) },
-        { label: 'Taxes', render: (f) => fmtMoney(f.taxesAmountCents, invoice.currency) },
-        { label: 'Total', render: (f) => fmtMoney(f.totalAmountCents, invoice.currency) },
+        { label: 'Amount (neto)', render: (f) => fmtMoney(f.amountCents, invoice.currency) },
         { label: 'Detail', render: (f) => `<details><summary class="cursor-pointer text-indigo-700">${(f.billedUnitsDetail as unknown[]).length} unidades</summary>${code(f.billedUnitsDetail)}</details>` },
       ],
     });
@@ -942,8 +918,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         + card('Acciones', actions)
         + card(`Fees (${invoice.fees.length})`, feesBlock)
         + card('Units annex', code(invoice.unitsAnnex))
-        + card('Applied taxes', code(invoice.appliedTaxes))
-        + card('External invoice (folio fiscal)', externalInvoice)
+        + card('External invoice (folio fiscal + impuestos calculados por NetSuite)', externalInvoice)
         + card('Metadata', code(invoice.metadata)),
     }));
   });
@@ -1029,7 +1004,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const { id } = request.params as { id: string };
     const cn = await prisma.creditNote.findFirst({
       where: { id, organizationId: org.id },
-      include: { customer: true, invoice: true, items: { include: { fee: true } }, appliedTaxes: true },
+      include: { customer: true, invoice: true, items: { include: { fee: true } } },
     });
     if (!cn) {
       reply.status(404).type('text/html').send(layout({
@@ -1048,9 +1023,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Credit status', statusBadge(cn.creditStatus)],
       ['Razón', escapeHtml(cn.reason)],
       ['Descripción', escapeHtml(cn.description ?? '—')],
-      ['Sub total', fmtMoney(cn.subTotalExcludingTaxesAmountCents, cn.currency)],
-      ['Taxes', fmtMoney(cn.taxesAmountCents, cn.currency)],
-      ['Total', `<b>${fmtMoney(cn.totalAmountCents, cn.currency)}</b>`],
+      ['Total (neto)', `<b>${fmtMoney(cn.totalAmountCents, cn.currency)}</b>`],
+      ['Impuestos', '<span class="text-gray-400">Los calcula NetSuite al emitir el CFDI</span>'],
     ]);
     const itemsBlock = table({
       rows: cn.items,
@@ -1082,7 +1056,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         + card('Identidad', info)
         + card('Acciones', confirmForm)
         + card('Items', itemsBlock)
-        + card('Applied taxes', code(cn.appliedTaxes))
         + card('External credit note', externalCN),
     }));
   });
@@ -1115,71 +1088,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
     else setFlash(reply, 'success', `CN confirmada con folio ${body.folio}`);
     reply.redirect(`/admin/credit-notes/${id}`);
-  });
-
-  // ------------------------------------------------------------------
-  // Taxes.
-  // ------------------------------------------------------------------
-  app.get('/admin/taxes', async (request, reply) => {
-    const org = await getOrg(prisma);
-    if (!org) return reply.redirect('/admin');
-    const taxes = await prisma.tax.findMany({
-      where: { organizationId: org.id }, orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { customers: true, services: true } } },
-    });
-    const flash = readFlash(request, reply);
-    const form = `
-      <form method="post" action="/admin/taxes" class="grid grid-cols-2 gap-3 max-w-2xl">
-        <label class="block"><span class="text-sm text-gray-600">Code</span>
-          <input required name="code" class="mt-1 block w-full rounded border-gray-300 font-mono" placeholder="iva-mx-16">
-        </label>
-        <label class="block"><span class="text-sm text-gray-600">Nombre</span>
-          <input required name="name" class="mt-1 block w-full rounded border-gray-300">
-        </label>
-        <label class="block"><span class="text-sm text-gray-600">Rate (%)</span>
-          <input required name="rate" value="16" class="mt-1 block w-full rounded border-gray-300 font-mono">
-        </label>
-        <label class="block"><span class="text-sm text-gray-600">Descripción</span>
-          <input name="description" class="mt-1 block w-full rounded border-gray-300">
-        </label>
-        <div class="col-span-2"><button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear tax</button></div>
-      </form>
-    `;
-    reply.type('text/html').send(layout({
-      title: 'Taxes', active: '/admin/taxes', orgSlug: org.slug, flash,
-      body: pageHeader('Taxes') + card('Crear tax', form) + card('Existentes', table({
-        rows: taxes,
-        empty: 'Sin taxes',
-        columns: [
-          { label: 'Code', render: (t) => `<code>${escapeHtml(t.code)}</code>` },
-          { label: 'Nombre', render: (t) => escapeHtml(t.name) },
-          { label: 'Rate', render: (t) => `${Number(t.rate)}%` },
-          { label: 'Customers', render: (t) => String(t._count.customers) },
-          { label: 'Services', render: (t) => String(t._count.services) },
-        ],
-      })),
-    }));
-  });
-
-  app.post('/admin/taxes', async (request, reply) => {
-    const org = await getOrg(prisma);
-    if (!org) return reply.redirect('/admin');
-    const body = request.body as Record<string, string>;
-    try {
-      await prisma.tax.create({
-        data: {
-          organizationId: org.id,
-          name: body.name ?? '',
-          code: body.code ?? '',
-          description: (body.description as string) || null,
-          rate: new Decimal(body.rate ?? '0'),
-        },
-      });
-      setFlash(reply, 'success', `Tax ${body.code} creado`);
-    } catch (err) {
-      setFlash(reply, 'error', err instanceof Error ? err.message : String(err));
-    }
-    reply.redirect('/admin/taxes');
   });
 
   // ------------------------------------------------------------------

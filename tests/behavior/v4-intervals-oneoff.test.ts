@@ -143,9 +143,9 @@ describe('v4 — intervals + one_off', () => {
       headers: { ...h.authHeader(), 'idempotency-key': 'c3-cycle' },
       payload: { invoice: { customer_external_id: 'c3', metadata: { idempotency_key: 'c3-cycle' } } },
     });
-    const inv = (r.json() as { invoice: { fees: Array<{ kind: string }>; total_amount_cents: number } }).invoice;
+    const inv = (r.json() as { invoice: { fees: Array<{ kind: string }>; fees_amount_cents: number } }).invoice;
     expect(inv.fees.find((f) => f.kind === 'one_off')).toBeUndefined();
-    expect(inv.total_amount_cents).toBe(0);
+    expect(inv.fees_amount_cents).toBe(0);
   });
 
   it('rechaza service one_off con setup_unit_amount_cents > 0', async () => {

@@ -65,10 +65,7 @@ export async function tickCycleBilling(opts: CycleBillingOptions, now: Date = ne
       status: 'active',
       currentBillingPeriodEndingAt: { lte: now },
     },
-    include: {
-      organization: true,
-      taxLinks: { include: { tax: true } },
-    },
+    include: { organization: true },
   });
 
   for (const customer of duedCustomers) {

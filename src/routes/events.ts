@@ -27,7 +27,6 @@
 
 import type { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
-import { Decimal } from '@prisma/client/runtime/library';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { notFound, validation } from '../errors.js';
 import { serializeEvent } from '../serializers/event.js';
@@ -87,7 +86,7 @@ export function registerEventRoutes(
 
       const service = await prisma.service.findUnique({
         where: { organizationId_code: { organizationId: org.id, code: payload.service_code } },
-        include: { customer: { include: { taxLinks: { include: { tax: true } } } } },
+        include: { customer: true },
       });
       if (!service) throw notFound('service');
 
@@ -131,8 +130,7 @@ export function registerEventRoutes(
           && unit.oneoffBilledAt === null;
 
         if (isImmediateOneOff) {
-          const taxes = service.customer.taxLinks.map((l) => l.tax);
-          const computed = computeOneOffPingInvoice({ service, unit, taxes });
+          const computed = computeOneOffPingInvoice({ service, unit });
 
           const orgUpdate = await tx.organization.update({
             where: { id: org.id },
@@ -153,8 +151,6 @@ export function registerEventRoutes(
               issuingDate,
               paymentDueDate: issuingDate,
               feesAmountCents: computed.feesAmountCents,
-              taxesAmountCents: computed.taxesAmountCents,
-              totalAmountCents: computed.totalAmountCents,
               periodFrom: timestamp,
               periodTo: timestamp,
               unitsAnnex: computed.unitsAnnex as object,
@@ -164,23 +160,6 @@ export function registerEventRoutes(
           });
 
           await persistComputedInvoice(tx, invoice.id, computed);
-
-          for (const { tax, amountCents } of computed.appliedTaxes) {
-            await tx.appliedTax.create({
-              data: {
-                invoiceId: invoice.id,
-                taxId: tax.id,
-                taxName: tax.name,
-                taxCode: tax.code,
-                taxRate: tax.rate as unknown as Decimal,
-                taxDescription: tax.description,
-                amountCents,
-                amountCurrency: service.customer.currency,
-                feesAmountCents: computed.feesAmountCents,
-              },
-            });
-          }
-
           await markOneOffBilled(tx as unknown as PrismaClient, [unit.id], timestamp);
           triggeredInvoiceId = invoice.id;
         }
@@ -252,11 +231,13 @@ function dispatchInBackground(
     try {
       const invoice = await prisma.invoice.findUnique({
         where: { id: invoiceId },
-        include: { customer: { include: { taxLinks: { include: { tax: true } } } }, fees: true },
+        include: { customer: true, fees: true },
       });
       if (!invoice) return;
       const orgRow = await prisma.organization.findUnique({ where: { id: org.id } });
       if (!orgRow) return;
+      // Payload a NetSuite: SOLO montos netos. NetSuite calcula los
+      // impuestos según la configuración fiscal del cliente.
       const dispatchPayload = {
         external_id: invoice.id,
         minilago_invoice_id: invoice.id,
@@ -267,22 +248,16 @@ function dispatchInBackground(
           name: invoice.customer.name,
           tax_identification_number: invoice.customer.taxIdentificationNumber,
           country: invoice.customer.country,
-          tax_codes: invoice.customer.taxLinks.map((l) => l.tax.code),
         },
         billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
         lines: invoice.fees.map((f) => ({
           fee_id: f.id, service_id: f.serviceId, kind: f.kind,
           description: f.description, units: f.units,
           unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
-          taxes_amount_cents: f.taxesAmountCents, total_amount_cents: f.totalAmountCents,
           billed_units_detail: f.billedUnitsDetail,
         })),
         units_annex: invoice.unitsAnnex,
-        totals: {
-          fees_amount_cents: invoice.feesAmountCents,
-          taxes_amount_cents: invoice.taxesAmountCents,
-          total_amount_cents: invoice.totalAmountCents,
-        },
+        totals: { fees_amount_cents: invoice.feesAmountCents },
         metadata: invoice.metadata ?? {},
         callback_url: `${callbackBaseUrl}/api/v1/invoices/${invoice.id}/external-confirm`,
       };

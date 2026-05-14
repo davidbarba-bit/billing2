@@ -8,7 +8,6 @@ export type ResetSummary = {
   organization_slug: string;
   cleared: {
     customers: number;
-    taxes: number;
     services: number;
     service_add_ons: number;
     customer_add_ons: number;
@@ -29,9 +28,8 @@ export async function resetOrganizationData(
     const org = await tx.organization.findUnique({ where: { id: organizationId } });
     if (!org) throw new Error(`organization ${organizationId} not found`);
 
-    const [customers, taxes, services, serviceAddOns, customerAddOns, units, events, invoices, fees, cns, idemRecs] = await Promise.all([
+    const [customers, services, serviceAddOns, customerAddOns, units, events, invoices, fees, cns, idemRecs] = await Promise.all([
       tx.customer.count({ where: { organizationId } }),
-      tx.tax.count({ where: { organizationId } }),
       tx.service.count({ where: { organizationId } }),
       tx.serviceAddOn.count({ where: { service: { organizationId } } }),
       tx.customerAddOn.count({ where: { customer: { organizationId } } }),
@@ -44,20 +42,15 @@ export async function resetOrganizationData(
     ]);
 
     await tx.idempotencyRecord.deleteMany({ where: { organizationId } });
-    await tx.creditNoteAppliedTax.deleteMany({ where: { creditNote: { organizationId } } });
     await tx.creditNoteItem.deleteMany({ where: { creditNote: { organizationId } } });
     await tx.creditNote.deleteMany({ where: { organizationId } });
-    await tx.appliedTax.deleteMany({ where: { invoice: { organizationId } } });
     await tx.fee.deleteMany({ where: { invoice: { organizationId } } });
     await tx.invoice.deleteMany({ where: { organizationId } });
     await tx.eventLog.deleteMany({ where: { organizationId } });
     await tx.unit.deleteMany({ where: { service: { organizationId } } });
     await tx.serviceAddOn.deleteMany({ where: { service: { organizationId } } });
     await tx.customerAddOn.deleteMany({ where: { customer: { organizationId } } });
-    await tx.serviceTaxLink.deleteMany({ where: { service: { organizationId } } });
     await tx.service.deleteMany({ where: { organizationId } });
-    await tx.customerTaxLink.deleteMany({ where: { customer: { organizationId } } });
-    await tx.tax.deleteMany({ where: { organizationId } });
     await tx.customer.deleteMany({ where: { organizationId } });
 
     await tx.organization.update({
@@ -69,7 +62,6 @@ export async function resetOrganizationData(
       organization_slug: org.slug,
       cleared: {
         customers,
-        taxes,
         services,
         service_add_ons: serviceAddOns,
         customer_add_ons: customerAddOns,

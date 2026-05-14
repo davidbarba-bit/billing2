@@ -39,7 +39,6 @@ model Organization {
   updatedAt              DateTime @updatedAt @map("updated_at")
 
   customers       Customer[]
-  taxes           Tax[]
   services        Service[]
   invoices        Invoice[]
   creditNotes     CreditNote[]
@@ -89,8 +88,7 @@ model Customer {
   createdAt                     DateTime  @default(now()) @map("created_at")
   updatedAt                     DateTime  @updatedAt @map("updated_at")
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  taxLinks     CustomerTaxLink[]
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   services     Service[]
   addOns       CustomerAddOn[]
   invoices     Invoice[]
@@ -101,40 +99,13 @@ model Customer {
 }
 
 // ---------------------------------------------------------------------------
-// Tax.
+// Tax handling — desde v5 mini-Lago NO calcula impuestos. Las invoices se
+// envían a NetSuite con montos netos por partida; NetSuite aplica los
+// impuestos que tenga configurados para cada cliente (incluyendo IVA MX
+// 16%, IEPS, retenciones, etc.) y emite el CFDI con esas particularidades.
+// El RFC del cliente (`tax_identification_number` en Customer) sigue siendo
+// metadata fiscal que se le pasa a NetSuite.
 // ---------------------------------------------------------------------------
-
-model Tax {
-  id             String   @id @default(uuid())
-  organizationId String   @map("organization_id")
-  name           String
-  code           String
-  description    String?
-  rate           Decimal  @db.Decimal(10, 4)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customers      CustomerTaxLink[]
-  services       ServiceTaxLink[]
-  appliedTaxes   AppliedTax[]
-  cnAppliedTaxes CreditNoteAppliedTax[]
-
-  @@unique([organizationId, code])
-  @@map("taxes")
-}
-
-model CustomerTaxLink {
-  customerId String   @map("customer_id")
-  taxId      String   @map("tax_id")
-  createdAt  DateTime @default(now()) @map("created_at")
-
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  tax      Tax      @relation(fields: [taxId], references: [id], onDelete: Cascade)
-
-  @@id([customerId, taxId])
-  @@map("customer_tax_links")
-}
 
 // ---------------------------------------------------------------------------
 // Service — owns units + per-unit pricing. Does NOT own billing cycle (the
@@ -163,9 +134,8 @@ model Service {
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  taxLinks     ServiceTaxLink[]
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
   units        Unit[]
   addOns       ServiceAddOn[]
   events       EventLog[]
@@ -174,18 +144,6 @@ model Service {
   @@unique([organizationId, code])
   @@index([customerId])
   @@map("services")
-}
-
-model ServiceTaxLink {
-  serviceId String   @map("service_id")
-  taxId     String   @map("tax_id")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  tax     Tax     @relation(fields: [taxId], references: [id], onDelete: Cascade)
-
-  @@id([serviceId, taxId])
-  @@map("service_tax_links")
 }
 
 // ---------------------------------------------------------------------------
@@ -318,9 +276,9 @@ model Invoice {
   externalDispatchError             String?   @map("external_dispatch_error")
   paymentStatus                     String    @default("pending") @map("payment_status")
   currency                          String
+  // Total neto sin impuestos. NetSuite calcula y agrega los taxes que
+  // correspondan al cliente cuando genera el CFDI.
   feesAmountCents                   Int       @default(0) @map("fees_amount_cents")
-  taxesAmountCents                  Int       @default(0) @map("taxes_amount_cents")
-  totalAmountCents                  Int       @default(0) @map("total_amount_cents")
   periodFrom                        DateTime? @map("period_from")
   periodTo                          DateTime? @map("period_to")
   metadata                          Json      @default("{}")
@@ -342,7 +300,6 @@ model Invoice {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
   fees         Fee[]
-  appliedTaxes AppliedTax[]
   creditNotes  CreditNote[]
 
   @@map("invoices")
@@ -369,10 +326,8 @@ model Fee {
   units             String
   unitAmountCents   Int      @map("unit_amount_cents")
   preciseUnitAmount String   @map("precise_unit_amount")
+  // Monto neto sin impuestos. NetSuite calcula los taxes para el CFDI.
   amountCents       Int      @map("amount_cents")
-  taxesAmountCents  Int      @default(0) @map("taxes_amount_cents")
-  taxesRate         Decimal  @default(0) @map("taxes_rate") @db.Decimal(10, 4)
-  totalAmountCents  Int      @map("total_amount_cents")
   billedUnitsDetail Json     @default("[]") @map("billed_units_detail")
   paymentStatus     String   @default("pending") @map("payment_status")
   position          Int      @default(0)
@@ -386,25 +341,6 @@ model Fee {
 
   @@index([invoiceId])
   @@map("fees")
-}
-
-model AppliedTax {
-  id              String   @id @default(uuid())
-  invoiceId       String   @map("invoice_id")
-  taxId           String   @map("tax_id")
-  taxName         String   @map("tax_name")
-  taxCode         String   @map("tax_code")
-  taxRate         Decimal  @map("tax_rate") @db.Decimal(10, 4)
-  taxDescription  String?  @map("tax_description")
-  amountCents     Int      @map("amount_cents")
-  amountCurrency  String   @map("amount_currency")
-  feesAmountCents Int      @map("fees_amount_cents")
-  createdAt       DateTime @default(now()) @map("created_at")
-
-  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  tax     Tax     @relation(fields: [taxId], references: [id])
-
-  @@map("applied_taxes")
 }
 
 // ---------------------------------------------------------------------------
@@ -426,13 +362,11 @@ model CreditNote {
   reason                            String
   description                       String?
   currency                          String
+  // Monto neto sin impuestos (NetSuite calcula los taxes para el CFDI).
   totalAmountCents                  Int       @map("total_amount_cents")
-  taxesAmountCents                  Int       @map("taxes_amount_cents")
-  subTotalExcludingTaxesAmountCents Int       @map("sub_total_excluding_taxes_amount_cents")
   balanceAmountCents                Int       @map("balance_amount_cents")
   creditAmountCents                 Int       @map("credit_amount_cents")
   refundAmountCents                 Int       @default(0) @map("refund_amount_cents")
-  taxesRate                         Decimal   @default(0) @map("taxes_rate") @db.Decimal(10, 4)
   fileUrl                           String?   @map("file_url")
   issuingDate                       DateTime  @map("issuing_date") @db.Date
   idempotencyMarker                 String?   @map("idempotency_marker")
@@ -448,11 +382,10 @@ model CreditNote {
   createdAt                         DateTime  @default(now()) @map("created_at")
   updatedAt                         DateTime  @updatedAt @map("updated_at")
 
-  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customer     Customer               @relation(fields: [customerId], references: [id])
-  invoice      Invoice                @relation(fields: [invoiceId], references: [id])
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer         @relation(fields: [customerId], references: [id])
+  invoice      Invoice          @relation(fields: [invoiceId], references: [id])
   items        CreditNoteItem[]
-  appliedTaxes CreditNoteAppliedTax[]
 
   @@map("credit_notes")
 }
@@ -469,25 +402,6 @@ model CreditNoteItem {
   fee        Fee        @relation(fields: [feeId], references: [id])
 
   @@map("credit_note_items")
-}
-
-model CreditNoteAppliedTax {
-  id              String   @id @default(uuid())
-  creditNoteId    String   @map("credit_note_id")
-  taxId           String   @map("tax_id")
-  taxName         String   @map("tax_name")
-  taxCode         String   @map("tax_code")
-  taxRate         Decimal  @map("tax_rate") @db.Decimal(10, 4)
-  taxDescription  String?  @map("tax_description")
-  amountCents     Int      @map("amount_cents")
-  amountCurrency  String   @map("amount_currency")
-  baseAmountCents Int      @map("base_amount_cents")
-  createdAt       DateTime @default(now()) @map("created_at")
-
-  creditNote CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
-  tax        Tax        @relation(fields: [taxId], references: [id])
-
-  @@map("credit_note_applied_taxes")
 }
 
 // ---------------------------------------------------------------------------

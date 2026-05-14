@@ -26,7 +26,7 @@ describe('v3 billing (customer-level invoice)', () => {
       payload: { invoice: { customer_external_id: 'carga-express-mx', metadata: { idempotency_key: 'v3-test-1' } } },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { invoice: { fees: Array<{ kind: string; amount_cents: number }>; fees_amount_cents: number; taxes_amount_cents: number; total_amount_cents: number } };
+    const body = res.json() as { invoice: { fees: Array<{ kind: string; amount_cents: number }>; fees_amount_cents: number } };
     const inv = body.invoice;
     const kinds = inv.fees.map((f) => f.kind).sort();
     expect(kinds).toContain('monthly');
@@ -34,11 +34,9 @@ describe('v3 billing (customer-level invoice)', () => {
     expect(kinds).toContain('service_addon');
     expect(kinds).toContain('customer_addon');
 
+    // v5: mini-Lago no calcula impuestos; el invoice solo expone el neto.
     const sumFees = inv.fees.reduce((a, f) => a + f.amount_cents, 0);
     expect(sumFees).toBe(inv.fees_amount_cents);
-    const expectedTax = Math.round(inv.fees_amount_cents * 0.16);
-    expect(Math.abs(inv.taxes_amount_cents - expectedTax)).toBeLessThanOrEqual(2);
-    expect(inv.total_amount_cents).toBe(inv.fees_amount_cents + inv.taxes_amount_cents);
   });
 
   it('customer add-on stays even when the only service has zero monthly amount', async () => {

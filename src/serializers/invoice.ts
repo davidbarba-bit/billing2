@@ -1,6 +1,6 @@
-// Invoice serializer (Numaris-native).
+// Invoice serializer (v5 — sin tax stack; NetSuite calcula impuestos).
 
-import type { AppliedTax, Fee, Invoice } from '@prisma/client';
+import type { Fee, Invoice } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { isoUtc } from '../services/tz.js';
 import type { CustomerWithLinks } from './customer.js';
@@ -9,7 +9,6 @@ import { serializeEmbeddedCustomer } from './customer.js';
 export type InvoiceWithRelations = Invoice & {
   customer: CustomerWithLinks;
   fees: Fee[];
-  appliedTaxes: AppliedTax[];
 };
 
 export function serializeInvoice(invoice: InvoiceWithRelations) {
@@ -39,26 +38,10 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
       unit_amount_cents: fee.unitAmountCents,
       precise_unit_amount: fee.preciseUnitAmount,
       amount_cents: fee.amountCents,
-      taxes_amount_cents: fee.taxesAmountCents,
-      taxes_rate: Number(fee.taxesRate),
-      total_amount_cents: fee.totalAmountCents,
       billed_units_detail: fee.billedUnitsDetail ?? [],
       payment_status: fee.paymentStatus,
       created_at: isoUtc(fee.createdAt),
     }));
-
-  const appliedTaxes = invoice.appliedTaxes.map((t) => ({
-    id: t.id,
-    tax_id: t.taxId,
-    tax_name: t.taxName,
-    tax_code: t.taxCode,
-    tax_rate: Number(t.taxRate),
-    tax_description: t.taxDescription ?? '',
-    amount_cents: t.amountCents,
-    amount_currency: t.amountCurrency,
-    fees_amount_cents: t.feesAmountCents,
-    created_at: isoUtc(t.createdAt),
-  }));
 
   return {
     invoice: {
@@ -66,7 +49,6 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
       sequential_id: invoice.sequentialId,
       number: invoice.number ?? null,
       customer_id: invoice.customerId,
-      // v3: invoice no longer has a service_id (it's per-customer now).
       issuing_date: DateTime.fromJSDate(invoice.issuingDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       payment_due_date: DateTime.fromJSDate(invoice.paymentDueDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       net_payment_term: invoice.netPaymentTerm,
@@ -75,15 +57,15 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
       external_dispatch_error: invoice.externalDispatchError ?? null,
       payment_status: invoice.paymentStatus,
       currency: invoice.currency,
+      // v5: NetSuite calcula los impuestos. mini-Lago solo reporta
+      // `fees_amount_cents` (suma neta de partidas, sin IVA). El folio fiscal
+      // del CFDI con taxes incluidos llega de NetSuite vía /external-confirm.
       fees_amount_cents: invoice.feesAmountCents,
-      taxes_amount_cents: invoice.taxesAmountCents,
-      total_amount_cents: invoice.totalAmountCents,
       period_from: invoice.periodFrom ? isoUtc(invoice.periodFrom) : null,
       period_to: invoice.periodTo ? isoUtc(invoice.periodTo) : null,
       customer: serializeEmbeddedCustomer(invoice.customer),
       fees,
       units_annex: invoice.unitsAnnex ?? [],
-      applied_taxes: appliedTaxes,
       external_invoice: externalInvoice,
       metadata: invoice.metadata ?? {},
       created_at: isoUtc(invoice.createdAt),

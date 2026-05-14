@@ -1,12 +1,9 @@
-// Service serializer (v3 — no longer owns billing cycle).
+// Service serializer (v5 — sin tax stack, NetSuite calcula impuestos).
 
-import type { Service, Tax } from '@prisma/client';
+import type { Service } from '@prisma/client';
 import { isoUtc } from '../services/tz.js';
-import { serializeTax } from './tax.js';
 
-export type ServiceWithLinks = Service & {
-  taxLinks: Array<{ tax: Tax }>;
-};
+export type ServiceWithLinks = Service;
 
 export function serializeService(service: ServiceWithLinks) {
   return {
@@ -23,7 +20,6 @@ export function serializeService(service: ServiceWithLinks) {
       status: service.status,
       terminated_at: service.terminatedAt ? isoUtc(service.terminatedAt) : null,
       metadata: service.metadata ?? {},
-      taxes: service.taxLinks.map(({ tax }) => serializeTax(tax).tax),
       created_at: isoUtc(service.createdAt),
       updated_at: isoUtc(service.updatedAt),
     },

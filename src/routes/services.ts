@@ -15,7 +15,6 @@ type ServicePayload = {
   pricing_model?: 'recurring' | 'one_off';
   monthly_unit_amount_cents?: number;
   setup_unit_amount_cents?: number;
-  tax_codes?: string[];
   metadata?: Record<string, unknown>;
 };
 
@@ -63,38 +62,21 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
         throw validation({ monthly_unit_amount_cents: ['must_be_positive_for_one_off'] });
       }
 
-      const taxes = payload.tax_codes
-        ? await prisma.tax.findMany({ where: { organizationId: org.id, code: { in: payload.tax_codes } } })
-        : null;
-      if (taxes && taxes.length !== payload.tax_codes!.length) {
-        const found = new Set(taxes.map((t) => t.code));
-        const missing = payload.tax_codes!.filter((c) => !found.has(c));
-        throw validation({ tax_codes: missing.map(() => 'not_found_in_organization') });
-      }
-
       const currency = payload.currency ?? customer.currency;
 
-      const created = await prisma.$transaction(async (tx) => {
-        const service = await tx.service.create({
-          data: {
-            organizationId: org.id,
-            customerId: customer.id,
-            code: payload.code!,
-            name: payload.name!,
-            description: payload.description ?? null,
-            currency,
-            pricingModel,
-            monthlyUnitAmountCents: monthlyAmount,
-            setupUnitAmountCents: setupAmount,
-            metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
-          },
-        });
-        if (taxes && taxes.length > 0) {
-          await tx.serviceTaxLink.createMany({
-            data: taxes.map((t) => ({ serviceId: service.id, taxId: t.id })),
-          });
-        }
-        return service;
+      const created = await prisma.service.create({
+        data: {
+          organizationId: org.id,
+          customerId: customer.id,
+          code: payload.code!,
+          name: payload.name!,
+          description: payload.description ?? null,
+          currency,
+          pricingModel,
+          monthlyUnitAmountCents: monthlyAmount,
+          setupUnitAmountCents: setupAmount,
+          metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
+        },
       });
 
       const hydrated = await load(prisma, created.id);
@@ -124,7 +106,6 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
         prisma.service.findMany({
           where, orderBy: { createdAt: 'desc' },
           take: perPage, skip: (page - 1) * perPage,
-          include: { taxLinks: { include: { tax: true } } },
         }),
         prisma.service.count({ where }),
       ]);
@@ -214,10 +195,7 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
 }
 
 async function load(prisma: PrismaClient, id: string): Promise<ServiceWithLinks> {
-  const service = await prisma.service.findUnique({
-    where: { id },
-    include: { taxLinks: { include: { tax: true } } },
-  });
+  const service = await prisma.service.findUnique({ where: { id } });
   if (!service) throw notFound('service');
   return service;
 }

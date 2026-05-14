@@ -1,14 +1,14 @@
-// Seed Numaris scenario (v3).
+// Seed Numaris scenario (v5).
 //
 // Creates:
-//   - IVA MX 16% tax.
-//   - Customer `carga-express-mx` (CDMX, calendar billing cycle).
-//   - 1 CustomerAddOn `reglas-10` flat ($1000/mes, org-wide).
-//   - Service `combustible-carga-express-mx`:
-//       monthly_unit_amount_cents = 45000  ($450/u/mes)
-//       setup_unit_amount_cents   = 120000 ($1200/u one-off)
+//   - Customer `carga-express-mx` (CDMX, 1M anchor=1, trigger=next_cycle).
+//   - 1 CustomerAddOn `reglas-10` flat ($1000/mes).
+//   - Service `combustible-carga-express-mx` (recurring, $450/u/mes + setup $1200/u).
 //     + 1 ServiceAddOn `historial-12m` per-unit ($50/u/mes).
-//   - 3 units with overlapping intervals for non-trivial proration.
+//   - Service `instalacion-gps` (one_off, $3500/u).
+//   - 3 units con intervalos sobrepuestos para prorrateo no trivial.
+//
+// v5: mini-Lago NO calcula impuestos — NetSuite los agrega cuando emite el CFDI.
 
 import type { Organization, PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';
@@ -28,18 +28,6 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       data: { netsuiteCallbackSecret: 'dev-callback-secret-replace-me' },
     });
   }
-
-  const tax = await prisma.tax.upsert({
-    where: { organizationId_code: { organizationId: org.id, code: 'iva-mx-16' } },
-    create: {
-      organizationId: org.id,
-      name: 'IVA México',
-      code: 'iva-mx-16',
-      description: 'Impuesto al Valor Agregado (México) 16%',
-      rate: '16',
-    },
-    update: {},
-  });
 
   const now = DateTime.now().setZone(tz);
   const periodStart = now.startOf('month');
@@ -77,7 +65,6 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         currentBillingPeriodEndingAt: periodEndDate,
       },
     });
-    await prisma.customerTaxLink.create({ data: { customerId: customer.id, taxId: tax.id } });
   }
 
   // Customer-level flat add-on.
@@ -104,7 +91,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         customerId: customer.id,
         code: 'combustible-carga-express-mx',
         name: 'Servicio Combustible',
-        description: 'MX$450/u/mes + setup MX$1200 por instalación',
+        description: 'MX$450/u/mes + setup MX$1200 por instalación. IVA lo calcula NetSuite.',
         currency: 'MXN',
         monthlyUnitAmountCents: 45000,
         setupUnitAmountCents: 120000,

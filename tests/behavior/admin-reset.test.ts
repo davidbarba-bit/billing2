@@ -116,9 +116,8 @@ describe('POST /api/v1/admin/reset', () => {
       h.prisma.service.count({ where: { organizationId: orgId } }),
       h.prisma.unit.count({ where: { service: { organizationId: orgId } } }),
       h.prisma.eventLog.count({ where: { organizationId: orgId } }),
-      h.prisma.tax.count({ where: { organizationId: orgId } }),
     ]);
-    expect(after.every((n) => n === 0)).toBe(true);
+    expect(after.every((n: number) => n === 0)).toBe(true);
 
     // Org row + apiKey survive.
     const org = await h.prisma.organization.findUnique({ where: { id: orgId } });

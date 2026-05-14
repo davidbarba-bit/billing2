@@ -4,10 +4,16 @@
 
 Motor de facturación domain-specific para **Numaris** (rastreo flotillas en LATAM).
 Calcula invoices por uso real + las despacha a NetSuite. Construido v1 contra el
-spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v4 Numaris-native**:
+spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v5 Numaris-native**:
 un solo invoice por cliente por periodo agregando cargos de todos sus servicios
 recurrentes + add-ons, con soporte de servicios one-off (cargo único por unidad)
 en dos modos: emisión inmediata por ping o acumulación al cierre del ciclo.
+
+**Impuestos**: mini-Lago **NO calcula impuestos**. Los invoices contienen solo
+montos netos por partida (`fees_amount_cents`). NetSuite calcula IVA, IEPS,
+retenciones, etc. según la configuración fiscal de cada cliente y emite el CFDI
+con esos cargos incluidos. El folio fiscal final llega de vuelta vía
+`/external-confirm`.
 
 Stack:
 - Node 20+ / TypeScript / ES modules.
@@ -18,7 +24,7 @@ Stack:
 
 ---
 
-## El modelo de dominio (v4)
+## El modelo de dominio (v5)
 
 El cambio mental crítico: **un cliente recibe UNA factura por periodo** que cubre
 TODO lo que le facturas (todos sus servicios recurrentes contratados + sus
@@ -53,9 +59,11 @@ Organization (Numaris)
                ├── amount_cents (flat por periodo)
                ├── active_from, active_to
                └── ej. "10 reglas de evento +$1000/periodo"
-
-   └── Tax[]                    ← IVA MX 16% — se aplica al total de cada invoice
 ```
+
+**Sin tabla de Tax**: mini-Lago no calcula impuestos. Solo envía partidas
+netas a NetSuite, que aplica los taxes al emitir el CFDI según la
+configuración fiscal del cliente (IVA, IEPS, retenciones, etc.).
 
 ### Cómo se factura
 
@@ -93,7 +101,7 @@ Para ese customer + periodo:
    - 1 fee `one_off` con todas las units cuya `oneoff_billed_at = null` y `active_from`
      cayó dentro del periodo. Luego marca billed (no volverán a aparecer).
 3. **Por cada CustomerAddOn vigente:** 1 fee `customer_addon` flat (prorrateado).
-4. **Taxes**: stack del Customer (IVA MX 16% por default) sobre el subtotal.
+4. **NetSuite calcula impuestos** al recibir el payload neto y los devuelve en el folio fiscal (CFDI) vía `/external-confirm`.
 
 **C. One-off immediate invoice — POST /api/v1/events (side-effect)**
 
@@ -108,12 +116,12 @@ sido cobrada antes (`oneoff_billed_at = null`):
 Esto significa que un día con 1000 pings genera 1000 invoices + 1000 dispatches.
 Re-pings (re-activaciones) de una unit ya cobrada NO emiten nueva invoice.
 
-Resultado: un invoice con N fees clasificados por `kind ∈ {monthly, setup, service_addon, customer_addon}`, su `units_annex` consolidado y los `applied_taxes`.
+Resultado: un invoice con N fees clasificados por `kind ∈ {monthly, setup, service_addon, customer_addon, one_off}`, su `units_annex` consolidado, y `fees_amount_cents` como total neto. Los impuestos los agrega NetSuite y aparecen en el folio fiscal cuando éste vuelve por `/external-confirm`.
 
 ### Ejemplo real (escenario seed Numaris)
 
 ```
-Customer: Carga Express MX (intervalo 1M, anchor día 1, trigger next_cycle, IVA 16%)
+Customer: Carga Express MX (intervalo 1M, anchor día 1, trigger next_cycle)
   ├── Service recurring: Combustible Carga Express ($450/u/mes + setup $1200/u)
   │     ├── Unit Camión 001  (todo el mes)
   │     ├── Unit Camión 002  (entra día 12, setup pendiente)
@@ -129,13 +137,11 @@ POST /api/v1/invoices {customer_external_id: "carga-express-mx"}
      service_addon    12903   (Historial 12m: $50 × 3 prorrateados)
      customer_addon  100000   (Reglas 10: $1000 flat)
      ─────────────────────
-     fees           349030
-     IVA 16%         55845
-     total          404875
+     fees_amount_cents  349030   (total neto — NetSuite agrega IVA al CFDI)
 ```
 
 Si el customer fuera `nonrecurring_trigger='immediate'`, cada nueva unit del
-service "Instalación GPS" emitiría su propia invoice de $3500 + IVA al
+service "Instalación GPS" emitiría su propia invoice de $3500 (neto) al
 momento del ping. En modo `next_cycle` (default), las units de ese service
 se acumulan y salen como un fee `one_off` adicional en la próxima cycle invoice.
 
@@ -155,13 +161,12 @@ build step) — funciona en cualquier browser.
 | Sección | Qué hace |
 |---|---|
 | `/admin` (dashboard) | Counts por entidad + botones **Seed Numaris** y **Hard reset** (preserva la organización, wipea data) |
-| `/admin/taxes` | Lista + crear taxes (ej. IVA MX 16%). Cada tax tiene `code`, `name`, `rate`. |
 | `/admin/customers` | Lista + alta de customers. La alta pide los datos fiscales + **billing_time** (calendar/anniversary) + **subscription_at**. |
 | `/admin/customers/:ext` | Detalle del customer con todas sus relaciones. Es el panel central de operación (ver abajo). |
 | `/admin/services` | Lista + alta de services. Cada service va atado a un customer y define los montos `monthly` y `setup` por unidad. |
 | `/admin/services/:code` | Detalle del service: units, ServiceAddOns per-unit, link al customer. |
 | `/admin/invoices` | Lista paginada de invoices con su periodo, status, dispatch status y total. |
-| `/admin/invoices/:id` | Detalle del invoice con fees + `billed_units_detail` expandido + applied_taxes. Botones: **void** y **simular folio NetSuite** (firma HMAC + POST a `/external-confirm`). |
+| `/admin/invoices/:id` | Detalle del invoice con fees (montos netos) + `billed_units_detail` expandido. Botones: **void** y **simular folio NetSuite** (firma HMAC + POST a `/external-confirm`). |
 | `/admin/credit-notes` | Lista + detalle de CNs + botón simular folio CN. |
 | `/admin/events` | Stream del audit log (últimos 200 eventos add/remove de units). |
 
@@ -170,13 +175,7 @@ build step) — funciona en cualquier browser.
 Así es como un operador de Numaris da de alta un nuevo cliente y empieza a
 facturarle:
 
-**1. Crear el tax (una sola vez por organización)**
-```
-/admin/taxes → "+ Nuevo tax"
-  code: iva-mx-16   name: "IVA México"   rate: 16
-```
-
-**2. Crear el customer** (vía API hoy — el form admin todavía no existe)
+**1. Crear el customer** (vía API hoy — el form admin todavía no existe)
 ```bash
 curl -X POST $HOST/api/v1/customers \
   -H 'Authorization: Bearer $API_KEY' \
@@ -190,8 +189,7 @@ curl -X POST $HOST/api/v1/customers \
     "billing_period_months":  3,                   // 1 | 3 | 6 | 12
     "billing_anchor_day":     1,                   // 1..28 — día de cierre
     "nonrecurring_trigger":   "next_cycle",        // immediate | next_cycle
-    "subscription_at":        "2026-06-01T00:00:00Z",
-    "tax_codes":              ["iva-mx-16"]
+    "subscription_at":        "2026-06-01T00:00:00Z"
   }}'
 ```
 - `billing_period_months` = largo del ciclo (3 = trimestral).
@@ -213,8 +211,9 @@ Service RECURRENTE (renta por periodo):
   pricing_model:              recurring
   monthly_unit_amount_cents:  45000        ← $450 / unidad / periodo (1 mes, 3M, 6M, 12M según customer)
   setup_unit_amount_cents:    120000       ← $1200 / unidad one-off al primer ping
-  tax_codes:                  []           ← vacío = hereda los del customer
 ```
+
+(Sin `tax_codes`: NetSuite maneja la fiscalidad de cada cliente.)
 
 Service ONE-OFF (cargo único por unidad cuando aparece):
 ```
@@ -310,9 +309,6 @@ Apunta tu generador de cliente a `https://<host>/openapi.json`.
 - `POST /api/v1/events` — add/remove (materializa unit + audit). **Side-effect v4**: si la unit pertenece a un service `one_off` y el customer tiene `nonrecurring_trigger='immediate'`, emite invoice individual + dispatch a NetSuite. El response incluye `triggered_invoice_id`.
 - `GET /api/v1/events` — audit log
 - `POST / GET / PATCH /api/v1/units[/:id]` — CRUD directo
-
-### Taxes
-- `POST /api/v1/taxes`, `GET /api/v1/taxes`, `GET /api/v1/taxes/:code`
 
 ### Invoices
 - `POST /api/v1/invoices` — cycle invoice del customer. `{ customer_external_id, period_from?, period_to?, metadata: { idempotency_key } }`. Agrega fees de services recurring + one_offs en modo next_cycle + customer add-ons.
@@ -442,5 +438,6 @@ Tiempo total ~2 min. Costo: 0 en repos públicos.
 - `20260513_v2_numaris_native` — v2: drop Lago, modelo Numaris-native (Service con billing fields, AddOn unificado).
 - `20260514_v3_customer_invoices` — v3: invoices por Customer, billing fields se mueven a Customer, AddOn se separa en ServiceAddOn + CustomerAddOn.
 - `20260514_v4_intervals_and_oneoff` — v4: drop `billing_time`. Customer gana `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), `nonrecurring_trigger`. Service gana `pricing_model` (recurring/one_off). Unit gana `oneoff_billed_at`. Fee.kind gana `one_off`.
+- `20260514_v5_drop_tax` — v5: drop `Tax`, `CustomerTaxLink`, `ServiceTaxLink`, `AppliedTax`, `CreditNoteAppliedTax`. Drop columnas tax en Invoice/Fee/CreditNote (`taxes_amount_cents`, `taxes_rate`, `total_amount_cents`). mini-Lago solo expone montos netos; NetSuite calcula impuestos al emitir el CFDI.
 
 Cada migración es destructiva sobre la anterior. En prod, después de aplicar v4 ejecuta el **Hard reset** desde el admin y re-seedea para tener data limpia.

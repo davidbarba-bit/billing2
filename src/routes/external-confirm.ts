@@ -60,9 +60,8 @@ export function registerExternalConfirmRoutes(
       const invoice = await prisma.invoice.findUnique({
         where: { id: lagoId },
         include: {
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+          customer: { include: { organization: true } },
           fees: true,
-          appliedTaxes: true,
         },
       });
       if (!invoice) throw notFound('invoice');
@@ -109,9 +108,8 @@ export function registerExternalConfirmRoutes(
       const hydrated = await prisma.invoice.findUnique({
         where: { id: updated.id },
         include: {
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+          customer: { include: { organization: true } },
           fees: true,
-          appliedTaxes: true,
         },
       });
       reply.send(serializeInvoice(hydrated!));
@@ -128,10 +126,9 @@ export function registerExternalConfirmRoutes(
       const cn = await prisma.creditNote.findUnique({
         where: { id: lagoId },
         include: {
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-          invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
+          customer: { include: { organization: true } },
+          invoice: { include: { customer: { include: { organization: true } }, fees: true } },
           items: { include: { fee: true } },
-          appliedTaxes: true,
         },
       });
       if (!cn) throw notFound('credit_note');
@@ -176,10 +173,9 @@ export function registerExternalConfirmRoutes(
       const hydrated = await prisma.creditNote.findUnique({
         where: { id: updated.id },
         include: {
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-          invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
+          customer: { include: { organization: true } },
+          invoice: { include: { customer: { include: { organization: true } }, fees: true } },
           items: { include: { fee: true } },
-          appliedTaxes: true,
         },
       });
       reply.send(serializeCreditNote(hydrated!));

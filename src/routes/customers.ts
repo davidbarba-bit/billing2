@@ -28,7 +28,6 @@ type CustomerPayload = {
   nonrecurring_trigger?: 'immediate' | 'next_cycle';
   subscription_at?: string;
   metadata?: Record<string, unknown>;
-  tax_codes?: string[];
 };
 
 export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClient): void {
@@ -59,15 +58,6 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         throw validation({ nonrecurring_trigger: ['value_is_invalid'] });
       }
 
-      const taxes = payload.tax_codes !== undefined
-        ? await prisma.tax.findMany({ where: { organizationId: org.id, code: { in: payload.tax_codes } } })
-        : null;
-      if (taxes && taxes.length !== payload.tax_codes!.length) {
-        const found = new Set(taxes.map((t) => t.code));
-        const missing = payload.tax_codes!.filter((c) => !found.has(c));
-        throw validation({ tax_codes: missing.map(() => 'not_found_in_organization') });
-      }
-
       const existing = await prisma.customer.findUnique({
         where: { organizationId_externalId: { organizationId: org.id, externalId: payload.external_id } },
       });
@@ -76,14 +66,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
 
       let customer;
       if (existing) {
-        customer = await prisma.$transaction(async (tx) => {
-          const updated = await tx.customer.update({ where: { id: existing.id }, data: updates });
-          if (payload.tax_codes !== undefined && taxes) {
-            await tx.customerTaxLink.deleteMany({ where: { customerId: existing.id } });
-            await tx.customerTaxLink.createMany({ data: taxes.map((t) => ({ customerId: existing.id, taxId: t.id })) });
-          }
-          return updated;
-        });
+        customer = await prisma.customer.update({ where: { id: existing.id }, data: updates });
       } else {
         if (!payload.name) throw validation({ name: ['value_is_mandatory'] });
         if (!payload.currency) throw validation({ currency: ['value_is_mandatory'] });
@@ -130,11 +113,6 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
               currentBillingPeriodEndingAt: period?.end ?? null,
             },
           });
-          if (taxes && taxes.length > 0) {
-            await tx.customerTaxLink.createMany({
-              data: taxes.map((t) => ({ customerId: created.id, taxId: t.id })),
-            });
-          }
           return created;
         });
       }
@@ -159,7 +137,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
           orderBy: { createdAt: 'desc' },
           take: perPage,
           skip: (page - 1) * perPage,
-          include: { organization: true, taxLinks: { include: { tax: true } } },
+          include: { organization: true },
         }),
         prisma.customer.count({ where: { organizationId: org.id } }),
       ]);
@@ -270,7 +248,7 @@ function buildUpdateData(payload: CustomerPayload): Prisma.CustomerUpdateInput {
 async function load(prisma: PrismaClient, id: string): Promise<CustomerWithLinks> {
   const customer = await prisma.customer.findUnique({
     where: { id },
-    include: { organization: true, taxLinks: { include: { tax: true } } },
+    include: { organization: true },
   });
   if (!customer) throw notFound('customer');
   return customer;

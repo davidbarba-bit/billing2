@@ -21,10 +21,8 @@ import type {
   PrismaClient,
   Service,
   ServiceAddOn,
-  Tax,
   Unit,
 } from '@prisma/client';
-import { Decimal } from '@prisma/client/runtime/library';
 import { DateTime } from 'luxon';
 import { applyFraction, bankersRound, fraction4 } from './rounding.js';
 import { isoUtc } from './tz.js';
@@ -50,9 +48,6 @@ export type ComputedFee = {
   unitAmountCents: number;
   preciseUnitAmount: string;
   amountCents: number;
-  taxesAmountCents: number;
-  taxesRate: number;
-  totalAmountCents: number;
   billedUnitsDetail: BilledUnitDetail[];
   unitIds: string[];
 };
@@ -60,14 +55,11 @@ export type ComputedFee = {
 export type ComputedInvoice = {
   fees: ComputedFee[];
   feesAmountCents: number;
-  taxesAmountCents: number;
-  totalAmountCents: number;
   unitsAnnex: Array<{
     external_id: string;
     label: string | null;
     fees: Array<{ kind: FeeKind; amount_cents: number }>;
   }>;
-  appliedTaxes: Array<{ tax: Tax; amountCents: number }>;
 };
 
 export type ServiceForBilling = Service & {
@@ -79,7 +71,6 @@ export type ComputeOptions = {
   customer: Customer;
   services: ServiceForBilling[];
   customerAddOns: CustomerAddOn[];
-  taxes: Tax[];
   periodStart: Date;
   periodEnd: Date;
   daysInPeriod: number;
@@ -94,7 +85,7 @@ export type ComputeOptions = {
 // + customer_addons flat (prorrateados) + tax stack.
 // ---------------------------------------------------------------------------
 export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
-  const { customer, services, customerAddOns, taxes, periodStart, periodEnd, daysInPeriod } = opts;
+  const { customer, services, customerAddOns, periodStart, periodEnd, daysInPeriod } = opts;
   const fees: ComputedFee[] = [];
 
   for (const service of services) {
@@ -136,7 +127,7 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
     if (fee) fees.push(fee);
   }
 
-  return finalize(fees, taxes);
+  return finalize(fees);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,9 +137,8 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
 export function computeOneOffPingInvoice(opts: {
   service: Service;
   unit: Unit;
-  taxes: Tax[];
 }): ComputedInvoice {
-  const { service, unit, taxes } = opts;
+  const { service, unit } = opts;
   if (service.pricingModel !== 'one_off') throw new Error('computeOneOffPingInvoice requires pricing_model=one_off');
   if (service.monthlyUnitAmountCents <= 0) throw new Error('one_off service has zero monthlyUnitAmountCents');
 
@@ -169,41 +159,18 @@ export function computeOneOffPingInvoice(opts: {
     unitAmountCents: amountCents,
     preciseUnitAmount: (amountCents / 100).toFixed(2),
     amountCents,
-    taxesAmountCents: 0,
-    taxesRate: 0,
-    totalAmountCents: amountCents,
     billedUnitsDetail: [detail],
     unitIds: [unit.id],
   };
-  return finalize([fee], taxes);
+  return finalize([fee]);
 }
 
 // ---------------------------------------------------------------------------
-// Finalize: aplica taxes, balancea residuo y arma units_annex.
+// Finalize: arma units_annex. mini-Lago NO calcula impuestos — NetSuite los
+// agrega cuando emite el CFDI según la configuración fiscal del cliente.
 // ---------------------------------------------------------------------------
-function finalize(fees: ComputedFee[], taxes: Tax[]): ComputedInvoice {
-  const totalRate = taxes.reduce((acc, t) => acc + Number(t.rate), 0);
-  const feesBeforeTax = fees.reduce((acc, f) => acc + f.amountCents, 0);
-  const taxesAmountCents = bankersRound(feesBeforeTax * (totalRate / 100));
-  const totalAmountCents = feesBeforeTax + taxesAmountCents;
-
-  for (const fee of fees) {
-    fee.taxesRate = totalRate;
-    fee.taxesAmountCents = bankersRound(fee.amountCents * (totalRate / 100));
-    fee.totalAmountCents = fee.amountCents + fee.taxesAmountCents;
-  }
-  const summedTax = fees.reduce((acc, f) => acc + f.taxesAmountCents, 0);
-  const diff = taxesAmountCents - summedTax;
-  if (diff !== 0 && fees.length > 0) {
-    const last = fees[fees.length - 1]!;
-    last.taxesAmountCents += diff;
-    last.totalAmountCents += diff;
-  }
-
-  const appliedTaxes = taxes.map((tax) => ({
-    tax,
-    amountCents: bankersRound(feesBeforeTax * (Number(tax.rate) / 100)),
-  }));
+function finalize(fees: ComputedFee[]): ComputedInvoice {
+  const feesAmountCents = fees.reduce((acc, f) => acc + f.amountCents, 0);
 
   const annexMap = new Map<string, { external_id: string; label: string | null; fees: Array<{ kind: FeeKind; amount_cents: number }> }>();
   for (const fee of fees) {
@@ -216,7 +183,7 @@ function finalize(fees: ComputedFee[], taxes: Tax[]): ComputedInvoice {
   }
   const unitsAnnex = Array.from(annexMap.values()).sort((a, b) => (a.external_id < b.external_id ? -1 : 1));
 
-  return { fees, feesAmountCents: feesBeforeTax, taxesAmountCents, totalAmountCents, unitsAnnex, appliedTaxes };
+  return { fees, feesAmountCents, unitsAnnex };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +257,7 @@ function buildMonthlyFee(service: Service, units: Unit[], periodStart: Date, per
     description: `${service.name} — periodo (${entries.length} unidad${entries.length === 1 ? '' : 'es'}, factor ${totalFractionStr})`,
     units: totalFractionStr, unitAmountCents: service.monthlyUnitAmountCents,
     preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
-    amountCents, taxesAmountCents: 0, taxesRate: 0, totalAmountCents: amountCents,
+    amountCents,
     billedUnitsDetail: detail, unitIds: entries.map((e) => e.unit.id),
   };
 }
@@ -312,7 +279,7 @@ function buildSetupFee(service: Service, units: Unit[], periodStart: Date, perio
     description: `${service.name} — setup × ${setupCandidates.length}`,
     units: `${setupCandidates.length}.0000`, unitAmountCents: service.setupUnitAmountCents,
     preciseUnitAmount: (service.setupUnitAmountCents / 100).toFixed(2),
-    amountCents, taxesAmountCents: 0, taxesRate: 0, totalAmountCents: amountCents,
+    amountCents,
     billedUnitsDetail: detail, unitIds: setupCandidates.map((u) => u.id),
   };
 }
@@ -336,7 +303,7 @@ function buildOneOffFee(service: Service, units: Unit[], periodStart: Date, peri
     description: `${service.name} — one-off × ${pending.length}`,
     units: `${pending.length}.0000`, unitAmountCents: service.monthlyUnitAmountCents,
     preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
-    amountCents, taxesAmountCents: 0, taxesRate: 0, totalAmountCents: amountCents,
+    amountCents,
     billedUnitsDetail: detail, unitIds: pending.map((u) => u.id),
   };
 }
@@ -360,7 +327,7 @@ function buildServiceAddOnFee(
     description: `${addOn.name} (${service.name}) — ${entries.length} unidad${entries.length === 1 ? '' : 'es'}, factor ${totalFractionStr}`,
     units: totalFractionStr, unitAmountCents: addOn.amountCents,
     preciseUnitAmount: (addOn.amountCents / 100).toFixed(2),
-    amountCents, taxesAmountCents: 0, taxesRate: 0, totalAmountCents: amountCents,
+    amountCents,
     billedUnitsDetail: detail, unitIds: entries.map((e) => e.unit.id),
   };
 }
@@ -377,7 +344,7 @@ function buildCustomerAddOnFee(addOn: CustomerAddOn, from: Date, to: Date, daysI
     description: `${addOn.name} (flat · factor ${fractionStr})`,
     units: fractionStr, unitAmountCents: addOn.amountCents,
     preciseUnitAmount: (addOn.amountCents / 100).toFixed(2),
-    amountCents, taxesAmountCents: 0, taxesRate: 0, totalAmountCents: amountCents,
+    amountCents,
     billedUnitsDetail: [{
       external_id: `customer-addon:${addOn.code}`, label: addOn.name,
       active_from: isoUtc(from), active_to: isoUtc(to),
@@ -476,9 +443,6 @@ export async function persistComputedInvoice(
         unitAmountCents: fee.unitAmountCents,
         preciseUnitAmount: fee.preciseUnitAmount,
         amountCents: fee.amountCents,
-        taxesAmountCents: fee.taxesAmountCents,
-        taxesRate: new Decimal(fee.taxesRate) as unknown as Prisma.Decimal,
-        totalAmountCents: fee.totalAmountCents,
         billedUnitsDetail: fee.billedUnitsDetail as object,
         position: i,
       },

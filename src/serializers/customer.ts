@@ -1,12 +1,10 @@
-// Customer serializer (v3).
+// Customer serializer (v5 — sin tax stack, NetSuite calcula impuestos).
 
-import type { Customer, Organization, Tax } from '@prisma/client';
+import type { Customer, Organization } from '@prisma/client';
 import { applicableTimezone, isoUtc } from '../services/tz.js';
-import { serializeTax } from './tax.js';
 
 export type CustomerWithLinks = Customer & {
   organization: Organization;
-  taxLinks: Array<{ tax: Tax }>;
 };
 
 export function serializeCustomer(customer: CustomerWithLinks) {
@@ -41,7 +39,6 @@ export function serializeCustomer(customer: CustomerWithLinks) {
       current_billing_period_ending_at: customer.currentBillingPeriodEndingAt
         ? isoUtc(customer.currentBillingPeriodEndingAt) : null,
       metadata: customer.metadata ?? {},
-      taxes: customer.taxLinks.map(({ tax }) => serializeTax(tax).tax),
       created_at: isoUtc(customer.createdAt),
       updated_at: isoUtc(customer.updatedAt),
     },

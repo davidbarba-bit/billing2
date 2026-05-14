@@ -1,6 +1,6 @@
-// Credit note serializer.
+// Credit note serializer (v5 — sin tax stack; NetSuite calcula impuestos).
 
-import type { CreditNote, CreditNoteAppliedTax, CreditNoteItem, Fee, Invoice } from '@prisma/client';
+import type { CreditNote, CreditNoteItem, Fee, Invoice } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { isoUtc } from '../services/tz.js';
 import type { CustomerWithLinks } from './customer.js';
@@ -9,13 +9,8 @@ import { serializeInvoiceEmbedded, type InvoiceWithRelations } from './invoice.j
 
 export type CreditNoteWithRelations = CreditNote & {
   customer: CustomerWithLinks;
-  invoice: Invoice & {
-    customer: CustomerWithLinks;
-    fees: Fee[];
-    appliedTaxes: import('@prisma/client').AppliedTax[];
-  };
+  invoice: Invoice & { customer: CustomerWithLinks; fees: Fee[] };
   items: (CreditNoteItem & { fee: Fee })[];
-  appliedTaxes: CreditNoteAppliedTax[];
 };
 
 export function serializeCreditNote(cn: CreditNoteWithRelations) {
@@ -46,13 +41,11 @@ export function serializeCreditNote(cn: CreditNoteWithRelations) {
       reason: cn.reason,
       description: cn.description ?? '',
       currency: cn.currency,
+      // v5: monto neto sin impuestos (NetSuite los calcula al emitir el CFDI).
       total_amount_cents: cn.totalAmountCents,
-      taxes_amount_cents: cn.taxesAmountCents,
-      sub_total_excluding_taxes_amount_cents: cn.subTotalExcludingTaxesAmountCents,
       balance_amount_cents: cn.balanceAmountCents,
       credit_amount_cents: cn.creditAmountCents,
       refund_amount_cents: cn.refundAmountCents,
-      taxes_rate: Number(cn.taxesRate),
       issuing_date: DateTime.fromJSDate(cn.issuingDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       idempotency_marker: cn.idempotencyMarker ?? null,
       customer: serializeEmbeddedCustomer(cn.customer),
@@ -68,18 +61,7 @@ export function serializeCreditNote(cn: CreditNoteWithRelations) {
           description: it.fee.description ?? '',
           units: it.fee.units,
           amount_cents: it.fee.amountCents,
-          total_amount_cents: it.fee.totalAmountCents,
         },
-      })),
-      applied_taxes: cn.appliedTaxes.map((t) => ({
-        id: t.id,
-        tax_id: t.taxId,
-        tax_name: t.taxName,
-        tax_code: t.taxCode,
-        tax_rate: Number(t.taxRate),
-        amount_cents: t.amountCents,
-        amount_currency: t.amountCurrency,
-        base_amount_cents: t.baseAmountCents,
       })),
       external_credit_note: externalCN,
       created_at: isoUtc(cn.createdAt),
