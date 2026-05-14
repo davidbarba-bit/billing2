@@ -169,6 +169,34 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
     created += 1;
   }
 
+  // Sample add-ons (one of each pricing type) for demo / smoke testing.
+  await prisma.addOn.upsert({
+    where: { serviceId_code: { serviceId: service.id, code: 'historial-12m' } },
+    create: {
+      serviceId: service.id,
+      code: 'historial-12m',
+      name: 'Historial 6→12 meses',
+      description: 'MX$50 adicionales por unidad activa / mes',
+      pricingType: 'per_unit_monthly',
+      amountCents: 5000, // $50.00
+      activeFrom: periodStart.toUTC().toJSDate(),
+    },
+    update: {},
+  });
+  await prisma.addOn.upsert({
+    where: { serviceId_code: { serviceId: service.id, code: 'reglas-10' } },
+    create: {
+      serviceId: service.id,
+      code: 'reglas-10',
+      name: 'Reglas de evento 5→10',
+      description: 'MX$1000 flat / mes (independiente del número de unidades)',
+      pricingType: 'flat_monthly',
+      amountCents: 100000, // $1000.00
+      activeFrom: periodStart.toUTC().toJSDate(),
+    },
+    update: {},
+  });
+
   return {
     customer_external_id: customer.externalId,
     service_code: service.code,

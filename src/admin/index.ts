@@ -493,6 +493,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         customer: true,
         taxLinks: { include: { tax: true } },
         units: { orderBy: [{ activeFrom: 'desc' }] },
+        addOns: { orderBy: [{ activeFrom: 'desc' }] },
         invoices: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     });
@@ -551,15 +552,108 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     `;
     const terminateForm = service.status !== 'terminated' ? postButton(`/admin/services/${service.code}/terminate`, 'Terminar service', 'danger', `¿Terminar ${service.code}?`) : '';
 
+    const addOnsBlock = table({
+      rows: service.addOns,
+      empty: 'Sin add-ons',
+      columns: [
+        { label: 'Code', render: (a) => `<code>${escapeHtml(a.code)}</code>` },
+        { label: 'Nombre', render: (a) => escapeHtml(a.name) },
+        { label: 'Tipo', render: (a) => badge(a.pricingType, a.pricingType === 'flat_monthly' ? 'blue' : 'green') },
+        { label: 'Amount', render: (a) => `${fmtMoney(a.amountCents, service.currency)}${a.pricingType === 'per_unit_monthly' ? '/u' : ''}/mes` },
+        { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
+        { label: 'Active from', render: (a) => fmtDate(a.activeFrom) },
+        { label: 'Active to', render: (a) => fmtDate(a.activeTo) },
+        { label: 'Acciones', render: (a) => a.activeTo === null
+          ? postButton(`/admin/add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
+          : '<span class="text-gray-400">terminated</span>' },
+      ],
+    });
+
+    const addOnForm = `
+      <details>
+        <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar add-on</summary>
+        <form method="post" action="/admin/services/${escapeHtml(service.code)}/add-ons" class="mt-3 space-y-3 max-w-2xl">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="text-sm text-gray-700">Code</span>
+              <input required name="code" placeholder="historial-12m" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Nombre</span>
+              <input required name="name" placeholder="Historial 6→12 meses" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Pricing type</span>
+              <select required name="pricing_type" class="mt-1 block w-full rounded border-gray-300 text-sm">
+                <option value="per_unit_monthly">per_unit_monthly — $X por unidad × mes</option>
+                <option value="flat_monthly">flat_monthly — $X flat × mes</option>
+              </select>
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Amount (cents)</span>
+              <input required type="number" name="amount_cents" min="0" value="5000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
+              <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+          </div>
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear add-on</button>
+        </form>
+      </details>
+    `;
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `Service · ${service.code}`, active: '/admin/services', orgSlug: org.slug, flash,
       body: pageHeader(service.name, btn('/admin/services', '← back'))
         + card('Identidad', info)
         + card('Acciones', `${invoiceForm} ${terminateForm}`)
+        + card(`Add-ons (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
         + card(`Units (${service.units.length})`, unitsBlock)
         + card(`Invoices recientes (${service.invoices.length})`, invoicesBlock),
     }));
+  });
+
+  app.post('/admin/services/:code/add-ons', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    const result = await app.inject({
+      method: 'POST',
+      url: `/api/v1/services/${encodeURIComponent(svcCode)}/add-ons`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: {
+        add_on: {
+          code: body.code,
+          name: body.name,
+          description: (body.description as string) || undefined,
+          pricing_type: body.pricing_type,
+          amount_cents: Number(body.amount_cents),
+        },
+      },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
+    else setFlash(reply, 'success', `Add-on "${body.code}" creado`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
+  app.post('/admin/add-ons/:id/terminate', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const addOn = await prisma.addOn.findFirst({
+      where: { id, service: { organizationId: org.id } },
+      include: { service: true },
+    });
+    if (!addOn) {
+      setFlash(reply, 'error', 'add_on no encontrado');
+      return reply.redirect('/admin/services');
+    }
+    const result = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/add-ons/${id}`,
+      headers: { authorization: `Bearer ${org.apiKey}` },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Add-on ${addOn.code} terminado`);
+    reply.redirect(`/admin/services/${addOn.service.code}`);
   });
 
   app.post('/admin/services/:code/invoice', async (request, reply) => {

@@ -11,6 +11,7 @@ export type ResetSummary = {
     taxes: number;
     services: number;
     units: number;
+    add_ons: number;
     events: number;
     invoices: number;
     fees: number;
@@ -27,11 +28,12 @@ export async function resetOrganizationData(
     const org = await tx.organization.findUnique({ where: { id: organizationId } });
     if (!org) throw new Error(`organization ${organizationId} not found`);
 
-    const [customers, taxes, services, units, events, invoices, fees, cns, idemRecs] = await Promise.all([
+    const [customers, taxes, services, units, addOns, events, invoices, fees, cns, idemRecs] = await Promise.all([
       tx.customer.count({ where: { organizationId } }),
       tx.tax.count({ where: { organizationId } }),
       tx.service.count({ where: { organizationId } }),
       tx.unit.count({ where: { service: { organizationId } } }),
+      tx.addOn.count({ where: { service: { organizationId } } }),
       tx.eventLog.count({ where: { organizationId } }),
       tx.invoice.count({ where: { organizationId } }),
       tx.fee.count({ where: { invoice: { organizationId } } }),
@@ -48,6 +50,7 @@ export async function resetOrganizationData(
     await tx.invoice.deleteMany({ where: { organizationId } });
     await tx.eventLog.deleteMany({ where: { organizationId } });
     await tx.unit.deleteMany({ where: { service: { organizationId } } });
+    await tx.addOn.deleteMany({ where: { service: { organizationId } } });
     await tx.serviceTaxLink.deleteMany({ where: { service: { organizationId } } });
     await tx.service.deleteMany({ where: { organizationId } });
     await tx.customerTaxLink.deleteMany({ where: { customer: { organizationId } } });
@@ -66,6 +69,7 @@ export async function resetOrganizationData(
         taxes,
         services,
         units,
+        add_ons: addOns,
         events,
         invoices,
         fees,

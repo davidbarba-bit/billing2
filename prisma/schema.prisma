@@ -163,6 +163,7 @@ model Service {
   customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
   taxLinks     ServiceTaxLink[]
   units        Unit[]
+  addOns       AddOn[]
   events       EventLog[]
   invoices     Invoice[]
   fees         Fee[]
@@ -184,6 +185,39 @@ model ServiceTaxLink {
 
   @@id([serviceId, taxId])
   @@map("service_tax_links")
+}
+
+// ---------------------------------------------------------------------------
+// AddOn — recurring modifier attached to a Service (different from the Lago
+// AddOn concept that was deleted in v2). Two pricing types today:
+//
+//   - per_unit_monthly: amount × active_units, prorated by days.
+//   - flat_monthly:     amount × prorated days (independent of units).
+//
+// Lifecycle via activeFrom/activeTo so add-ons can be enabled mid-period
+// and the engine will prorate them correctly.
+// ---------------------------------------------------------------------------
+
+model AddOn {
+  id          String    @id @default(uuid())
+  serviceId   String    @map("service_id")
+  code        String
+  name        String
+  description String?
+  pricingType String    @map("pricing_type") // "per_unit_monthly" | "flat_monthly"
+  amountCents Int       @map("amount_cents")
+  activeFrom  DateTime  @map("active_from")
+  activeTo    DateTime? @map("active_to")
+  metadata    Json      @default("{}")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  fees    Fee[]
+
+  @@unique([serviceId, code])
+  @@index([serviceId, activeTo])
+  @@map("add_ons")
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +343,8 @@ model Fee {
   id                String   @id @default(uuid())
   invoiceId         String   @map("invoice_id")
   serviceId         String?  @map("service_id")
-  kind              String
+  addOnId           String?  @map("add_on_id")
+  kind              String // "monthly" | "setup" | "addon_per_unit_monthly" | "addon_flat_monthly"
   description       String?
   units             String // string decimal — 4 dígitos para monthly, "1.0000" para setup
   unitAmountCents   Int      @map("unit_amount_cents")
@@ -325,6 +360,7 @@ model Fee {
 
   invoice Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   service Service?         @relation(fields: [serviceId], references: [id])
+  addOn   AddOn?           @relation(fields: [addOnId], references: [id])
   cnItems CreditNoteItem[]
 
   @@index([invoiceId])

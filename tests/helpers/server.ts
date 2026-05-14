@@ -29,6 +29,7 @@ const TABLES = [
   'invoices',
   'event_log',
   'units',
+  'add_ons',
   'service_tax_links',
   'services',
   'customer_tax_links',

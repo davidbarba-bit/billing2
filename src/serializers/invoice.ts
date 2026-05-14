@@ -31,6 +31,7 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
     .map((fee) => ({
       id: fee.id,
       service_id: fee.serviceId,
+      add_on_id: fee.addOnId ?? null,
       kind: fee.kind,
       description: fee.description ?? '',
       units: fee.units,

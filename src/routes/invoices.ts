@@ -87,6 +87,7 @@ export function registerInvoiceRoutes(
           customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
           taxLinks: { include: { tax: true } },
           units: true,
+          addOns: true,
         },
       });
       if (!service) throw notFound('service');
@@ -119,6 +120,7 @@ export function registerInvoiceRoutes(
         periodEnd: period.end,
         daysInPeriod: period.daysInPeriod,
         units: service.units,
+        addOns: service.addOns,
         taxes,
       });
 
@@ -164,6 +166,7 @@ export function registerInvoiceRoutes(
             data: {
               invoiceId: invoice.id,
               serviceId: service.id,
+              addOnId: fee.addOnId ?? null,
               kind: fee.kind,
               description: fee.description,
               units: fee.units,
