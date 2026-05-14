@@ -1,10 +1,4 @@
-// Endpoint #12: POST /api/v1/credit_notes.
-//
-// Only emissible on invoices that are `finalized + confirmed` (have a CFDI
-// folio).
-//
-// Description carries a `[idem:...]` marker; the marker is parsed and saved
-// as `idempotencyMarker` so `findAllCustomerCreditNotes` can reconcile (D5).
+// Credit note routes (Numaris-native).
 
 import type { FastifyInstance } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
@@ -14,7 +8,7 @@ import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { applicableTimezone } from '../services/tz.js';
 import { bankersRound } from '../services/rounding.js';
-import { serializeCreditNote } from '../serializers/credit-note.js';
+import { serializeCreditNote, type CreditNoteWithRelations } from '../serializers/credit-note.js';
 import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 
@@ -36,11 +30,11 @@ const VALID_REASONS = new Set([
   'other',
 ]);
 
-export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaClient, _opts: {
-  config: AppConfig;
-  dispatcher: NetSuiteDispatcher;
-  callbackBaseUrl: string;
-}): void {
+export function registerCreditNoteRoutes(
+  app: FastifyInstance,
+  prisma: PrismaClient,
+  _opts: { config: AppConfig; dispatcher: NetSuiteDispatcher; callbackBaseUrl: string },
+): void {
   const authenticate = buildAuthHook(prisma);
 
   app.route({
@@ -49,8 +43,8 @@ export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaCli
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const body = request.body as { credit_note?: CreditNotePayload } | null;
-      const payload = body?.credit_note;
+      const body = (request.body ?? {}) as { credit_note?: CreditNotePayload };
+      const payload = body.credit_note;
       if (!payload) throw validation({ credit_note: ['value_is_mandatory'] });
       if (!payload.invoice_id) throw validation({ invoice_id: ['value_is_mandatory'] });
       if (!payload.reason || !VALID_REASONS.has(payload.reason)) {
@@ -62,7 +56,11 @@ export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaCli
 
       const invoice = await prisma.invoice.findFirst({
         where: { id: payload.invoice_id, organizationId: org.id },
-        include: { fees: true, customer: { include: { organization: true, taxLinks: { include: { tax: true } } } } },
+        include: {
+          fees: true,
+          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+          service: { include: { taxLinks: { include: { tax: true } } } },
+        },
       });
       if (!invoice) throw notFound('invoice');
       if (invoice.status !== 'finalized' || invoice.externalDispatchStatus !== 'confirmed') {
@@ -73,45 +71,41 @@ export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaCli
 
       const feeById = new Map(invoice.fees.map((f) => [f.id, f]));
       for (let i = 0; i < payload.items.length; i++) {
-        const item = payload.items[i]!;
-        const fee = feeById.get(item.fee_id);
-        if (!fee) {
-          throw validation({ [`items[${i}].fee_id`]: ['not_found_in_invoice'] });
-        }
-        if (!Number.isInteger(item.amount_cents) || item.amount_cents <= 0) {
+        const it = payload.items[i]!;
+        const fee = feeById.get(it.fee_id);
+        if (!fee) throw validation({ [`items[${i}].fee_id`]: ['not_found_in_invoice'] });
+        if (!Number.isInteger(it.amount_cents) || it.amount_cents <= 0) {
           throw validation({ [`items[${i}].amount_cents`]: ['must_be_positive_integer'] });
         }
-        if (item.amount_cents > fee.amountCents) {
+        if (it.amount_cents > fee.amountCents) {
           throw validation({ [`items[${i}].amount_cents`]: ['exceeds_fee_amount'] });
         }
       }
 
-      const subTotalCents = payload.items.reduce((acc, i) => acc + i.amount_cents, 0);
-      const taxRatePercent = invoice.customer.taxLinks.reduce((acc, link) => acc + Number(link.tax.rate), 0);
-      const taxesAmountCents = bankersRound(subTotalCents * (taxRatePercent / 100));
-      const totalAmountCents = subTotalCents + taxesAmountCents;
+      const taxes = invoice.service?.taxLinks.length
+        ? invoice.service.taxLinks.map((l) => l.tax)
+        : invoice.customer.taxLinks.map((l) => l.tax);
+      const subTotal = payload.items.reduce((acc, i) => acc + i.amount_cents, 0);
+      const totalRate = taxes.reduce((acc, t) => acc + Number(t.rate), 0);
+      const taxesAmountCents = bankersRound(subTotal * (totalRate / 100));
+      const totalAmountCents = subTotal + taxesAmountCents;
 
-      if (payload.credit_amount_cents !== undefined) {
-        // Tolerance of MX$0.05 (= 5 cents) per spec.
-        if (Math.abs(payload.credit_amount_cents - totalAmountCents) > 5) {
-          throw validation({
-            credit_amount_cents: ['must_equal_subtotal_plus_taxes'],
-          });
-        }
+      if (payload.credit_amount_cents !== undefined && Math.abs(payload.credit_amount_cents - totalAmountCents) > 5) {
+        throw validation({ credit_amount_cents: ['must_equal_subtotal_plus_taxes'] });
       }
 
-      const idemMarker = parseIdemMarker(payload.description ?? '');
-      const now = new Date();
       const tz = applicableTimezone(invoice.customer.timezone, org.timezone);
+      const now = new Date();
       const issuingDate = DateTime.fromJSDate(now, { zone: 'utc' }).setZone(tz).startOf('day').toUTC().toJSDate();
+      const idemMarker = parseIdemMarker(payload.description ?? '');
 
-      const created = await prisma.$transaction(async (tx) => {
+      const cn = await prisma.$transaction(async (tx) => {
         const orgUpdate = await tx.organization.update({
           where: { id: org.id },
           data: { creditNoteCounter: { increment: 1 } },
           select: { creditNoteCounter: true },
         });
-        const cn = await tx.creditNote.create({
+        const created = await tx.creditNote.create({
           data: {
             organizationId: org.id,
             customerId: invoice.customerId,
@@ -125,122 +119,85 @@ export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaCli
             currency: invoice.currency,
             totalAmountCents,
             taxesAmountCents,
-            subTotalExcludingTaxesAmountCents: subTotalCents,
+            subTotalExcludingTaxesAmountCents: subTotal,
             balanceAmountCents: totalAmountCents,
             creditAmountCents: payload.credit_amount_cents ?? totalAmountCents,
             refundAmountCents: payload.refund_amount_cents ?? 0,
-            taxesRate: new Decimal(taxRatePercent) as unknown as Prisma.Decimal,
+            taxesRate: new Decimal(totalRate) as unknown as Prisma.Decimal,
             issuingDate,
             idempotencyMarker: idemMarker,
           },
         });
-        for (const item of payload.items!) {
+        for (const it of payload.items!) {
           await tx.creditNoteItem.create({
             data: {
-              creditNoteId: cn.id,
-              feeId: item.fee_id,
-              amountCents: item.amount_cents,
+              creditNoteId: created.id,
+              feeId: it.fee_id,
+              amountCents: it.amount_cents,
               amountCurrency: invoice.currency,
             },
           });
         }
-        for (const link of invoice.customer.taxLinks) {
-          const tax = link.tax;
+        for (const tax of taxes) {
+          const base = subTotal;
+          const amt = bankersRound(base * (Number(tax.rate) / 100));
           await tx.creditNoteAppliedTax.create({
             data: {
-              creditNoteId: cn.id,
+              creditNoteId: created.id,
               taxId: tax.id,
               taxName: tax.name,
               taxCode: tax.code,
               taxRate: tax.rate,
               taxDescription: tax.description,
-              amountCents: taxesAmountCents,
+              amountCents: amt,
               amountCurrency: invoice.currency,
-              baseAmountCents: subTotalCents,
+              baseAmountCents: base,
             },
           });
         }
-        return cn;
+        return created;
       });
 
-      const hydrated = await loadCreditNote(prisma, created.id);
+      const hydrated = await loadCN(prisma, cn.id);
       reply.send(serializeCreditNote(hydrated));
     },
   });
 
-  // GET /api/v1/customers/:external_id/credit_notes (paginated). Spec
-  // mentions this implicitly (used by clients for reconciliation).
-  app.route({
-    method: 'GET',
-    url: '/api/v1/customers/:externalId/credit_notes',
-    preHandler: authenticate,
-    handler: async (request, reply) => {
-      const org = requireOrg(request);
-      const { externalId } = request.params as { externalId: string };
-      const q = request.query as { per_page?: string; page?: string } | undefined;
-      const customer = await prisma.customer.findUnique({
-        where: { organizationId_externalId: { organizationId: org.id, externalId } },
-      });
-      if (!customer) throw notFound('customer');
-      const perPage = Math.min(500, Math.max(1, Number(q?.per_page ?? 100)));
-      const page = Math.max(1, Number(q?.page ?? 1));
-      const [rows, totalCount] = await Promise.all([
-        prisma.creditNote.findMany({
-          where: { customerId: customer.id },
-          orderBy: { createdAt: 'desc' },
-          take: perPage,
-          skip: (page - 1) * perPage,
-          include: {
-            customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-            invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
-            items: { include: { fee: true } },
-            appliedTaxes: true,
-          },
-        }),
-        prisma.creditNote.count({ where: { customerId: customer.id } }),
-      ]);
-      const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
-      reply.send({
-        credit_notes: rows.map((cn) => serializeCreditNote(cn as unknown as Parameters<typeof serializeCreditNote>[0]).credit_note),
-        meta: {
-          current_page: page,
-          next_page: page < totalPages ? page + 1 : null,
-          prev_page: page > 1 ? page - 1 : null,
-          total_pages: totalPages,
-          total_count: totalCount,
-        },
-      });
-    },
-  });
-
-  // GET /api/v1/credit_notes (global paginated list, Lago-compat).
   app.route({
     method: 'GET',
     url: '/api/v1/credit_notes',
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const q = request.query as { per_page?: string; page?: string };
+      const q = request.query as { per_page?: string; page?: string; customer_external_id?: string };
       const perPage = Math.min(500, Math.max(1, Number(q.per_page ?? 100)));
       const page = Math.max(1, Number(q.page ?? 1));
-      const [rows, totalCount] = await Promise.all([
+      const where: Prisma.CreditNoteWhereInput = { organizationId: org.id };
+      if (q.customer_external_id) {
+        const c = await prisma.customer.findUnique({
+          where: { organizationId_externalId: { organizationId: org.id, externalId: q.customer_external_id } },
+        });
+        if (!c) {
+          reply.send({ credit_notes: [], meta: emptyMeta(page) });
+          return;
+        }
+        where.customerId = c.id;
+      }
+      const [items, totalCount] = await Promise.all([
         prisma.creditNote.findMany({
-          where: { organizationId: org.id },
+          where,
           orderBy: { createdAt: 'desc' },
           take: perPage,
           skip: (page - 1) * perPage,
-          include: {
-            customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-            invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
-            items: { include: { fee: true } },
-            appliedTaxes: true,
-          },
+          include: cnInclude(),
         }),
-        prisma.creditNote.count({ where: { organizationId: org.id } }),
+        prisma.creditNote.count({ where }),
       ]);
       const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
       reply.send({
-        credit_notes: rows.map((cn) => serializeCreditNote(cn as unknown as Parameters<typeof serializeCreditNote>[0]).credit_note),
+        credit_notes: items.map((cn) =>
+          serializeCreditNote(cn as unknown as CreditNoteWithRelations).credit_note,
+        ),
         meta: {
           current_page: page,
           next_page: page < totalPages ? page + 1 : null,
@@ -252,25 +209,16 @@ export function registerCreditNoteRoutes(app: FastifyInstance, prisma: PrismaCli
     },
   });
 
-  // GET /api/v1/credit_notes/:lago_id (single read, Lago-compat).
   app.route({
     method: 'GET',
-    url: '/api/v1/credit_notes/:lagoId',
+    url: '/api/v1/credit_notes/:id',
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const { lagoId } = request.params as { lagoId: string };
-      const cn = await prisma.creditNote.findFirst({
-        where: { id: lagoId, organizationId: org.id },
-        include: {
-          customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-          invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
-          items: { include: { fee: true } },
-          appliedTaxes: true,
-        },
-      });
+      const { id } = request.params as { id: string };
+      const cn = await prisma.creditNote.findFirst({ where: { id, organizationId: org.id }, include: cnInclude() });
       if (!cn) throw notFound('credit_note');
-      reply.send(serializeCreditNote(cn as unknown as Parameters<typeof serializeCreditNote>[0]));
+      reply.send(serializeCreditNote(cn as unknown as CreditNoteWithRelations));
     },
   });
 }
@@ -280,16 +228,27 @@ function parseIdemMarker(description: string): string | null {
   return match ? match[1]! : null;
 }
 
-async function loadCreditNote(prisma: PrismaClient, id: string) {
-  const cn = await prisma.creditNote.findUnique({
-    where: { id },
-    include: {
-      customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
-      invoice: { include: { customer: { include: { organization: true, taxLinks: { include: { tax: true } } } }, fees: true, appliedTaxes: true } },
-      items: { include: { fee: true } },
-      appliedTaxes: true,
+function cnInclude() {
+  return {
+    customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+    invoice: {
+      include: {
+        customer: { include: { organization: true, taxLinks: { include: { tax: true } } } },
+        fees: true,
+        appliedTaxes: true,
+      },
     },
-  });
+    items: { include: { fee: true } },
+    appliedTaxes: true,
+  };
+}
+
+async function loadCN(prisma: PrismaClient, id: string): Promise<CreditNoteWithRelations> {
+  const cn = await prisma.creditNote.findUnique({ where: { id }, include: cnInclude() });
   if (!cn) throw notFound('credit_note');
-  return cn;
+  return cn as unknown as CreditNoteWithRelations;
+}
+
+function emptyMeta(page: number) {
+  return { current_page: page, next_page: null, prev_page: null, total_pages: 1, total_count: 0 };
 }

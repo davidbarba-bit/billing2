@@ -1,13 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "mini-Lago API",
-    "version": "1.0.0",
-    "description": "Motor de cálculo de facturación por uso real + dispatcher hacia NetSuite. Contrato derivado de `mini-lago-spec.md` (21 endpoints baseline) extendido con list/read endpoints estilo Lago para que clientes que hablan el wire de Lago puedan migrar sin cambios mayores.\n\n**Auth**: todos los endpoints `/api/v1/*` requieren `Authorization: Bearer <API_KEY>`. El callback NetSuite (`/external-confirm`) usa `X-NetSuite-Signature: sha256=<hex>` con HMAC-SHA256 timing-safe sobre el body raw.\n\n**Idempotencia**: `POST /api/v1/invoices` y `POST /api/v1/credit_notes` aceptan `Idempotency-Key` header + `metadata.idempotency_key` (deben coincidir o se devuelve 422).",
-    "contact": {
-      "name": "mini-Lago",
-      "url": "https://github.com/davidbarba-bit/billing2"
-    }
+    "title": "mini-Lago API (Numaris-native)",
+    "version": "2.0.0",
+    "description": "Motor de facturación domain-specific para Numaris. Entidades: Customer, Tax, Service (colapsa Plan+Sub+Charge+BM+AddOn), Unit (materializada), EventLog (audit), Invoice, CreditNote.\n\n**Auth**: Bearer en todos los `/api/v1/*` excepto health/openapi/discovery. Callbacks NetSuite usan HMAC-SHA256 (`X-NetSuite-Signature`).\n\n**Idempotency** en POST /invoices y POST /credit_notes vía header `Idempotency-Key` + `metadata.idempotency_key`."
   },
   "servers": [
     { "url": "https://billing2-production.up.railway.app", "description": "Railway production" },
@@ -15,35 +11,21 @@
   ],
   "components": {
     "securitySchemes": {
-      "BearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "Per-organization API key emitido por mini-Lago."
-      },
-      "NetSuiteSignature": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-NetSuite-Signature",
-        "description": "Solo usado por NetSuite cuando llama de vuelta a `/external-confirm`. Formato: `sha256=<hex_lowercase>`."
-      }
+      "BearerAuth": { "type": "http", "scheme": "bearer" },
+      "NetSuiteSignature": { "type": "apiKey", "in": "header", "name": "X-NetSuite-Signature" }
     },
     "schemas": {
       "Error": {
         "type": "object",
-        "required": ["status", "error", "code"],
         "properties": {
-          "status": { "type": "integer", "example": 422 },
-          "error": { "type": "string", "example": "Unprocessable Entity" },
-          "code": { "type": "string", "example": "validation_errors" },
-          "error_details": {
-            "type": "object",
-            "additionalProperties": { "type": "array", "items": { "type": "string" } }
-          }
+          "status": { "type": "integer" },
+          "error": { "type": "string" },
+          "code": { "type": "string" },
+          "error_details": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } }
         }
       },
       "Meta": {
         "type": "object",
-        "required": ["current_page", "next_page", "prev_page", "total_pages", "total_count"],
         "properties": {
           "current_page": { "type": "integer" },
           "next_page": { "type": ["integer", "null"] },
@@ -54,19 +36,22 @@
       },
       "Customer": {
         "type": "object",
-        "required": ["lago_id", "external_id", "name", "currency", "applicable_timezone"],
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
+          "id": { "type": "string", "format": "uuid" },
           "external_id": { "type": "string" },
-          "name": { "type": "string" },
           "sequential_id": { "type": "integer" },
           "slug": { "type": "string" },
-          "country": { "type": ["string", "null"] },
-          "currency": { "type": "string", "example": "MXN" },
+          "name": { "type": "string" },
+          "email": { "type": ["string", "null"] },
+          "phone": { "type": ["string", "null"] },
           "tax_identification_number": { "type": ["string", "null"] },
-          "timezone": { "type": ["string", "null"], "example": "America/Mexico_City" },
-          "applicable_timezone": { "type": "string", "example": "America/Mexico_City" },
-          "metadata": { "type": "object", "additionalProperties": true },
+          "address_line1": { "type": ["string", "null"] },
+          "city": { "type": ["string", "null"] },
+          "country": { "type": ["string", "null"] },
+          "currency": { "type": "string" },
+          "timezone": { "type": ["string", "null"] },
+          "applicable_timezone": { "type": "string" },
+          "metadata": { "type": "object" },
           "taxes": { "type": "array", "items": { "$ref": "#/components/schemas/Tax" } }
         }
       },
@@ -76,278 +61,186 @@
         "properties": {
           "external_id": { "type": "string" },
           "name": { "type": "string" },
-          "currency": { "type": "string" },
-          "country": { "type": "string" },
+          "currency": { "type": "string", "example": "MXN" },
+          "country": { "type": "string", "example": "MX" },
           "timezone": { "type": "string", "example": "America/Mexico_City" },
           "tax_identification_number": { "type": "string" },
-          "tax_codes": { "type": "array", "items": { "type": "string" } },
-          "metadata": { "type": "object" }
+          "email": { "type": "string" },
+          "phone": { "type": "string" },
+          "address_line1": { "type": "string" },
+          "city": { "type": "string" },
+          "metadata": { "type": "object" },
+          "tax_codes": { "type": "array", "items": { "type": "string" }, "description": "Reemplazo total (D2)." }
         }
       },
       "Tax": {
         "type": "object",
-        "required": ["lago_id", "code", "name", "rate"],
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
+          "id": { "type": "string", "format": "uuid" },
           "code": { "type": "string" },
           "name": { "type": "string" },
-          "rate": { "type": "number", "example": 16.0 },
           "description": { "type": ["string", "null"] },
-          "applied_to_organization": { "type": "boolean" }
+          "rate": { "type": "number", "example": 16.0 }
         }
       },
       "TaxWriteable": {
         "type": "object",
         "required": ["code", "name", "rate"],
         "properties": {
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "rate": { "oneOf": [{ "type": "string" }, { "type": "number" }], "description": "Aceptado como string o number en write." },
+          "code": { "type": "string", "example": "iva-mx-16" },
+          "name": { "type": "string", "example": "IVA México" },
           "description": { "type": "string" },
-          "applied_to_organization": { "type": "boolean", "default": false }
+          "rate": { "oneOf": [{ "type": "string" }, { "type": "number" }], "example": "16" }
         }
       },
-      "BillableMetric": {
+      "Service": {
         "type": "object",
-        "required": ["lago_id", "code", "name", "aggregation_type", "recurring"],
+        "description": "Numaris-native: 1 customer ↔ N services. Cada service tiene su propia tarifa mensual por unidad + setup one-off.",
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
+          "id": { "type": "string", "format": "uuid" },
           "code": { "type": "string" },
           "name": { "type": "string" },
-          "aggregation_type": { "type": "string", "enum": ["unique_count_agg"] },
-          "field_name": { "type": ["string", "null"], "example": "unit_external_id" },
-          "recurring": { "type": "boolean" },
-          "weighted_interval": { "type": ["string", "null"] }
-        }
-      },
-      "BillableMetricWriteable": {
-        "type": "object",
-        "required": ["code", "name", "aggregation_type"],
-        "properties": {
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "aggregation_type": { "type": "string", "enum": ["unique_count_agg"] },
-          "field_name": { "type": "string", "example": "unit_external_id" },
-          "recurring": { "type": "boolean", "default": false },
-          "weighted_interval": { "type": "string" }
-        }
-      },
-      "ChargeWriteable": {
-        "type": "object",
-        "required": ["billable_metric_id", "charge_model", "properties"],
-        "properties": {
-          "billable_metric_id": { "type": "string", "format": "uuid" },
-          "charge_model": { "type": "string", "enum": ["standard"] },
-          "pay_in_advance": { "type": "boolean" },
-          "invoiceable": { "type": "boolean", "default": true },
-          "prorated": { "type": "boolean", "description": "Requiere BM.recurring=true" },
-          "invoice_display_name": { "type": "string" },
-          "properties": {
-            "type": "object",
-            "required": ["amount"],
-            "properties": { "amount": { "type": "string", "example": "450.00" } }
-          }
-        }
-      },
-      "Plan": {
-        "type": "object",
-        "required": ["lago_id", "code", "name", "interval", "amount_currency"],
-        "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "interval": { "type": "string", "enum": ["monthly", "quarterly", "yearly"] },
-          "amount_cents": { "type": "integer" },
-          "amount_currency": { "type": "string" },
-          "pay_in_advance": { "type": "boolean" },
-          "bill_charges_monthly": { "type": ["boolean", "null"], "description": "Siempre null cuando interval=monthly" },
-          "description": { "type": "string" },
-          "charges": { "type": "array", "items": { "$ref": "#/components/schemas/Charge" } }
-        }
-      },
-      "Charge": {
-        "type": "object",
-        "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
-          "lago_billable_metric_id": { "type": "string", "format": "uuid" },
-          "billable_metric_code": { "type": "string" },
-          "charge_model": { "type": "string", "enum": ["standard"] },
-          "pay_in_advance": { "type": "boolean" },
-          "invoiceable": { "type": "boolean" },
-          "prorated": { "type": "boolean" },
-          "properties": { "type": "object" }
-        }
-      },
-      "PlanWriteable": {
-        "type": "object",
-        "required": ["code", "name", "interval", "amount_currency"],
-        "properties": {
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "interval": { "type": "string", "enum": ["monthly", "quarterly", "yearly"] },
-          "amount_cents": { "type": "integer", "default": 0 },
-          "amount_currency": { "type": "string" },
-          "pay_in_advance": { "type": "boolean" },
-          "bill_charges_monthly": { "type": "boolean" },
-          "description": { "type": "string" },
-          "charges": { "type": "array", "items": { "$ref": "#/components/schemas/ChargeWriteable" } }
-        }
-      },
-      "Subscription": {
-        "type": "object",
-        "required": ["lago_id", "external_id", "external_customer_id", "plan_code", "status", "billing_time"],
-        "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
-          "external_id": { "type": "string" },
-          "external_customer_id": { "type": "string" },
-          "plan_code": { "type": "string" },
-          "name": { "type": ["string", "null"] },
-          "status": { "type": "string", "enum": ["pending", "active", "terminated", "canceled"] },
+          "description": { "type": ["string", "null"] },
+          "customer_id": { "type": "string", "format": "uuid" },
+          "currency": { "type": "string" },
+          "monthly_unit_amount_cents": { "type": "integer" },
+          "setup_unit_amount_cents": { "type": "integer" },
+          "status": { "type": "string", "enum": ["pending", "active", "terminated"] },
           "billing_time": { "type": "string", "enum": ["calendar", "anniversary"] },
-          "subscription_at": { "type": ["string", "null"], "format": "date-time" },
+          "subscription_at": { "type": "string", "format": "date-time" },
           "started_at": { "type": ["string", "null"], "format": "date-time" },
           "current_billing_period_started_at": { "type": ["string", "null"], "format": "date-time" },
-          "current_billing_period_ending_at": { "type": ["string", "null"], "format": "date-time" }
+          "current_billing_period_ending_at": { "type": ["string", "null"], "format": "date-time" },
+          "taxes": { "type": "array", "items": { "$ref": "#/components/schemas/Tax" }, "description": "Si vacío, hereda taxes del customer." },
+          "metadata": { "type": "object" }
         }
       },
-      "SubscriptionWriteable": {
+      "ServiceWriteable": {
         "type": "object",
-        "required": ["external_customer_id", "plan_code", "external_id"],
+        "required": ["code", "name", "customer_external_id"],
         "properties": {
-          "external_customer_id": { "type": "string" },
-          "plan_code": { "type": "string" },
-          "external_id": { "type": "string" },
+          "code": { "type": "string", "example": "combustible-foo" },
           "name": { "type": "string" },
+          "description": { "type": "string" },
+          "customer_external_id": { "type": "string" },
+          "currency": { "type": "string", "description": "Default: customer.currency." },
+          "monthly_unit_amount_cents": { "type": "integer", "minimum": 0, "example": 45000 },
+          "setup_unit_amount_cents": { "type": "integer", "minimum": 0, "example": 120000 },
           "billing_time": { "type": "string", "enum": ["calendar", "anniversary"], "default": "calendar" },
-          "subscription_at": { "type": "string", "format": "date-time", "description": "Si es futuro → status=pending" }
+          "subscription_at": { "type": "string", "format": "date-time", "description": "Si es futuro → status=pending." },
+          "tax_codes": { "type": "array", "items": { "type": "string" }, "description": "Si vacío, usa los del customer." },
+          "metadata": { "type": "object" }
         }
       },
-      "EventWriteable": {
+      "Unit": {
         "type": "object",
-        "required": ["transaction_id", "external_subscription_id", "code", "timestamp"],
+        "description": "Unidad facturable materializada (no derivada de eventos).",
         "properties": {
-          "transaction_id": { "type": "string", "description": "Único por org; retry con mismo id → 422 value_already_exist." },
-          "external_subscription_id": { "type": "string" },
-          "code": { "type": "string", "description": "BM code." },
-          "timestamp": { "type": "integer", "description": "Unix epoch en SEGUNDOS (mini-Lago rechaza ISO strings → 422 must_be_unix_epoch_seconds)." },
-          "properties": {
-            "type": "object",
-            "properties": {
-              "unit_external_id": { "type": "string" },
-              "unit_label": { "type": "string" },
-              "kind": { "type": "string" },
-              "operation_type": { "type": "string", "enum": ["add", "remove"] }
-            }
-          }
+          "id": { "type": "string", "format": "uuid" },
+          "service_id": { "type": "string", "format": "uuid" },
+          "external_id": { "type": "string" },
+          "label": { "type": ["string", "null"] },
+          "active_from": { "type": "string", "format": "date-time" },
+          "active_to": { "type": ["string", "null"], "format": "date-time", "description": "null = activa." },
+          "setup_billed_at": { "type": ["string", "null"], "format": "date-time", "description": "null = setup pendiente; se cobrará en la próxima factura." },
+          "status": { "type": "string", "enum": ["active", "terminated"] },
+          "metadata": { "type": "object" }
+        }
+      },
+      "UnitWriteable": {
+        "type": "object",
+        "required": ["service_code", "external_id"],
+        "properties": {
+          "service_code": { "type": "string" },
+          "external_id": { "type": "string" },
+          "label": { "type": "string" },
+          "active_from": { "type": "string", "format": "date-time" },
+          "metadata": { "type": "object" }
         }
       },
       "Event": {
         "type": "object",
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
+          "id": { "type": "string", "format": "uuid" },
           "transaction_id": { "type": "string" },
-          "code": { "type": "string" },
-          "timestamp": { "type": "string", "format": "date-time", "description": "ISO string (mini-Lago lo convierte de epoch seconds)." },
-          "external_subscription_id": { "type": "string" },
+          "service_id": { "type": "string", "format": "uuid" },
+          "unit_id": { "type": ["string", "null"], "format": "uuid" },
+          "unit_external_id": { "type": "string" },
+          "unit_label": { "type": ["string", "null"] },
+          "operation_type": { "type": "string", "enum": ["add", "remove"] },
+          "kind": { "type": ["string", "null"] },
+          "timestamp": { "type": "string", "format": "date-time" },
           "properties": { "type": "object" }
         }
       },
-      "AddOn": {
+      "EventWriteable": {
         "type": "object",
-        "required": ["lago_id", "code", "name", "amount_cents", "amount_currency"],
+        "required": ["transaction_id", "service_code", "operation_type", "unit_external_id", "timestamp"],
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "invoice_display_name": { "type": ["string", "null"] },
-          "amount_cents": { "type": "integer", "minimum": 1 },
-          "amount_currency": { "type": "string" },
-          "description": { "type": "string" }
-        }
-      },
-      "AddOnWriteable": {
-        "type": "object",
-        "required": ["code", "name", "amount_cents", "amount_currency"],
-        "properties": {
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "amount_cents": { "type": "integer", "minimum": 1, "description": "Debe ser > 0." },
-          "amount_currency": { "type": "string" },
-          "description": { "type": "string" },
-          "invoice_display_name": { "type": "string" },
-          "tax_codes": { "type": "array", "items": { "type": "string" } }
-        }
-      },
-      "FeeRequest": {
-        "type": "object",
-        "required": ["add_on_code", "unit_amount_cents", "units"],
-        "properties": {
-          "add_on_code": { "type": "string" },
-          "description": { "type": "string" },
-          "unit_amount_cents": { "type": "integer", "minimum": 0 },
-          "units": { "type": "string", "description": "String decimal (no number)." }
+          "transaction_id": { "type": "string" },
+          "service_code": { "type": "string" },
+          "operation_type": { "type": "string", "enum": ["add", "remove"] },
+          "unit_external_id": { "type": "string" },
+          "unit_label": { "type": "string" },
+          "timestamp": { "type": "integer", "description": "Unix epoch en SEGUNDOS." },
+          "kind": { "type": "string" },
+          "properties": { "type": "object" }
         }
       },
       "InvoiceWriteable": {
         "type": "object",
-        "required": ["external_customer_id", "currency", "fees"],
+        "required": ["service_code"],
         "properties": {
-          "external_customer_id": { "type": "string" },
-          "currency": { "type": "string" },
-          "fees": { "type": "array", "items": { "$ref": "#/components/schemas/FeeRequest" } },
-          "metadata": {
-            "type": "object",
-            "properties": {
-              "idempotency_key": { "type": "string" }
-            },
-            "additionalProperties": true
-          }
+          "service_code": { "type": "string" },
+          "period_from": { "type": "string", "format": "date-time", "description": "Si se omite, usa el periodo actual del service." },
+          "period_to": { "type": "string", "format": "date-time" },
+          "metadata": { "type": "object", "properties": { "idempotency_key": { "type": "string" } } }
         }
       },
       "Invoice": {
         "type": "object",
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
+          "id": { "type": "string", "format": "uuid" },
           "sequential_id": { "type": "integer" },
-          "number": { "type": ["string", "null"], "description": "Folio fiscal NetSuite. Null hasta /external-confirm." },
+          "number": { "type": ["string", "null"], "description": "Folio fiscal NetSuite." },
+          "customer_id": { "type": "string", "format": "uuid" },
+          "service_id": { "type": ["string", "null"], "format": "uuid" },
           "status": { "type": "string", "enum": ["calculated", "finalized", "voided"] },
           "external_dispatch_status": { "type": "string", "enum": ["pending", "dispatched", "confirmed", "failed"] },
-          "payment_status": { "type": "string", "enum": ["pending", "paid", "overdue", "disputed"] },
-          "issuing_date": { "type": "string", "format": "date" },
-          "payment_due_date": { "type": "string", "format": "date" },
           "currency": { "type": "string" },
           "fees_amount_cents": { "type": "integer" },
           "taxes_amount_cents": { "type": "integer" },
           "total_amount_cents": { "type": "integer" },
-          "customer": { "type": "object" },
+          "period_from": { "type": ["string", "null"], "format": "date-time" },
+          "period_to": { "type": ["string", "null"], "format": "date-time" },
           "fees": { "type": "array", "items": { "$ref": "#/components/schemas/Fee" } },
           "units_annex": { "type": "array", "items": { "$ref": "#/components/schemas/UnitsAnnexEntry" } },
           "applied_taxes": { "type": "array", "items": { "type": "object" } },
-          "metadata": { "type": "object" }
+          "external_invoice": { "type": ["object", "null"] }
         }
       },
       "Fee": {
         "type": "object",
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
-          "item": { "type": "object" },
+          "id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "enum": ["monthly", "setup"] },
+          "description": { "type": "string" },
+          "units": { "type": "string", "description": "String decimal 4 dígitos." },
+          "unit_amount_cents": { "type": "integer" },
           "amount_cents": { "type": "integer" },
           "taxes_amount_cents": { "type": "integer" },
           "total_amount_cents": { "type": "integer" },
-          "units": { "type": "string", "description": "String decimal de 4 dígitos." },
-          "precise_unit_amount": { "type": "string" },
           "billed_units_detail": { "type": "array", "items": { "$ref": "#/components/schemas/BilledUnitDetail" } }
         }
       },
       "BilledUnitDetail": {
         "type": "object",
-        "required": ["external_id", "billed_fraction", "amount_cents"],
         "properties": {
           "external_id": { "type": "string" },
           "label": { "type": ["string", "null"] },
           "active_from": { "type": "string", "format": "date-time" },
           "active_to": { "type": ["string", "null"], "format": "date-time" },
-          "billed_fraction": { "type": "string", "description": "String decimal de 4 dígitos (eg. \"0.6129\")." },
+          "billed_fraction": { "type": "string", "description": "String decimal 4 dígitos (eg. 0.6129)." },
           "amount_cents": { "type": "integer" }
         }
       },
@@ -356,17 +249,7 @@
         "properties": {
           "external_id": { "type": "string" },
           "label": { "type": ["string", "null"] },
-          "fees": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "fee_lago_id": { "type": "string", "format": "uuid" },
-                "item_code": { "type": "string" },
-                "amount_cents": { "type": "integer" }
-              }
-            }
-          }
+          "fees": { "type": "array", "items": { "type": "object", "properties": { "kind": { "type": "string" }, "amount_cents": { "type": "integer" } } } }
         }
       },
       "CreditNoteWriteable": {
@@ -375,36 +258,25 @@
         "properties": {
           "invoice_id": { "type": "string", "format": "uuid" },
           "reason": { "type": "string", "enum": ["duplicated_charge", "product_unsatisfactory", "order_change", "order_cancellation", "fraudulent_charge", "other"] },
-          "description": { "type": "string", "description": "Puede llevar marker `[idem:<id>]` para reconciliación." },
-          "credit_amount_cents": { "type": "integer", "description": "Tolerancia ±5 cents respecto al cálculo." },
+          "description": { "type": "string" },
+          "credit_amount_cents": { "type": "integer" },
           "refund_amount_cents": { "type": "integer" },
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["fee_id", "amount_cents"],
-              "properties": {
-                "fee_id": { "type": "string", "format": "uuid" },
-                "amount_cents": { "type": "integer", "minimum": 1 }
-              }
-            }
-          }
+          "items": { "type": "array", "items": { "type": "object", "required": ["fee_id", "amount_cents"], "properties": { "fee_id": { "type": "string", "format": "uuid" }, "amount_cents": { "type": "integer", "minimum": 1 } } } }
         }
       },
       "CreditNote": {
         "type": "object",
         "properties": {
-          "lago_id": { "type": "string", "format": "uuid" },
+          "id": { "type": "string", "format": "uuid" },
+          "sequential_id": { "type": "integer" },
           "number": { "type": ["string", "null"] },
-          "status": { "type": "string", "enum": ["calculated", "finalized"] },
-          "external_dispatch_status": { "type": "string", "enum": ["pending", "dispatched", "confirmed", "failed"] },
-          "lago_invoice_id": { "type": "string", "format": "uuid" },
-          "invoice_number": { "type": ["string", "null"] },
+          "invoice_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "external_dispatch_status": { "type": "string" },
           "reason": { "type": "string" },
           "description": { "type": "string" },
           "total_amount_cents": { "type": "integer" },
-          "taxes_amount_cents": { "type": "integer" },
-          "sub_total_excluding_taxes_amount_cents": { "type": "integer" }
+          "taxes_amount_cents": { "type": "integer" }
         }
       },
       "ExternalConfirmInvoice": {
@@ -439,8 +311,6 @@
               "uuid_cfdi": { "type": "string" },
               "system": { "type": "string", "default": "netsuite" },
               "netsuite_internal_id": { "type": "string" },
-              "pdf_url": { "type": "string", "format": "uri" },
-              "xml_url": { "type": "string", "format": "uri" },
               "issued_at": { "type": "string", "format": "date-time" }
             }
           }
@@ -450,430 +320,168 @@
   },
   "security": [{ "BearerAuth": [] }],
   "paths": {
-    "/health": {
-      "get": {
-        "summary": "Health check (sin auth)",
-        "security": [],
-        "tags": ["meta"],
-        "responses": {
-          "200": {
-            "description": "Server alive",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string", "example": "ok" } } } } }
-          }
-        }
-      }
-    },
-    "/openapi.json": {
-      "get": {
-        "summary": "Este documento OpenAPI (sin auth)",
-        "security": [],
-        "tags": ["meta"],
-        "responses": { "200": { "description": "OpenAPI 3.1 JSON" } }
-      }
-    },
-    "/api/v1": {
-      "get": {
-        "summary": "Endpoint discovery (sin auth) — lista plana de rutas disponibles",
-        "security": [],
-        "tags": ["meta"],
-        "responses": {
-          "200": {
-            "description": "Lista de endpoints",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "service": { "type": "string", "example": "mini-Lago" },
-                    "version": { "type": "string" },
-                    "endpoints": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "method": { "type": "string" },
-                          "path": { "type": "string" },
-                          "summary": { "type": "string" }
-                        }
-                      }
-                    },
-                    "openapi": { "type": "string", "example": "/openapi.json" },
-                    "docs": { "type": "string", "example": "/docs" }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
+    "/health": { "get": { "summary": "Health check", "security": [], "tags": ["meta"], "responses": { "200": { "description": "OK" } } } },
+    "/openapi.json": { "get": { "summary": "OpenAPI 3.1 spec", "security": [], "tags": ["meta"], "responses": { "200": { "description": "JSON" } } } },
+    "/api/v1": { "get": { "summary": "Endpoint discovery (no auth)", "security": [], "tags": ["meta"], "responses": { "200": { "description": "Lista plana de endpoints" } } } },
+
     "/api/v1/customers": {
       "post": {
         "summary": "Create / upsert customer por external_id (D1)",
         "tags": ["customers"],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/CustomerWriteable" } } } } }
-        },
-        "responses": {
-          "200": { "description": "Customer creado o actualizado", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } },
-          "422": { "description": "Validation", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/CustomerWriteable" } } } } } },
+        "responses": { "200": { "description": "Customer", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } } }
       },
       "get": {
         "summary": "List customers (paginado)",
         "tags": ["customers"],
         "parameters": [
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
           { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
         ],
-        "responses": {
-          "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "customers": { "type": "array", "items": { "$ref": "#/components/schemas/Customer" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } }
-        }
+        "responses": { "200": { "description": "Lista" } }
       }
     },
     "/api/v1/customers/{externalId}": {
-      "get": {
-        "summary": "Read customer por external_id",
-        "tags": ["customers"],
-        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": {
-          "200": { "description": "Customer", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } },
-          "404": { "description": "customer_not_found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      },
-      "put": {
-        "summary": "PUT → 404 resource_not_found (invariante #11; usa POST upsert)",
-        "tags": ["customers"],
-        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "404": { "description": "resource_not_found" } }
-      }
+      "get": { "summary": "Read customer", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Customer" }, "404": { "description": "customer_not_found" } } },
+      "delete": { "summary": "Delete customer (409 si tiene services activos)", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" }, "409": { "description": "customer_has_active_services" } } }
     },
-    "/api/v1/customers/{externalId}/current_usage": {
-      "get": {
-        "summary": "Usage acumulado del periodo abierto",
-        "tags": ["customers"],
-        "parameters": [
-          { "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "external_subscription_id", "in": "query", "schema": { "type": "string" }, "description": "Requerido si el customer tiene >1 sub." },
-          { "name": "apply_taxes", "in": "query", "schema": { "type": "boolean", "default": true } }
-        ],
-        "responses": { "200": { "description": "Usage", "content": { "application/json": { "schema": { "type": "object" } } } } }
-      }
-    },
-    "/api/v1/customers/{externalId}/credit_notes": {
-      "get": {
-        "summary": "Credit notes del customer (paginado)",
-        "tags": ["credit_notes"],
-        "parameters": [
-          { "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
-        ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_notes": { "type": "array", "items": { "$ref": "#/components/schemas/CreditNote" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
-      }
-    },
+
     "/api/v1/taxes": {
-      "post": {
-        "summary": "Create tax",
-        "tags": ["taxes"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "tax": { "$ref": "#/components/schemas/TaxWriteable" } } } } } },
-        "responses": { "200": { "description": "Tax creado", "content": { "application/json": { "schema": { "type": "object", "properties": { "tax": { "$ref": "#/components/schemas/Tax" } } } } } } }
-      }
+      "post": { "summary": "Create tax", "tags": ["taxes"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "tax": { "$ref": "#/components/schemas/TaxWriteable" } } } } } }, "responses": { "200": { "description": "Tax" } } },
+      "get": { "summary": "List taxes", "tags": ["taxes"], "responses": { "200": { "description": "Lista" } } }
     },
-    "/api/v1/billable_metrics": {
+    "/api/v1/taxes/{code}": {
+      "get": { "summary": "Read tax", "tags": ["taxes"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Tax" } } }
+    },
+
+    "/api/v1/services": {
       "post": {
-        "summary": "Create billable metric",
-        "tags": ["billable_metrics"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "billable_metric": { "$ref": "#/components/schemas/BillableMetricWriteable" } } } } } },
-        "responses": { "200": { "description": "BM creado", "content": { "application/json": { "schema": { "type": "object", "properties": { "billable_metric": { "$ref": "#/components/schemas/BillableMetric" } } } } } } }
+        "summary": "Create service (colapsa Plan+Sub+Charge+BM+AddOn)",
+        "tags": ["services"],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/ServiceWriteable" } } } } } },
+        "responses": { "200": { "description": "Service", "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/Service" } } } } } } }
       },
       "get": {
-        "summary": "List billable metrics (paginado)",
-        "tags": ["billable_metrics"],
+        "summary": "List services",
+        "tags": ["services"],
         "parameters": [
+          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["pending", "active", "terminated"] } },
           { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
           { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
         ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "billable_metrics": { "type": "array", "items": { "$ref": "#/components/schemas/BillableMetric" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
+        "responses": { "200": { "description": "Lista" } }
       }
     },
-    "/api/v1/billable_metrics/{code}": {
-      "get": {
-        "summary": "Read billable metric por code",
-        "tags": ["billable_metrics"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "BM", "content": { "application/json": { "schema": { "type": "object", "properties": { "billable_metric": { "$ref": "#/components/schemas/BillableMetric" } } } } } } }
-      }
+    "/api/v1/services/{code}": {
+      "get": { "summary": "Read service", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service" } } },
+      "delete": { "summary": "Delete service (409 si tiene invoices — usa terminate en su lugar)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" }, "409": { "description": "service_has_invoices" } } }
     },
-    "/api/v1/plans": {
-      "post": {
-        "summary": "Create plan con charges[]",
-        "tags": ["plans"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "plan": { "$ref": "#/components/schemas/PlanWriteable" } } } } } },
-        "responses": { "200": { "description": "Plan creado", "content": { "application/json": { "schema": { "type": "object", "properties": { "plan": { "$ref": "#/components/schemas/Plan" } } } } } } }
-      },
+    "/api/v1/services/{code}/terminate": {
+      "post": { "summary": "Terminate service + todas sus units activas", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service terminated" } } }
+    },
+
+    "/api/v1/units": {
+      "post": { "summary": "Create unit (alternativa a POST /events con operation_type=add)", "tags": ["units"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "unit": { "$ref": "#/components/schemas/UnitWriteable" } } } } } }, "responses": { "200": { "description": "Unit" } } },
       "get": {
-        "summary": "List plans (paginado)",
-        "tags": ["plans"],
+        "summary": "List units",
+        "tags": ["units"],
         "parameters": [
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } }
         ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "plans": { "type": "array", "items": { "$ref": "#/components/schemas/Plan" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
+        "responses": { "200": { "description": "Lista" } }
       }
     },
-    "/api/v1/plans/{code}": {
-      "get": {
-        "summary": "Read plan por code",
-        "tags": ["plans"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Plan", "content": { "application/json": { "schema": { "type": "object", "properties": { "plan": { "$ref": "#/components/schemas/Plan" } } } } } } }
-      }
+    "/api/v1/units/{id}": {
+      "get": { "summary": "Read unit", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } },
+      "patch": { "summary": "Update unit (label, active_to, metadata)", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } }
     },
-    "/api/v1/subscriptions": {
-      "post": {
-        "summary": "Create subscription (calendar o anniversary)",
-        "tags": ["subscriptions"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "subscription": { "$ref": "#/components/schemas/SubscriptionWriteable" } } } } } },
-        "responses": { "200": { "description": "Sub creada", "content": { "application/json": { "schema": { "type": "object", "properties": { "subscription": { "$ref": "#/components/schemas/Subscription" } } } } } } }
-      },
-      "get": {
-        "summary": "List subscriptions (paginado, filtrable)",
-        "tags": ["subscriptions"],
-        "parameters": [
-          { "name": "external_customer_id", "in": "query", "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["pending", "active", "terminated", "canceled"] } },
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
-        ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "subscriptions": { "type": "array", "items": { "$ref": "#/components/schemas/Subscription" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
-      }
-    },
-    "/api/v1/subscriptions/{externalId}": {
-      "get": {
-        "summary": "Read subscription por external_id",
-        "tags": ["subscriptions"],
-        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Sub", "content": { "application/json": { "schema": { "type": "object", "properties": { "subscription": { "$ref": "#/components/schemas/Subscription" } } } } } } }
-      },
-      "delete": {
-        "summary": "Delete pending subscription (D8/invariante #8)",
-        "tags": ["subscriptions"],
-        "parameters": [
-          { "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "required": true, "schema": { "type": "string", "enum": ["pending"] }, "description": "Requerido. Sin él → 404." }
-        ],
-        "responses": { "200": { "description": "Sub eliminada" } }
-      }
-    },
+
     "/api/v1/events": {
       "post": {
-        "summary": "Add o remove event (operation_type discrimina). timestamp es Unix epoch en SEGUNDOS.",
+        "summary": "POST event (add o remove unit). Materializa la unidad en la tabla `units` como side effect.",
         "tags": ["events"],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "event": { "$ref": "#/components/schemas/EventWriteable" } } } } } },
-        "responses": {
-          "200": { "description": "Event registrado", "content": { "application/json": { "schema": { "type": "object", "properties": { "event": { "$ref": "#/components/schemas/Event" } } } } } },
-          "422": { "description": "value_already_exist o must_be_unix_epoch_seconds", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/v1/add_ons": {
-      "post": {
-        "summary": "Create add-on",
-        "tags": ["add_ons"],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "add_on": { "$ref": "#/components/schemas/AddOnWriteable" } } } } } },
-        "responses": { "200": { "description": "Add-on creado", "content": { "application/json": { "schema": { "type": "object", "properties": { "add_on": { "$ref": "#/components/schemas/AddOn" } } } } } } }
+        "responses": { "200": { "description": "Event", "content": { "application/json": { "schema": { "type": "object", "properties": { "event": { "$ref": "#/components/schemas/Event" } } } } } } }
       },
       "get": {
-        "summary": "List add-ons (paginado)",
-        "tags": ["add_ons"],
+        "summary": "Event log (audit trail)",
+        "tags": ["events"],
         "parameters": [
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
+          { "name": "unit_external_id", "in": "query", "schema": { "type": "string" } }
         ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
+        "responses": { "200": { "description": "Lista" } }
       }
     },
-    "/api/v1/add_ons/{code}": {
-      "get": {
-        "summary": "Read add-on por code",
-        "tags": ["add_ons"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Add-on", "content": { "application/json": { "schema": { "type": "object", "properties": { "add_on": { "$ref": "#/components/schemas/AddOn" } } } } } } }
-      },
-      "patch": {
-        "summary": "Update add-on (code es immutable)",
-        "tags": ["add_ons"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "add_on": { "$ref": "#/components/schemas/AddOnWriteable" } } } } } },
-        "responses": { "200": { "description": "Add-on actualizado" } }
-      },
-      "delete": {
-        "summary": "Delete add-on (409 si tiene fees — D6)",
-        "tags": ["add_ons"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": {
-          "200": { "description": "Add-on eliminado" },
-          "409": { "description": "add_on_referenced_by_fees" }
-        }
-      }
-    },
+
     "/api/v1/invoices": {
       "post": {
-        "summary": "Calcular invoice one-off con fees[].add_on_code. Idempotente.",
+        "summary": "Calcular invoice del periodo actual del service",
         "tags": ["invoices"],
-        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" }, "description": "Debe coincidir con metadata.idempotency_key (D10)." }],
+        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" }, "description": "Debe coincidir con metadata.idempotency_key." }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/InvoiceWriteable" } } } } } },
-        "responses": {
-          "200": { "description": "Invoice calculada + dispatch a NetSuite", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/Invoice" } } } } } },
-          "422": { "description": "idempotency_key_mismatch | idempotency_key_reused_with_different_body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
+        "responses": { "200": { "description": "Invoice", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/Invoice" } } } } } } }
       },
       "get": {
-        "summary": "List invoices (paginado, filtrable)",
+        "summary": "List invoices",
         "tags": ["invoices"],
         "parameters": [
-          { "name": "external_customer_id", "in": "query", "schema": { "type": "string" } },
-          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["calculated", "finalized", "voided"] } },
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } }
         ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoices": { "type": "array", "items": { "$ref": "#/components/schemas/Invoice" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
+        "responses": { "200": { "description": "Lista" } }
       }
     },
-    "/api/v1/invoices/{lagoId}": {
-      "get": {
-        "summary": "Read invoice por lago_id",
-        "tags": ["invoices"],
-        "parameters": [{ "name": "lagoId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "responses": { "200": { "description": "Invoice", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/Invoice" } } } } } } }
-      }
+    "/api/v1/invoices/{id}": {
+      "get": { "summary": "Read invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Invoice" } } }
     },
-    "/api/v1/invoices/{lagoId}/void": {
+    "/api/v1/invoices/{id}/void": {
+      "post": { "summary": "Void invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Invoice voided" } } }
+    },
+    "/api/v1/invoices/{id}/external-confirm": {
       "post": {
-        "summary": "Void invoice (idempotente)",
-        "tags": ["invoices"],
-        "parameters": [{ "name": "lagoId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "responses": { "200": { "description": "Invoice marcada como voided" } }
-      }
-    },
-    "/api/v1/invoices/{lagoId}/external-confirm": {
-      "post": {
-        "summary": "Callback de NetSuite con folio fiscal CFDI (HMAC-firmado, sin Bearer)",
+        "summary": "Callback NetSuite (HMAC-firmado)",
         "tags": ["external-confirm"],
         "security": [{ "NetSuiteSignature": [] }],
-        "parameters": [{ "name": "lagoId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmInvoice" } } } },
-        "responses": {
-          "200": { "description": "Invoice finalized + confirmed", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/Invoice" } } } } } },
-          "401": { "description": "invalid_signature" },
-          "403": { "description": "secret_not_configured | ip_not_allowed" },
-          "409": { "description": "conflict_folio_changed" }
-        }
+        "responses": { "200": { "description": "Invoice finalized" }, "401": { "description": "invalid_signature" }, "403": { "description": "secret_not_configured" }, "409": { "description": "conflict_folio_changed" } }
       }
     },
+
     "/api/v1/credit_notes": {
       "post": {
         "summary": "Create credit note (solo sobre invoice finalized+confirmed)",
         "tags": ["credit_notes"],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNoteWriteable" } } } } } },
-        "responses": {
-          "200": { "description": "CN creada", "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNote" } } } } } },
-          "422": { "description": "invoice_not_confirmed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
+        "responses": { "200": { "description": "CN" }, "422": { "description": "invoice_not_confirmed" } }
       },
-      "get": {
-        "summary": "List credit notes (paginado)",
-        "tags": ["credit_notes"],
-        "parameters": [
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
-        ],
-        "responses": { "200": { "description": "Lista", "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_notes": { "type": "array", "items": { "$ref": "#/components/schemas/CreditNote" } }, "meta": { "$ref": "#/components/schemas/Meta" } } } } } } }
-      }
+      "get": { "summary": "List credit notes", "tags": ["credit_notes"], "parameters": [{ "name": "customer_external_id", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
     },
-    "/api/v1/credit_notes/{lagoId}": {
-      "get": {
-        "summary": "Read credit note por lago_id",
-        "tags": ["credit_notes"],
-        "parameters": [{ "name": "lagoId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "responses": { "200": { "description": "CN", "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNote" } } } } } } }
-      }
+    "/api/v1/credit_notes/{id}": {
+      "get": { "summary": "Read credit note", "tags": ["credit_notes"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CN" } } }
     },
-    "/api/v1/credit_notes/{lagoId}/external-confirm": {
+    "/api/v1/credit_notes/{id}/external-confirm": {
       "post": {
-        "summary": "Callback NetSuite con folio CN (HMAC-firmado, sin Bearer)",
+        "summary": "Callback NetSuite para CN (HMAC-firmado)",
         "tags": ["external-confirm"],
         "security": [{ "NetSuiteSignature": [] }],
-        "parameters": [{ "name": "lagoId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmCreditNote" } } } },
-        "responses": {
-          "200": { "description": "CN finalized + confirmed" },
-          "401": { "description": "invalid_signature" },
-          "403": { "description": "secret_not_configured" },
-          "409": { "description": "conflict_folio_changed" }
-        }
+        "responses": { "200": { "description": "CN finalized" } }
       }
     },
+
     "/api/v1/admin/reset": {
       "post": {
-        "summary": "Hard reset de la organización autenticada — borrado total destructivo.",
-        "description": "Wipea TODA la data scoped a la org (customers, taxes, BMs, plans, add-ons, subs, events, invoices, fees, credit notes, idempotency records, unit labels). Preserva la org row + api_key + credenciales NetSuite. Counters (customer/invoice/credit_note sequential_id) regresan a 0.\n\n**Auth en tres capas** (defensa en profundidad):\n1. `Authorization: Bearer <API_KEY>` — scope automático a la org del key.\n2. `X-Admin-Reset-Token` — debe coincidir timing-safe con env `ADMIN_RESET_TOKEN`. Si la env no está set, devuelve 403 `admin_reset_disabled` (fail-closed).\n3. Body `{ confirm: \"<org_slug>\" }` — debe coincidir exactamente con el slug de la org autenticada. Evita wipes accidentales contra el environment equivocado.",
+        "summary": "Hard reset destructivo (wipea data, preserva org)",
         "tags": ["admin"],
-        "parameters": [
-          { "name": "X-Admin-Reset-Token", "in": "header", "required": true, "schema": { "type": "string" }, "description": "Token configurado en env `ADMIN_RESET_TOKEN`." }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["confirm"],
-                "properties": {
-                  "confirm": { "type": "string", "description": "Debe coincidir con `organization.slug` de la org autenticada." }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Reset OK — el body lista contadores de filas borradas por tabla.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "reset": { "type": "boolean", "example": true },
-                    "organization_slug": { "type": "string" },
-                    "cleared": {
-                      "type": "object",
-                      "properties": {
-                        "customers": { "type": "integer" },
-                        "taxes": { "type": "integer" },
-                        "billable_metrics": { "type": "integer" },
-                        "plans": { "type": "integer" },
-                        "add_ons": { "type": "integer" },
-                        "subscriptions": { "type": "integer" },
-                        "events": { "type": "integer" },
-                        "invoices": { "type": "integer" },
-                        "fees": { "type": "integer" },
-                        "credit_notes": { "type": "integer" },
-                        "idempotency_records": { "type": "integer" },
-                        "unit_labels": { "type": "integer" }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": { "description": "Bearer faltante o inválido." },
-          "403": { "description": "`admin_reset_disabled` (env no set) o `invalid_reset_token`." },
-          "422": { "description": "`confirm` no coincide con el slug de la org." }
-        }
+        "parameters": [{ "name": "X-Admin-Reset-Token", "in": "header", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["confirm"], "properties": { "confirm": { "type": "string", "description": "Debe = organization.slug." } } } } } },
+        "responses": { "200": { "description": "Reset OK" }, "403": { "description": "admin_reset_disabled | invalid_reset_token" } }
       }
     }
   }

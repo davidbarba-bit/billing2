@@ -8,12 +8,9 @@ import type { AppConfig } from './config.js';
 import { getPrisma } from './db.js';
 import { registerCustomerRoutes } from './routes/customers.js';
 import { registerTaxRoutes } from './routes/taxes.js';
+import { registerServiceRoutes } from './routes/services.js';
+import { registerUnitRoutes } from './routes/units.js';
 import { registerEventRoutes } from './routes/events.js';
-import { registerPlanRoutes } from './routes/plans.js';
-import { registerBillableMetricRoutes } from './routes/billable-metrics.js';
-import { registerSubscriptionRoutes } from './routes/subscriptions.js';
-import { registerAddOnRoutes } from './routes/addons.js';
-import { registerUsageRoutes } from './routes/usage.js';
 import { registerInvoiceRoutes } from './routes/invoices.js';
 import { registerCreditNoteRoutes } from './routes/credit-notes.js';
 import { registerExternalConfirmRoutes } from './routes/external-confirm.js';
@@ -56,14 +53,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     runFirst: true,
   });
 
-  // Unified error shape (invariant #10).
   app.setErrorHandler(async (err, request, reply) => {
     if (err instanceof ApiError) {
       reply.status(err.status).send(serializeError(err));
       return;
     }
-    // Validation errors from Fastify schemas — none configured yet, but for
-    // completeness we keep the branch.
     if ((err as { validation?: unknown }).validation) {
       reply.status(422).send({
         status: 422,
@@ -73,7 +67,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       });
       return;
     }
-    // Errors from @fastify/basic-auth carry a `statusCode` of 401.
     const statusCode = (err as { statusCode?: number }).statusCode;
     if (statusCode === 401) {
       reply.status(401).header('www-authenticate', 'Basic realm="mini-Lago admin"');
@@ -96,24 +89,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     reply.status(404).send({ status: 404, error: 'Not Found', code: 'resource_not_found' });
   });
 
-  // Health.
   app.get('/health', async () => ({ status: 'ok' }));
 
-  // Public API contract (no auth).
+  // Public API contract discovery (no auth).
   registerDiscoveryRoutes(app);
 
-  // Admin back-office must be registered BEFORE other routes so its
-  // `preHandler` hook for Basic Auth fires for /admin/*.
+  // Admin back-office.
   await registerAdmin(app, { config: deps.config, prisma, dispatcher, callbackBaseUrl });
 
+  // Domain routes.
   registerCustomerRoutes(app, prisma);
   registerTaxRoutes(app, prisma);
+  registerServiceRoutes(app, prisma);
+  registerUnitRoutes(app, prisma);
   registerEventRoutes(app, prisma);
-  registerPlanRoutes(app, prisma);
-  registerBillableMetricRoutes(app, prisma);
-  registerSubscriptionRoutes(app, prisma);
-  registerAddOnRoutes(app, prisma);
-  registerUsageRoutes(app, prisma);
   registerInvoiceRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerCreditNoteRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerExternalConfirmRoutes(app, prisma, { config: deps.config });

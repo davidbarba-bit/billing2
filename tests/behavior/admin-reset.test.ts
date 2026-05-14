@@ -92,8 +92,8 @@ describe('POST /api/v1/admin/reset', () => {
     // Sanity: seed populated stuff.
     const before = await Promise.all([
       h.prisma.customer.count({ where: { organizationId: orgId } }),
-      h.prisma.plan.count({ where: { organizationId: orgId } }),
-      h.prisma.event.count({ where: { organizationId: orgId } }),
+      h.prisma.service.count({ where: { organizationId: orgId } }),
+      h.prisma.eventLog.count({ where: { organizationId: orgId } }),
     ]);
     expect(before.every((n) => n > 0)).toBe(true);
 
@@ -113,11 +113,9 @@ describe('POST /api/v1/admin/reset', () => {
     // Verify data is gone.
     const after = await Promise.all([
       h.prisma.customer.count({ where: { organizationId: orgId } }),
-      h.prisma.plan.count({ where: { organizationId: orgId } }),
-      h.prisma.billableMetric.count({ where: { organizationId: orgId } }),
-      h.prisma.event.count({ where: { organizationId: orgId } }),
-      h.prisma.addOn.count({ where: { organizationId: orgId } }),
-      h.prisma.subscription.count({ where: { organizationId: orgId } }),
+      h.prisma.service.count({ where: { organizationId: orgId } }),
+      h.prisma.unit.count({ where: { service: { organizationId: orgId } } }),
+      h.prisma.eventLog.count({ where: { organizationId: orgId } }),
       h.prisma.tax.count({ where: { organizationId: orgId } }),
     ]);
     expect(after.every((n) => n === 0)).toBe(true);

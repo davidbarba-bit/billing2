@@ -9,13 +9,11 @@ import { adminContextStorage } from './context.js';
 const NAV_ITEMS: Array<{ href: string; label: string }> = [
   { href: '/admin', label: 'Dashboard' },
   { href: '/admin/customers', label: 'Customers' },
-  { href: '/admin/subscriptions', label: 'Subscriptions' },
+  { href: '/admin/services', label: 'Services' },
+  { href: '/admin/units', label: 'Units' },
+  { href: '/admin/events', label: 'Events' },
   { href: '/admin/invoices', label: 'Invoices' },
   { href: '/admin/credit-notes', label: 'Credit notes' },
-  { href: '/admin/events', label: 'Events' },
-  { href: '/admin/plans', label: 'Plans' },
-  { href: '/admin/billable-metrics', label: 'Billable metrics' },
-  { href: '/admin/add-ons', label: 'Add-ons' },
   { href: '/admin/taxes', label: 'Taxes' },
   { href: '/admin/settings', label: 'Settings' },
 ];

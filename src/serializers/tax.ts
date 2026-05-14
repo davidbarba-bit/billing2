@@ -1,29 +1,19 @@
-// Tax serializer matching the Lago wire shape captured in fixture 03.
+// Tax serializer (Numaris-native — no counters; simpler than the original
+// Lago shape).
 
 import type { Tax } from '@prisma/client';
 import { isoUtc } from '../services/tz.js';
 
-export type TaxCounters = {
-  add_ons_count: number;
-  customers_count: number;
-  plans_count: number;
-  charges_count: number;
-  commitments_count: number;
-};
-
-export function serializeTax(tax: Tax, counters: TaxCounters) {
+export function serializeTax(tax: Tax) {
   return {
-    lago_id: tax.id,
-    name: tax.name,
-    code: tax.code,
-    rate: Number(tax.rate),
-    description: tax.description ?? null,
-    applied_to_organization: tax.appliedToOrganization,
-    add_ons_count: counters.add_ons_count,
-    customers_count: counters.customers_count,
-    plans_count: counters.plans_count,
-    charges_count: counters.charges_count,
-    commitments_count: counters.commitments_count,
-    created_at: isoUtc(tax.createdAt),
+    tax: {
+      id: tax.id,
+      code: tax.code,
+      name: tax.name,
+      description: tax.description ?? null,
+      rate: Number(tax.rate),
+      created_at: isoUtc(tax.createdAt),
+      updated_at: isoUtc(tax.updatedAt),
+    },
   };
 }

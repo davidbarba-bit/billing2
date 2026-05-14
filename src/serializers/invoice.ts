@@ -1,10 +1,10 @@
-// Invoice serializer matching fixture 11.
+// Invoice serializer (Numaris-native).
 
 import type { AppliedTax, Fee, Invoice } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { isoUtc } from '../services/tz.js';
 import type { CustomerWithLinks } from './customer.js';
-import { serializeEmbeddedCustomerForInvoice } from './customer.js';
+import { serializeEmbeddedCustomer } from './customer.js';
 
 export type InvoiceWithRelations = Invoice & {
   customer: CustomerWithLinks;
@@ -29,35 +29,25 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
   const fees = invoice.fees
     .sort((a, b) => a.position - b.position || a.createdAt.getTime() - b.createdAt.getTime())
     .map((fee) => ({
-      lago_id: fee.id,
-      lago_invoice_id: fee.invoiceId,
-      lago_subscription_id: fee.subscriptionId ?? null,
-      external_subscription_id: fee.externalSubscriptionId ?? null,
-      item: {
-        type: fee.itemType,
-        code: fee.itemCode,
-        name: fee.itemName,
-        invoice_display_name: fee.itemInvoiceDisplayName ?? fee.itemName,
-        lago_item_id: fee.itemLagoItemId,
-        item_type: fee.itemClassType,
-      },
+      id: fee.id,
+      service_id: fee.serviceId,
+      kind: fee.kind,
+      description: fee.description ?? '',
+      units: fee.units,
+      unit_amount_cents: fee.unitAmountCents,
+      precise_unit_amount: fee.preciseUnitAmount,
       amount_cents: fee.amountCents,
-      amount_currency: fee.amountCurrency,
       taxes_amount_cents: fee.taxesAmountCents,
       taxes_rate: Number(fee.taxesRate),
       total_amount_cents: fee.totalAmountCents,
-      units: fee.units,
-      description: fee.description ?? '',
-      precise_unit_amount: fee.preciseUnitAmount,
       billed_units_detail: fee.billedUnitsDetail ?? [],
       payment_status: fee.paymentStatus,
       created_at: isoUtc(fee.createdAt),
     }));
 
   const appliedTaxes = invoice.appliedTaxes.map((t) => ({
-    lago_id: t.id,
-    lago_invoice_id: t.invoiceId,
-    lago_tax_id: t.taxId,
+    id: t.id,
+    tax_id: t.taxId,
     tax_name: t.taxName,
     tax_code: t.taxCode,
     tax_rate: Number(t.taxRate),
@@ -70,50 +60,42 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
 
   return {
     invoice: {
-      lago_id: invoice.id,
+      id: invoice.id,
       sequential_id: invoice.sequentialId,
       number: invoice.number ?? null,
-      external_invoice: externalInvoice,
+      customer_id: invoice.customerId,
+      service_id: invoice.serviceId ?? null,
       issuing_date: DateTime.fromJSDate(invoice.issuingDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       payment_due_date: DateTime.fromJSDate(invoice.paymentDueDate, { zone: 'utc' }).toFormat('yyyy-LL-dd'),
       net_payment_term: invoice.netPaymentTerm,
-      invoice_type: invoice.invoiceType,
       status: invoice.status,
       external_dispatch_status: invoice.externalDispatchStatus,
+      external_dispatch_error: invoice.externalDispatchError ?? null,
       payment_status: invoice.paymentStatus,
-      payment_dispute_lost_at: invoice.paymentDisputeLostAt ? isoUtc(invoice.paymentDisputeLostAt) : null,
-      payment_overdue: invoice.paymentOverdue,
       currency: invoice.currency,
       fees_amount_cents: invoice.feesAmountCents,
       taxes_amount_cents: invoice.taxesAmountCents,
-      progressive_billing_credit_amount_cents: invoice.progressiveBillingCreditAmountCents,
-      coupons_amount_cents: invoice.couponsAmountCents,
-      credit_notes_amount_cents: invoice.creditNotesAmountCents,
-      sub_total_excluding_taxes_amount_cents: invoice.subTotalExcludingTaxesAmountCents,
-      sub_total_including_taxes_amount_cents: invoice.subTotalIncludingTaxesAmountCents,
       total_amount_cents: invoice.totalAmountCents,
-      prepaid_credit_amount_cents: invoice.prepaidCreditAmountCents,
-      file_url: invoice.fileUrl ?? null,
-      version_number: invoice.versionNumber,
-      customer: serializeEmbeddedCustomerForInvoice(invoice.customer),
-      subscriptions: [],
+      period_from: invoice.periodFrom ? isoUtc(invoice.periodFrom) : null,
+      period_to: invoice.periodTo ? isoUtc(invoice.periodTo) : null,
+      customer: serializeEmbeddedCustomer(invoice.customer),
       fees,
       units_annex: invoice.unitsAnnex ?? [],
-      credits: [],
-      metadata: invoice.metadata ?? {},
       applied_taxes: appliedTaxes,
-      error_details: invoice.errorDetails ?? [],
+      external_invoice: externalInvoice,
+      metadata: invoice.metadata ?? {},
+      created_at: isoUtc(invoice.createdAt),
+      updated_at: isoUtc(invoice.updatedAt),
     },
   };
 }
 
-// Light shape used when embedded inside a credit note.
-export function serializeInvoiceReduced(invoice: InvoiceWithRelations) {
+export function serializeInvoiceEmbedded(invoice: InvoiceWithRelations) {
   return {
-    lago_id: invoice.id,
-    payment_status: invoice.paymentStatus,
+    id: invoice.id,
+    number: invoice.number ?? null,
     status: invoice.status,
     external_dispatch_status: invoice.externalDispatchStatus,
-    number: invoice.number ?? null,
+    payment_status: invoice.paymentStatus,
   };
 }

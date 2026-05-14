@@ -1,9 +1,9 @@
-// mini-Lago Prisma schema.
+// mini-Lago Prisma schema — Numaris-native model (v2 redesign).
 //
-// The schema models the entities described in §3 of the spec. The naming
-// convention uses snake_case for columns (Prisma `@map`) and camelCase for
-// model fields so the application code stays idiomatic while the database
-// schema matches what a SQL audit expects.
+// This collapses the original Lago-shaped entities (Plan + Subscription +
+// Charge + BillableMetric + AddOn) into a single domain-specific entity:
+// `Service`. Units are materialized (not derived from events) so the
+// proration math is a simple table scan instead of an event-log replay.
 
 generator client {
   provider = "prisma-client-js"
@@ -39,12 +39,10 @@ model Organization {
 
   customers       Customer[]
   taxes           Tax[]
-  billableMetrics BillableMetric[]
-  plans           Plan[]
-  addOns          AddOn[]
+  services        Service[]
   invoices        Invoice[]
   creditNotes     CreditNote[]
-  events          Event[]
+  events          EventLog[]
   idempotencyKeys IdempotencyRecord[]
 
   @@map("organizations")
@@ -55,72 +53,56 @@ model Organization {
 // ---------------------------------------------------------------------------
 
 model Customer {
-  id                        String   @id @default(uuid())
-  organizationId            String   @map("organization_id")
-  externalId                String   @map("external_id")
-  sequentialId              Int      @map("sequential_id")
-  slug                      String
-  name                      String
-  firstname                 String?
-  lastname                  String?
-  customerType              String?  @map("customer_type")
-  email                     String?
-  phone                     String?
-  url                       String?
-  logoUrl                   String?  @map("logo_url")
-  legalName                 String?  @map("legal_name")
-  legalNumber               String?  @map("legal_number")
-  taxIdentificationNumber   String?  @map("tax_identification_number")
-  addressLine1              String?  @map("address_line1")
-  addressLine2              String?  @map("address_line2")
-  state                     String?
-  zipcode                   String?
-  city                      String?
-  country                   String?
-  currency                  String
-  timezone                  String?
-  netPaymentTerm            Int?     @map("net_payment_term")
-  externalSalesforceId      String?  @map("external_salesforce_id")
-  finalizeZeroAmountInvoice String   @default("inherit") @map("finalize_zero_amount_invoice")
-  shippingAddressLine1      String?  @map("shipping_address_line1")
-  shippingAddressLine2      String?  @map("shipping_address_line2")
-  shippingCity              String?  @map("shipping_city")
-  shippingZipcode           String?  @map("shipping_zipcode")
-  shippingState             String?  @map("shipping_state")
-  shippingCountry           String?  @map("shipping_country")
-  metadata                  Json     @default("{}")
-  createdAt                 DateTime @default(now()) @map("created_at")
-  updatedAt                 DateTime @updatedAt @map("updated_at")
+  id                      String   @id @default(uuid())
+  organizationId          String   @map("organization_id")
+  externalId              String   @map("external_id")
+  sequentialId            Int      @map("sequential_id")
+  slug                    String
+  name                    String
+  email                   String?
+  phone                   String?
+  taxIdentificationNumber String?  @map("tax_identification_number")
+  addressLine1            String?  @map("address_line1")
+  addressLine2            String?  @map("address_line2")
+  state                   String?
+  zipcode                 String?
+  city                    String?
+  country                 String?
+  currency                String
+  timezone                String?
+  metadata                Json     @default("{}")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
 
-  organization  Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  taxLinks      CustomerTaxLink[]
-  subscriptions Subscription[]
-  invoices      Invoice[]
-  creditNotes   CreditNote[]
-  unitLabels    UnitLabel[]
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  taxLinks     CustomerTaxLink[]
+  services     Service[]
+  invoices     Invoice[]
+  creditNotes  CreditNote[]
 
   @@unique([organizationId, externalId])
   @@map("customers")
 }
 
 // ---------------------------------------------------------------------------
-// Tax.
+// Tax (still a separate entity — Numaris may use IVA + IEPS in the future).
 // ---------------------------------------------------------------------------
 
 model Tax {
-  id                    String   @id @default(uuid())
-  organizationId        String   @map("organization_id")
-  name                  String
-  code                  String
-  description           String?
-  rate                  Decimal  @db.Decimal(10, 4)
-  appliedToOrganization Boolean  @default(false) @map("applied_to_organization")
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  code           String
+  description    String?
+  rate           Decimal  @db.Decimal(10, 4)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customers    CustomerTaxLink[]
-  addOnLinks   AddOnTaxLink[]
+  organization     Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customers        CustomerTaxLink[]
+  services         ServiceTaxLink[]
+  appliedTaxes     AppliedTax[]
+  cnAppliedTaxes   CreditNoteAppliedTax[]
 
   @@unique([organizationId, code])
   @@map("taxes")
@@ -139,244 +121,173 @@ model CustomerTaxLink {
 }
 
 // ---------------------------------------------------------------------------
-// Billable metric.
+// Service (Servicio) — the Numaris domain entity. Collapses everything that
+// used to be Plan + Subscription + Charge + BillableMetric + AddOn.
+//
+// Each customer can have N services (eg. "Combustible", "Tracking",
+// "Telemetría"). A service has:
+//   - a monthly per-unit price (`monthlyUnitAmountCents`) — billed prorated
+//     by the days each unit was active within the period.
+//   - a setup per-unit price (`setupUnitAmountCents`) — billed one-off the
+//     first time each unit is invoiced.
+//   - a billing rhythm (`billingTime` = calendar | anniversary) and current
+//     period dates.
+//
+// Units are tracked in the `Unit` table; events still flow through
+// EventLog as an audit trail but `Unit.activeFrom`/`activeTo` are the
+// source of truth.
 // ---------------------------------------------------------------------------
 
-model BillableMetric {
-  id               String   @id @default(uuid())
-  organizationId   String   @map("organization_id")
-  name             String
-  code             String
-  aggregationType  String   @map("aggregation_type")
-  fieldName        String?  @map("field_name")
-  recurring        Boolean  @default(false)
-  weightedInterval String?  @map("weighted_interval")
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  charges      Charge[]
-  events       Event[]
-
-  @@unique([organizationId, code])
-  @@map("billable_metrics")
-}
-
-// ---------------------------------------------------------------------------
-// Plan + charge.
-// ---------------------------------------------------------------------------
-
-model Plan {
-  id                 String   @id @default(uuid())
-  organizationId     String   @map("organization_id")
-  name               String
-  code               String
-  description        String?
-  invoiceDisplayName String?  @map("invoice_display_name")
-  interval           String
-  amountCents        Int      @default(0) @map("amount_cents")
-  amountCurrency     String   @map("amount_currency")
-  trialPeriod        Decimal? @map("trial_period") @db.Decimal(10, 4)
-  payInAdvance       Boolean  @default(false) @map("pay_in_advance")
-  billChargesMonthly Boolean? @map("bill_charges_monthly")
-  parentId           String?  @map("parent_id")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
-
-  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  charges       Charge[]
-  subscriptions Subscription[]
-
-  @@unique([organizationId, code])
-  @@map("plans")
-}
-
-model Charge {
-  id                 String   @id @default(uuid())
-  planId             String   @map("plan_id")
-  billableMetricId   String   @map("billable_metric_id")
-  chargeModel        String   @default("standard") @map("charge_model")
-  invoiceDisplayName String?  @map("invoice_display_name")
-  invoiceable        Boolean  @default(true)
-  payInAdvance       Boolean  @default(false) @map("pay_in_advance")
-  prorated           Boolean  @default(false)
-  minAmountCents     Int      @default(0) @map("min_amount_cents")
-  properties         Json     @default("{}")
-  regroupPaidFees    String?  @map("regroup_paid_fees")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
-
-  plan           Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
-  billableMetric BillableMetric @relation(fields: [billableMetricId], references: [id])
-
-  @@map("charges")
-}
-
-// ---------------------------------------------------------------------------
-// Subscription.
-// ---------------------------------------------------------------------------
-
-model Subscription {
+model Service {
   id                            String    @id @default(uuid())
   organizationId                String    @map("organization_id")
   customerId                    String    @map("customer_id")
-  planId                        String    @map("plan_id")
-  externalId                    String    @map("external_id")
-  name                          String?
+  code                          String
+  name                          String
+  description                   String?
+  currency                      String
+  monthlyUnitAmountCents        Int       @default(0) @map("monthly_unit_amount_cents")
+  setupUnitAmountCents          Int       @default(0) @map("setup_unit_amount_cents")
   status                        String    @default("active")
   billingTime                   String    @default("calendar") @map("billing_time")
   subscriptionAt                DateTime  @map("subscription_at")
   startedAt                     DateTime? @map("started_at")
-  endingAt                      DateTime? @map("ending_at")
-  trialEndedAt                  DateTime? @map("trial_ended_at")
   terminatedAt                  DateTime? @map("terminated_at")
-  canceledAt                    DateTime? @map("canceled_at")
-  previousPlanCode              String?   @map("previous_plan_code")
-  nextPlanCode                  String?   @map("next_plan_code")
-  downgradePlanDate             DateTime? @map("downgrade_plan_date")
   currentBillingPeriodStartedAt DateTime? @map("current_billing_period_started_at")
   currentBillingPeriodEndingAt  DateTime? @map("current_billing_period_ending_at")
+  metadata                      Json      @default("{}")
   createdAt                     DateTime  @default(now()) @map("created_at")
   updatedAt                     DateTime  @updatedAt @map("updated_at")
 
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  plan     Plan     @relation(fields: [planId], references: [id])
-  events   Event[]
-
-  @@unique([organizationId, externalId])
-  @@map("subscriptions")
-}
-
-// ---------------------------------------------------------------------------
-// Add-on.
-// ---------------------------------------------------------------------------
-
-model AddOn {
-  id                 String    @id @default(uuid())
-  organizationId     String    @map("organization_id")
-  name               String
-  code               String
-  description        String?
-  invoiceDisplayName String?   @map("invoice_display_name")
-  amountCents        Int       @map("amount_cents")
-  amountCurrency     String    @map("amount_currency")
-  deletedAt          DateTime? @map("deleted_at")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
-
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  taxLinks     AddOnTaxLink[]
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taxLinks     ServiceTaxLink[]
+  units        Unit[]
+  events       EventLog[]
+  invoices     Invoice[]
   fees         Fee[]
 
   @@unique([organizationId, code])
-  @@map("add_ons")
+  @@index([customerId])
+  @@map("services")
 }
 
-model AddOnTaxLink {
-  addOnId   String   @map("add_on_id")
+// Service ↔ Tax association. If empty, the customer's tax_codes apply.
+// If present, overrides the customer-level taxes.
+model ServiceTaxLink {
+  serviceId String   @map("service_id")
   taxId     String   @map("tax_id")
   createdAt DateTime @default(now()) @map("created_at")
 
-  addOn AddOn @relation(fields: [addOnId], references: [id], onDelete: Cascade)
-  tax   Tax   @relation(fields: [taxId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  tax     Tax     @relation(fields: [taxId], references: [id], onDelete: Cascade)
 
-  @@id([addOnId, taxId])
-  @@map("add_on_tax_links")
+  @@id([serviceId, taxId])
+  @@map("service_tax_links")
 }
 
 // ---------------------------------------------------------------------------
-// Event.
+// Unit (Unidad) — materialised state, not derived from events.
+//
+// `activeFrom` = first observed `add` event (or manual creation).
+// `activeTo` = null while the unit is still active; otherwise the
+//              effective baja date.
+// `setupBilledAt` = null until the setup fee has been invoiced; then the
+//                   timestamp of the invoice that captured it. Prevents
+//                   double-billing the setup line on subsequent periods.
 // ---------------------------------------------------------------------------
 
-model Event {
-  id                     String   @id @default(uuid())
-  organizationId         String   @map("organization_id")
-  transactionId          String   @map("transaction_id")
-  code                   String
-  externalSubscriptionId String   @map("external_subscription_id")
-  subscriptionId         String?  @map("subscription_id")
-  billableMetricId       String?  @map("billable_metric_id")
-  timestamp              DateTime
-  properties             Json     @default("{}")
-  precision              String   @default("seconds")
-  createdAt              DateTime @default(now()) @map("created_at")
+model Unit {
+  id            String    @id @default(uuid())
+  serviceId     String    @map("service_id")
+  externalId    String    @map("external_id")
+  label         String?
+  activeFrom    DateTime  @map("active_from")
+  activeTo      DateTime? @map("active_to")
+  setupBilledAt DateTime? @map("setup_billed_at")
+  metadata      Json      @default("{}")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  subscription   Subscription?   @relation(fields: [subscriptionId], references: [id])
-  billableMetric BillableMetric? @relation(fields: [billableMetricId], references: [id])
+  service Service    @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  events  EventLog[]
+
+  @@unique([serviceId, externalId])
+  @@index([serviceId, activeTo])
+  @@map("units")
+}
+
+// ---------------------------------------------------------------------------
+// EventLog — append-only audit trail. Each event mutates the Unit table
+// idempotently (by `transactionId`).
+// ---------------------------------------------------------------------------
+
+model EventLog {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  transactionId  String   @map("transaction_id")
+  serviceId      String   @map("service_id")
+  unitId         String?  @map("unit_id")
+  unitExternalId String   @map("unit_external_id")
+  unitLabel      String?  @map("unit_label")
+  operationType  String   @map("operation_type") // "add" | "remove"
+  kind           String? // free-text from the cliente ("monthly-ping", "setup", etc.)
+  timestamp      DateTime
+  properties     Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service      Service      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  unit         Unit?        @relation(fields: [unitId], references: [id])
 
   @@unique([organizationId, transactionId])
-  @@index([externalSubscriptionId, timestamp])
-  @@map("events")
-}
-
-// Persisted "last seen" unit_label per (sub, unit) — D14.
-model UnitLabel {
-  id                     String   @id @default(uuid())
-  customerId             String   @map("customer_id")
-  externalSubscriptionId String   @map("external_subscription_id")
-  unitExternalId         String   @map("unit_external_id")
-  label                  String?
-  updatedAt              DateTime @updatedAt @map("updated_at")
-
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  @@unique([customerId, externalSubscriptionId, unitExternalId])
-  @@map("unit_labels")
+  @@index([serviceId, timestamp])
+  @@map("event_log")
 }
 
 // ---------------------------------------------------------------------------
-// Invoice.
+// Invoice (Factura).
 // ---------------------------------------------------------------------------
 
 model Invoice {
-  id                                  String    @id @default(uuid())
-  organizationId                      String    @map("organization_id")
-  customerId                          String    @map("customer_id")
-  sequentialId                        Int       @map("sequential_id")
-  number                              String?
-  issuingDate                         DateTime  @map("issuing_date") @db.Date
-  paymentDueDate                      DateTime  @map("payment_due_date") @db.Date
-  netPaymentTerm                      Int       @default(0) @map("net_payment_term")
-  invoiceType                         String    @default("one_off") @map("invoice_type")
-  status                              String    @default("calculated")
-  externalDispatchStatus              String    @default("pending") @map("external_dispatch_status")
-  externalDispatchError               String?   @map("external_dispatch_error")
-  paymentStatus                       String    @default("pending") @map("payment_status")
-  paymentOverdue                      Boolean   @default(false) @map("payment_overdue")
-  paymentDisputeLostAt                DateTime? @map("payment_dispute_lost_at")
-  currency                            String
-  feesAmountCents                     Int       @default(0) @map("fees_amount_cents")
-  taxesAmountCents                    Int       @default(0) @map("taxes_amount_cents")
-  progressiveBillingCreditAmountCents Int       @default(0) @map("progressive_billing_credit_amount_cents")
-  couponsAmountCents                  Int       @default(0) @map("coupons_amount_cents")
-  creditNotesAmountCents              Int       @default(0) @map("credit_notes_amount_cents")
-  subTotalExcludingTaxesAmountCents   Int       @default(0) @map("sub_total_excluding_taxes_amount_cents")
-  subTotalIncludingTaxesAmountCents   Int       @default(0) @map("sub_total_including_taxes_amount_cents")
-  totalAmountCents                    Int       @default(0) @map("total_amount_cents")
-  prepaidCreditAmountCents            Int       @default(0) @map("prepaid_credit_amount_cents")
-  fileUrl                             String?   @map("file_url")
-  versionNumber                       Int       @default(1) @map("version_number")
-  metadata                            Json      @default("{}")
-  unitsAnnex                          Json      @default("[]") @map("units_annex")
-  errorDetails                        Json      @default("[]") @map("error_details")
-  idempotencyKey                      String?   @map("idempotency_key")
-  externalInvoiceFolio                String?   @map("external_invoice_folio")
-  externalInvoiceUuidCfdi             String?   @map("external_invoice_uuid_cfdi")
-  externalInvoiceSystem               String?   @map("external_invoice_system")
-  externalInvoiceNetsuiteInternalId   String?   @map("external_invoice_netsuite_internal_id")
-  externalInvoicePdfUrl               String?   @map("external_invoice_pdf_url")
-  externalInvoiceXmlUrl               String?   @map("external_invoice_xml_url")
-  externalInvoiceIssuedAt             DateTime? @map("external_invoice_issued_at")
-  externalInvoiceConfirmedAt          DateTime? @map("external_invoice_confirmed_at")
-  externalInvoiceDueDate              DateTime? @map("external_invoice_due_date") @db.Date
-  netsuiteDispatchId                  String?   @map("netsuite_dispatch_id")
-  netsuiteInternalId                  String?   @map("netsuite_internal_id")
-  createdAt                           DateTime  @default(now()) @map("created_at")
-  updatedAt                           DateTime  @updatedAt @map("updated_at")
+  id                                String    @id @default(uuid())
+  organizationId                    String    @map("organization_id")
+  customerId                        String    @map("customer_id")
+  serviceId                         String?   @map("service_id")
+  sequentialId                      Int       @map("sequential_id")
+  number                            String? // folio CFDI (null hasta external-confirm)
+  issuingDate                       DateTime  @map("issuing_date") @db.Date
+  paymentDueDate                    DateTime  @map("payment_due_date") @db.Date
+  netPaymentTerm                    Int       @default(0) @map("net_payment_term")
+  status                            String    @default("calculated") // calculated | finalized | voided
+  externalDispatchStatus            String    @default("pending") @map("external_dispatch_status")
+  externalDispatchError             String?   @map("external_dispatch_error")
+  paymentStatus                     String    @default("pending") @map("payment_status")
+  currency                          String
+  feesAmountCents                   Int       @default(0) @map("fees_amount_cents")
+  taxesAmountCents                  Int       @default(0) @map("taxes_amount_cents")
+  totalAmountCents                  Int       @default(0) @map("total_amount_cents")
+  periodFrom                        DateTime? @map("period_from")
+  periodTo                          DateTime? @map("period_to")
+  metadata                          Json      @default("{}")
+  unitsAnnex                        Json      @default("[]") @map("units_annex")
+  idempotencyKey                    String?   @map("idempotency_key")
+  externalInvoiceFolio              String?   @map("external_invoice_folio")
+  externalInvoiceUuidCfdi           String?   @map("external_invoice_uuid_cfdi")
+  externalInvoiceSystem             String?   @map("external_invoice_system")
+  externalInvoiceNetsuiteInternalId String?   @map("external_invoice_netsuite_internal_id")
+  externalInvoicePdfUrl             String?   @map("external_invoice_pdf_url")
+  externalInvoiceXmlUrl             String?   @map("external_invoice_xml_url")
+  externalInvoiceIssuedAt           DateTime? @map("external_invoice_issued_at")
+  externalInvoiceConfirmedAt        DateTime? @map("external_invoice_confirmed_at")
+  externalInvoiceDueDate            DateTime? @map("external_invoice_due_date") @db.Date
+  netsuiteDispatchId                String?   @map("netsuite_dispatch_id")
+  createdAt                         DateTime  @default(now()) @map("created_at")
+  updatedAt                         DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
+  service      Service?     @relation(fields: [serviceId], references: [id])
   fees         Fee[]
   appliedTaxes AppliedTax[]
   creditNotes  CreditNote[]
@@ -384,33 +295,36 @@ model Invoice {
   @@map("invoices")
 }
 
+// ---------------------------------------------------------------------------
+// Fee (Línea de factura).
+//
+// `kind`:
+//   "monthly" — billed by service.monthlyUnitAmountCents × units (prorated).
+//   "setup"   — one-off; one fee per unit being setup-billed for the first
+//               time during this invoice.
+//   "manual"  — free-text extra line (caller-provided unit_amount / units).
+// ---------------------------------------------------------------------------
+
 model Fee {
-  id                     String   @id @default(uuid())
-  invoiceId              String   @map("invoice_id")
-  addOnId                String?  @map("add_on_id")
-  subscriptionId         String?  @map("subscription_id")
-  externalSubscriptionId String?  @map("external_subscription_id")
-  itemType               String   @map("item_type")
-  itemCode               String   @map("item_code")
-  itemName               String   @map("item_name")
-  itemInvoiceDisplayName String?  @map("item_invoice_display_name")
-  itemLagoItemId         String   @map("item_lago_item_id")
-  itemClassType          String   @map("item_class_type")
-  amountCents            Int      @map("amount_cents")
-  amountCurrency         String   @map("amount_currency")
-  taxesAmountCents       Int      @default(0) @map("taxes_amount_cents")
-  taxesRate              Decimal  @default(0) @map("taxes_rate") @db.Decimal(10, 4)
-  totalAmountCents       Int      @map("total_amount_cents")
-  units                  String
-  description            String?
-  preciseUnitAmount      String   @map("precise_unit_amount")
-  billedUnitsDetail      Json     @default("[]") @map("billed_units_detail")
-  paymentStatus          String   @default("pending") @map("payment_status")
-  position               Int      @default(0)
-  createdAt              DateTime @default(now()) @map("created_at")
+  id                String   @id @default(uuid())
+  invoiceId         String   @map("invoice_id")
+  serviceId         String?  @map("service_id")
+  kind              String
+  description       String?
+  units             String // string decimal — 4 dígitos para monthly, "1.0000" para setup
+  unitAmountCents   Int      @map("unit_amount_cents")
+  preciseUnitAmount String   @map("precise_unit_amount") // "450.00"
+  amountCents       Int      @map("amount_cents")
+  taxesAmountCents  Int      @default(0) @map("taxes_amount_cents")
+  taxesRate         Decimal  @default(0) @map("taxes_rate") @db.Decimal(10, 4)
+  totalAmountCents  Int      @map("total_amount_cents")
+  billedUnitsDetail Json     @default("[]") @map("billed_units_detail")
+  paymentStatus     String   @default("pending") @map("payment_status")
+  position          Int      @default(0)
+  createdAt         DateTime @default(now()) @map("created_at")
 
   invoice Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  addOn   AddOn?           @relation(fields: [addOnId], references: [id])
+  service Service?         @relation(fields: [serviceId], references: [id])
   cnItems CreditNoteItem[]
 
   @@index([invoiceId])
@@ -431,12 +345,13 @@ model AppliedTax {
   createdAt       DateTime @default(now()) @map("created_at")
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  tax     Tax     @relation(fields: [taxId], references: [id])
 
   @@map("applied_taxes")
 }
 
 // ---------------------------------------------------------------------------
-// Credit note.
+// Credit note (Nota de crédito).
 // ---------------------------------------------------------------------------
 
 model CreditNote {
@@ -460,7 +375,6 @@ model CreditNote {
   balanceAmountCents                Int       @map("balance_amount_cents")
   creditAmountCents                 Int       @map("credit_amount_cents")
   refundAmountCents                 Int       @default(0) @map("refund_amount_cents")
-  couponsAdjustmentAmountCents      Int       @default(0) @map("coupons_adjustment_amount_cents")
   taxesRate                         Decimal   @default(0) @map("taxes_rate") @db.Decimal(10, 4)
   fileUrl                           String?   @map("file_url")
   issuingDate                       DateTime  @map("issuing_date") @db.Date
@@ -514,12 +428,13 @@ model CreditNoteAppliedTax {
   createdAt       DateTime @default(now()) @map("created_at")
 
   creditNote CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  tax        Tax        @relation(fields: [taxId], references: [id])
 
   @@map("credit_note_applied_taxes")
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency store (D10).
+// Idempotency store.
 // ---------------------------------------------------------------------------
 
 model IdempotencyRecord {

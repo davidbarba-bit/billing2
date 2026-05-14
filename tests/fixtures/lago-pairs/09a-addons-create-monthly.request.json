@@ -1,9 +1,0 @@
-{
-  "add_on": {
-    "name": "Cobro mensual Servicio Combustible — Carga Express MX",
-    "code": "cobro-carga-express-mx-combustible",
-    "description": "Línea de factura mensual del servicio Combustible (qty × precio unitario) para Carga Express MX.",
-    "amount_cents": 45000,
-    "amount_currency": "MXN"
-  }
-}
