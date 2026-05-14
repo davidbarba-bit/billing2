@@ -59,9 +59,26 @@ Organization (Numaris)
 
 ### Cómo se factura
 
-Hay **dos flujos de invoice** distintos:
+Hay **tres flujos de invoice**:
 
-**A. Cycle invoice — POST /api/v1/invoices**
+**A. Cycle invoice automática — cron `tickCycleBilling`** (default)
+
+Cada 60 segundos el cron escanea customers `active`. Para cada uno cuyo
+`current_billing_period_ending_at <= now`:
+1. Emite la cycle invoice del periodo que acaba de cerrar.
+2. La despacha a NetSuite.
+3. Avanza el periodo del customer al siguiente ciclo
+   (`current_billing_period_started_at = end_anterior + 1s`, `ending_at =
+   start + billing_period_months`).
+
+Idempotente por `(customer_id, period_from, period_to)`: si el cron se
+re-ejecuta antes de que avance el periodo, no genera duplicados.
+
+**B. Cycle invoice manual — POST /api/v1/invoices**
+
+Misma lógica que A pero disparada bajo demanda (botón del admin o llamada
+externa). Acepta override de periodo. Útil para reemitir, probar o
+facturar fuera de ciclo. Idempotente igualmente.
 
 Recibe `customer_external_id`. Calcula el periodo vigente del customer
 (según `billing_period_months` + `billing_anchor_day`, con prorrateo del primer
@@ -78,7 +95,7 @@ Para ese customer + periodo:
 3. **Por cada CustomerAddOn vigente:** 1 fee `customer_addon` flat (prorrateado).
 4. **Taxes**: stack del Customer (IVA MX 16% por default) sobre el subtotal.
 
-**B. One-off immediate invoice — POST /api/v1/events (side-effect)**
+**C. One-off immediate invoice — POST /api/v1/events (side-effect)**
 
 Si el evento crea/re-activa una Unit en un Service con `pricing_model='one_off'`
 **y** el Customer tiene `nonrecurring_trigger='immediate'` **y** la unit no había
@@ -323,7 +340,7 @@ Las decisiones del spec original que siguen vigentes:
 - **NetSuite outbound** con OAuth 1.0a/TBA HMAC-SHA256, detrás del feature flag `FEATURE_NETSUITE_DISPATCH_ENABLED`.
 - **Callback `/external-confirm`** autentica con HMAC-SHA256 timing-safe (`X-NetSuite-Signature`). Fail-closed sin secret. Idempotente por `(invoice_id, folio)`; folio distinto → `409 conflict_folio_changed`.
 - **Anexo de unidades** en dos niveles: `fee.billed_units_detail[]` y `invoice.units_annex[]`. `billed_fraction` = string decimal de 4 dígitos. Residuo asignado a la unidad con mayor fracción.
-- **Cron** sólo hace roll-over de periodos; nunca emite invoices automáticamente.
+- **Cron auto-billing** (cambio en v4 — antes era D9 "solo roll-over"): cada 60 segundos escanea customers y (a) activa los `pending` cuyo `subscription_at` ya pasó; (b) para cada `active` con `current_billing_period_ending_at <= now`, emite la cycle invoice + dispatch a NetSuite + avanza el periodo. Idempotente por `(customer_id, period_from, period_to)` — re-correr el cron no produce duplicados. Esto significa que mini-Lago **no espera que nadie externo dispare la facturación recurrente**: el sistema se factura solo.
 - **PUT `/api/v1/customers/:external_id`** responde `404 resource_not_found`.
 
 ---
@@ -381,12 +398,13 @@ npm run typecheck
 ```
 
 Suite actual:
+- `tests/behavior/auto-billing-cron.test.ts` — 3 casos del cron: emite cycle invoice cuando el periodo venció + avanza el periodo, re-correr es idempotente, activa pending customers.
 - `tests/behavior/v4-intervals-oneoff.test.ts` — 7 casos v4: intervalo 3M, stub primer periodo, one_off + next_cycle (acumula y marca billed), one_off + immediate (emite invoice individual desde /events), re-ping no duplica, validaciones (setup>0 en one_off, intervalo fuera de {1,3,6,12}).
 - `tests/behavior/v3-billing.test.ts` — 3 casos del modelo v3 base (seed completo, customer add-on independiente de units, terminated add-on excluido).
 - `tests/behavior/admin-reset.test.ts` — 6 casos del hard-reset (preserva org, resetea counters, sequential_ids arrancan en 1).
 - `tests/unit/*` — rounding, tz, HMAC.
 
-29/29 verde en la última ejecución.
+32/32 verde en la última ejecución.
 
 ---
 
@@ -412,7 +430,8 @@ Tiempo total ~2 min. Costo: 0 en repos públicos.
 | `FEATURE_NETSUITE_DISPATCH_ENABLED` | `false` | Si `true`, despacha invoices a NetSuite |
 | `NETSUITE_*` | — | Credenciales OAuth 1.0a / TBA (account_id, consumer_key, consumer_secret, token_key, token_secret, rest_base) |
 | `NETSUITE_CALLBACK_SECRET` | — | Shared secret para HMAC del callback |
-| `PERIOD_ROLLOVER_ENABLED` | `true` | Si `true`, activa el cron de roll-over de periodos |
+| `PERIOD_ROLLOVER_ENABLED` | `true` | Si `true`, activa el cron auto-billing (cycle invoice + roll-over). Corre cada 60s. |
+| `CALLBACK_BASE_URL` | `http://localhost:$PORT` | Base URL para `callback_url` en los payloads enviados a NetSuite |
 | `LOG_LEVEL` | `info` | Pino log level |
 
 ---

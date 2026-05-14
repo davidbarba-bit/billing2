@@ -15,13 +15,10 @@
 
 import type { FastifyInstance } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { Decimal } from '@prisma/client/runtime/library';
-import { DateTime } from 'luxon';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
-import { applicableTimezone } from '../services/tz.js';
-import { billingPeriodFor, computeCustomerInvoice, markOneOffBilled, markSetupsBilled } from '../services/billing-engine.js';
 import { hashRequestBody, IdempotencyConflictError, lookupIdempotent, recordIdempotent } from '../services/idempotency.js';
+import { emitCycleInvoiceForCustomer } from '../services/cycle-billing.js';
 import { serializeInvoice, type InvoiceWithRelations } from '../serializers/invoice.js';
 import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
@@ -85,161 +82,27 @@ export function registerInvoiceRoutes(
 
       const customer = await prisma.customer.findUnique({
         where: { organizationId_externalId: { organizationId: org.id, externalId: payload.customer_external_id } },
-        include: {
-          organization: true,
-          taxLinks: { include: { tax: true } },
-          services: {
-            where: { status: 'active' },
-            include: {
-              units: true,
-              addOns: true,
-              taxLinks: { include: { tax: true } },
-            },
-          },
-          addOns: { where: { activeTo: null } },
-        },
+        include: { taxLinks: { include: { tax: true } } },
       });
       if (!customer) throw notFound('customer');
 
-      // Tax stack: customer-level (services don't have their own tax stack
-      // in v3 — they inherit from the customer).
-      const taxes = customer.taxLinks.map((l) => l.tax);
+      const periodOverride = (payload.period_from && payload.period_to)
+        ? { from: new Date(payload.period_from), to: new Date(payload.period_to) }
+        : null;
 
-      const tz = applicableTimezone(customer.timezone, org.timezone);
-      const now = new Date();
-      const periodStart = payload.period_from ? new Date(payload.period_from) : null;
-      const periodEnd = payload.period_to ? new Date(payload.period_to) : null;
-      const period = periodStart && periodEnd
-        ? {
-            start: periodStart,
-            end: periodEnd,
-            daysInPeriod: Math.max(1, Math.round(
-              DateTime.fromJSDate(periodEnd, { zone: 'utc' }).plus({ seconds: 1 }).diff(
-                DateTime.fromJSDate(periodStart, { zone: 'utc' }),
-                'days',
-              ).days,
-            )),
-          }
-        : billingPeriodFor(customer, tz, now);
-
-      // Add-ons filtered down to those that overlap the period.
-      const customerAddOns = await prisma.customerAddOn.findMany({
-        where: {
-          customerId: customer.id,
-          activeFrom: { lte: period.end },
-          OR: [{ activeTo: null }, { activeTo: { gte: period.start } }],
-        },
-      });
-
-      const computed = computeCustomerInvoice({
+      const result = await emitCycleInvoiceForCustomer({
+        prisma,
+        dispatcher: opts.dispatcher,
+        callbackBaseUrl: opts.callbackBaseUrl,
+        org,
         customer,
-        services: customer.services,
-        customerAddOns,
-        taxes,
-        periodStart: period.start,
-        periodEnd: period.end,
-        daysInPeriod: period.daysInPeriod,
+        periodOverride,
+        idempotencyKey,
+        metadata: payload.metadata ?? {},
+        log: request.log,
       });
 
-      const issuingDate = DateTime.fromJSDate(now, { zone: 'utc' }).setZone(tz).startOf('day').toUTC().toJSDate();
-
-      const created = await prisma.$transaction(async (tx) => {
-        const orgUpdate = await tx.organization.update({
-          where: { id: org.id },
-          data: { invoiceCounter: { increment: 1 } },
-          select: { invoiceCounter: true },
-        });
-        const sequentialId = orgUpdate.invoiceCounter;
-        const invoice = await tx.invoice.create({
-          data: {
-            organizationId: org.id,
-            customerId: customer.id,
-            sequentialId,
-            currency: customer.currency,
-            status: 'calculated',
-            externalDispatchStatus: 'pending',
-            paymentStatus: 'pending',
-            issuingDate,
-            paymentDueDate: issuingDate,
-            feesAmountCents: computed.feesAmountCents,
-            taxesAmountCents: computed.taxesAmountCents,
-            totalAmountCents: computed.totalAmountCents,
-            periodFrom: period.start,
-            periodTo: period.end,
-            unitsAnnex: computed.unitsAnnex as object,
-            metadata: { ...(payload.metadata ?? {}), idempotency_key: idempotencyKey } as object,
-            idempotencyKey,
-          },
-        });
-
-        for (let i = 0; i < computed.fees.length; i++) {
-          const fee = computed.fees[i]!;
-          await tx.fee.create({
-            data: {
-              invoiceId: invoice.id,
-              serviceId: fee.serviceId ?? null,
-              serviceAddOnId: fee.serviceAddOnId ?? null,
-              customerAddOnId: fee.customerAddOnId ?? null,
-              kind: fee.kind,
-              description: fee.description,
-              units: fee.units,
-              unitAmountCents: fee.unitAmountCents,
-              preciseUnitAmount: fee.preciseUnitAmount,
-              amountCents: fee.amountCents,
-              taxesAmountCents: fee.taxesAmountCents,
-              taxesRate: new Decimal(fee.taxesRate) as unknown as Prisma.Decimal,
-              totalAmountCents: fee.totalAmountCents,
-              billedUnitsDetail: fee.billedUnitsDetail as object,
-              position: i,
-            },
-          });
-          if (fee.kind === 'setup' && fee.unitIds.length > 0) {
-            await markSetupsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
-          }
-          if (fee.kind === 'one_off' && fee.unitIds.length > 0) {
-            await markOneOffBilled(tx as unknown as PrismaClient, fee.unitIds, now);
-          }
-        }
-
-        for (const { tax, amountCents } of computed.appliedTaxes) {
-          await tx.appliedTax.create({
-            data: {
-              invoiceId: invoice.id,
-              taxId: tax.id,
-              taxName: tax.name,
-              taxCode: tax.code,
-              taxRate: tax.rate,
-              taxDescription: tax.description,
-              amountCents,
-              amountCurrency: customer.currency,
-              feesAmountCents: computed.feesAmountCents,
-            },
-          });
-        }
-
-        return invoice;
-      });
-
-      // Dispatch to NetSuite (or short-circuit if feature flag is off).
-      const hydrated = await loadInvoice(prisma, created.id);
-      try {
-        const dispatchPayload = buildDispatchPayload(hydrated, taxes.map((t) => t.code), opts.callbackBaseUrl);
-        const result = await opts.dispatcher.dispatch(org, dispatchPayload, 'invoice');
-        await prisma.invoice.update({
-          where: { id: hydrated.id },
-          data: result.status === 'accepted'
-            ? { externalDispatchStatus: 'dispatched', netsuiteDispatchId: result.netsuiteInternalId ?? null }
-            : { externalDispatchStatus: 'failed', externalDispatchError: result.error ?? 'dispatch_failed' },
-        });
-      } catch (err) {
-        request.log.error({ err }, 'netsuite dispatch failed');
-        await prisma.invoice.update({
-          where: { id: hydrated.id },
-          data: { externalDispatchStatus: 'failed', externalDispatchError: err instanceof Error ? err.message : String(err) },
-        });
-      }
-
-      const final = await loadInvoice(prisma, created.id);
+      const final = await loadInvoice(prisma, result.invoice.id);
       const responseBody = serializeInvoice(final);
       await recordIdempotent(prisma, org.id, '/api/v1/invoices', idempotencyKey, bodyHash, 200, responseBody);
       reply.send(responseBody);
@@ -338,45 +201,6 @@ async function loadInvoice(prisma: PrismaClient, id: string): Promise<InvoiceWit
   });
   if (!invoice) throw notFound('invoice');
   return invoice;
-}
-
-function buildDispatchPayload(invoice: InvoiceWithRelations, taxCodes: string[], callbackBaseUrl: string) {
-  return {
-    external_id: invoice.id,
-    minilago_invoice_id: invoice.id,
-    issued_at: invoice.createdAt.toISOString(),
-    currency: invoice.currency,
-    customer: {
-      external_id: invoice.customer.externalId,
-      name: invoice.customer.name,
-      tax_identification_number: invoice.customer.taxIdentificationNumber,
-      country: invoice.customer.country,
-      tax_codes: taxCodes,
-    },
-    billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
-    lines: invoice.fees.map((f) => ({
-      fee_id: f.id,
-      service_id: f.serviceId,
-      service_add_on_id: f.serviceAddOnId,
-      customer_add_on_id: f.customerAddOnId,
-      kind: f.kind,
-      description: f.description,
-      units: f.units,
-      unit_amount_cents: f.unitAmountCents,
-      amount_cents: f.amountCents,
-      taxes_amount_cents: f.taxesAmountCents,
-      total_amount_cents: f.totalAmountCents,
-      billed_units_detail: f.billedUnitsDetail,
-    })),
-    units_annex: invoice.unitsAnnex,
-    totals: {
-      fees_amount_cents: invoice.feesAmountCents,
-      taxes_amount_cents: invoice.taxesAmountCents,
-      total_amount_cents: invoice.totalAmountCents,
-    },
-    metadata: invoice.metadata ?? {},
-    callback_url: `${callbackBaseUrl}/api/v1/invoices/${invoice.id}/external-confirm`,
-  };
 }
 
 function emptyMeta(page: number) {

@@ -67,19 +67,24 @@ describe('v4 — intervals + one_off', () => {
       payload: { invoice: { customer_external_id: 'c1', metadata: { idempotency_key: 'cycle-1' } } },
     });
     expect(r.statusCode).toBe(200);
-    const body = r.json() as { invoice: { fees: Array<{ kind: string; amount_cents: number }> } };
+    const body = r.json() as { invoice: { id: string; fees: Array<{ kind: string; amount_cents: number }> } };
     const oneOff = body.invoice.fees.find((f) => f.kind === 'one_off');
     expect(oneOff).toBeTruthy();
     expect(oneOff!.amount_cents).toBe(75000);
 
-    // Segunda cycle invoice → no debe re-cobrar (oneoff_billed_at ya seteado).
+    // La unit debe quedar marcada como cobrada en DB.
+    const unit = await h.prisma.unit.findFirstOrThrow({ where: { externalId: 'sensor-x' } });
+    expect(unit.oneoffBilledAt).not.toBeNull();
+
+    // Idempotencia: una 2ª llamada con misma config retorna la MISMA invoice
+    // (no crea un duplicado). Eso garantiza que el cron pueda re-correr.
     const r2 = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
-      headers: { ...h.authHeader(), 'idempotency-key': 'cycle-2' },
-      payload: { invoice: { customer_external_id: 'c1', metadata: { idempotency_key: 'cycle-2' } } },
+      headers: { ...h.authHeader(), 'idempotency-key': 'cycle-2-different-key' },
+      payload: { invoice: { customer_external_id: 'c1', metadata: { idempotency_key: 'cycle-2-different-key' } } },
     });
-    const body2 = r2.json() as { invoice: { fees: Array<{ kind: string }> } };
-    expect(body2.invoice.fees.find((f) => f.kind === 'one_off')).toBeUndefined();
+    const body2 = r2.json() as { invoice: { id: string } };
+    expect(body2.invoice.id).toBe(body.invoice.id);
   });
 
   it('one_off + immediate: POST /events emite invoice individual', async () => {

@@ -15,6 +15,7 @@ export type AppConfig = {
   readonly seedDefaultOrgSlug: string;
   readonly seedDefaultOrgTimezone: string;
   readonly seedDefaultApiKey: string;
+  readonly callbackBaseUrl: string | undefined;
 };
 
 function bool(value: string | undefined, fallback: boolean): boolean {
@@ -45,5 +46,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     seedDefaultOrgSlug: env.SEED_DEFAULT_ORG_SLUG ?? 'NUM-FC2D',
     seedDefaultOrgTimezone: env.SEED_DEFAULT_ORG_TIMEZONE ?? 'America/Mexico_City',
     seedDefaultApiKey: env.SEED_DEFAULT_API_KEY ?? 'dev-api-key-replace-me',
+    callbackBaseUrl: env.CALLBACK_BASE_URL,
   };
 }

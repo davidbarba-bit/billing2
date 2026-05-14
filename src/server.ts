@@ -4,18 +4,24 @@ import { setInterval as setIntervalAsync } from 'node:timers/promises';
 import { loadConfig } from './config.js';
 import { disconnectPrisma, getPrisma } from './db.js';
 import { buildApp } from './app.js';
-import { tickRollOver } from './cron/period-rollover.js';
+import { tickCycleBilling } from './cron/cycle-billing.js';
+import { FakeNetSuiteDispatcher, RealNetSuiteDispatcher, type NetSuiteDispatcher } from './services/netsuite-dispatcher.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const prisma = getPrisma();
   await ensureDefaultOrganization(prisma, config);
 
-  const app = await buildApp({ config, prisma });
+  const dispatcher: NetSuiteDispatcher = config.featureNetsuiteDispatchEnabled
+    ? new RealNetSuiteDispatcher()
+    : new FakeNetSuiteDispatcher();
+  const callbackBaseUrl = config.callbackBaseUrl ?? `http://localhost:${config.port}`;
+
+  const app = await buildApp({ config, prisma, dispatcher, callbackBaseUrl });
   await app.listen({ port: config.port, host: config.host });
 
   if (config.periodRolloverEnabled) {
-    void runRolloverLoop(prisma, app);
+    void runCycleBillingLoop(prisma, dispatcher, callbackBaseUrl, app);
   }
 
   const shutdown = async (): Promise<void> => {
@@ -30,19 +36,24 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown());
 }
 
-async function runRolloverLoop(
+async function runCycleBillingLoop(
   prisma: ReturnType<typeof getPrisma>,
+  dispatcher: NetSuiteDispatcher,
+  callbackBaseUrl: string,
   app: Awaited<ReturnType<typeof buildApp>>,
 ): Promise<void> {
-  // Simple "every 15 minutes" loop. Replace with a real cron if you need
-  // crontab-grained scheduling.
-  const intervalMs = 15 * 60 * 1000;
+  // Cada 60s: activa pending, emite cycle invoices vencidas, roll-over.
+  // Idempotente por (customer_id, period_from, period_to) — seguro re-correr.
+  const intervalMs = 60 * 1000;
+  // Primera pasada inmediata al boot por si ya hay cosas pendientes.
+  try { await tickCycleBilling({ prisma, dispatcher, callbackBaseUrl, log: app.log }); }
+  catch (err) { app.log.error({ err }, 'initial cycle billing tick failed'); }
+
   for await (const _ of setIntervalAsync(intervalMs)) {
     try {
-      const summary = await tickRollOver(prisma);
-      app.log.debug({ summary }, 'period rollover tick');
+      await tickCycleBilling({ prisma, dispatcher, callbackBaseUrl, log: app.log });
     } catch (err) {
-      app.log.error({ err }, 'period rollover failed');
+      app.log.error({ err }, 'cycle billing tick failed');
     }
   }
 }
@@ -59,8 +70,6 @@ async function ensureDefaultOrganization(
       name: 'Default Organization',
       timezone: config.seedDefaultOrgTimezone,
       apiKey: config.seedDefaultApiKey,
-      // Default secret for local dev so the admin's "simulate folio" flow
-      // works out of the box. Replace before exposing externally.
       netsuiteCallbackSecret: 'dev-callback-secret-replace-me',
     },
   });
