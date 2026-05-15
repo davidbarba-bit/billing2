@@ -14,7 +14,6 @@ const NAV_ITEMS: Array<{ href: string; label: string }> = [
   { href: '/admin/events', label: 'Events' },
   { href: '/admin/invoices', label: 'Invoices' },
   { href: '/admin/credit-notes', label: 'Credit notes' },
-  { href: '/admin/taxes', label: 'Taxes' },
   { href: '/admin/settings', label: 'Settings' },
 ];
 
