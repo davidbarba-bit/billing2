@@ -103,6 +103,7 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     periodStart: period.start,
     periodEnd: period.end,
     daysInPeriod: period.daysInPeriod,
+    tz,
   });
 
   const issuingDate = DateTime.fromJSDate(now, { zone: 'utc' }).setZone(tz).startOf('day').toUTC().toJSDate();
@@ -357,6 +358,7 @@ export async function previewCycleInvoiceForCustomer(
     periodStart: period.start,
     periodEnd: period.end,
     daysInPeriod: period.daysInPeriod,
+    tz,
   });
 
   return {

@@ -121,6 +121,9 @@ export type ComputeOptions = {
   periodStart: Date;
   periodEnd: Date;
   daysInPeriod: number;
+  // v8: tz del customer (o de la organización si el customer no la setea).
+  // Necesaria para definir "mes calendario" correctamente para la proración.
+  tz: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +135,7 @@ export type ComputeOptions = {
 // + customer_addons flat (prorrateados) + tax stack.
 // ---------------------------------------------------------------------------
 export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
-  const { customer, services, customerAddOns, periodStart, periodEnd, daysInPeriod } = opts;
+  const { customer, services, customerAddOns, periodStart, periodEnd, tz } = opts;
   const fees: ComputedFee[] = [];
 
   for (const rawService of services) {
@@ -144,7 +147,7 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
     const service = withEffectivePrice(rawService, periodStart);
 
     if (service.pricingModel === 'recurring') {
-      const monthlyFee = buildMonthlyFee(service, service.units, periodStart, periodEnd, daysInPeriod);
+      const monthlyFee = buildMonthlyFee(service, service.units, periodStart, periodEnd, tz);
       if (monthlyFee) fees.push(monthlyFee);
       const setupFee = buildSetupFee(service, service.units, periodStart, periodEnd);
       if (setupFee) fees.push(setupFee);
@@ -155,7 +158,7 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
         const addOnTo = addOn.activeTo === null
           ? periodEnd
           : (addOn.activeTo > periodEnd ? periodEnd : addOn.activeTo);
-        const fee = buildServiceAddOnFee(service, addOn, addOnFrom, addOnTo, daysInPeriod, periodStart, periodEnd);
+        const fee = buildServiceAddOnFee(service, addOn, addOnFrom, addOnTo, tz, periodStart, periodEnd);
         if (fee) fees.push(fee);
       }
     } else if (service.pricingModel === 'one_off') {
@@ -180,7 +183,7 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
     const to = addOn.activeTo === null
       ? periodEnd
       : (addOn.activeTo > periodEnd ? periodEnd : addOn.activeTo);
-    const fee = buildCustomerAddOnFee(addOn, from, to, daysInPeriod);
+    const fee = buildCustomerAddOnFee(addOn, from, to, tz);
     if (fee) fees.push(fee);
   }
 
@@ -304,13 +307,53 @@ function daysInInterval(from: Date, to: Date, tz = 'UTC'): number {
   return Math.max(0, Math.round(toDt.diff(fromDt, 'days').days));
 }
 
+// v8: prorrateo basado en MES CALENDARIO en la tz del customer.
+//
+// `monthly_unit_amount_cents` representa la renta de UN MES CALENDARIO
+// COMPLETO (28/29/30/31 días según el mes). Cuando la unit está activa
+// durante una porción de uno o más meses, el factor es la suma de
+//   Σ días_activos_en_mes_X / días_del_mes_X
+//
+// Ejemplos (tz=America/Mexico_City):
+//   - Unit activa todo mayo 2026 (31 días): 31/31 = 1.0
+//   - Stub mid-mes: unit activa 15-may → 1-jun (17 días): 17/31 = 0.5484
+//   - Cycle 3M (1-jun → 1-sep), unit activa todo: 30/30 + 31/31 + 31/31 = 3.0
+//   - Unit activa 15-jun → 15-ago: 16/30 + 31/31 + 15/31 = 2.0172
+//
+// Esto reemplaza la semántica vieja `días_activos / días_del_periodo` que
+// trataba al stub como periodo "completo" y cobraba renta entera por menos
+// de un mes. También deja que ciclos multi-mes facturen N × renta_mensual
+// en lugar de 1 × renta_mensual para todo el ciclo.
+export function calendarMonthFraction(from: Date, to: Date, tz: string): number {
+  let acc = 0;
+  let cursor = DateTime.fromJSDate(from, { zone: 'utc' }).setZone(tz);
+  // `to` es inclusivo (típicamente …T23:59:59Z); +1s lo lleva al siguiente
+  // segundo para que startOf('day') quede on-or-after el día siguiente.
+  const end = DateTime.fromJSDate(to, { zone: 'utc' }).setZone(tz).plus({ seconds: 1 });
+  if (end <= cursor) return 0;
+  let guard = 0;
+  while (cursor < end) {
+    if (++guard > 60) break; // hard cap por si algo se rompiera (60 meses de cycle máx).
+    const monthStart = cursor.startOf('month');
+    const monthEnd = monthStart.plus({ months: 1 });
+    const chunkEnd = end < monthEnd ? end : monthEnd;
+    const chunkFromDay = cursor.startOf('day');
+    const chunkToDay = chunkEnd.startOf('day');
+    const chunkDays = Math.max(0, Math.round(chunkToDay.diff(chunkFromDay, 'days').days));
+    const daysInMonth = Math.round(monthEnd.diff(monthStart, 'days').days); // 28/29/30/31
+    if (daysInMonth > 0) acc += chunkDays / daysInMonth;
+    cursor = monthEnd;
+  }
+  return acc;
+}
+
 type UnitEntry = { unit: Unit; activeFrom: Date; activeTo: Date | null; fraction: string };
 
 function buildUnitEntries(
   units: Unit[],
   periodStart: Date,
   periodEnd: Date,
-  daysInPeriod: number,
+  tz: string,
   clampFrom: Date = periodStart,
   clampTo: Date = periodEnd,
 ): UnitEntry[] {
@@ -323,9 +366,8 @@ function buildUnitEntries(
       ? clampTo
       : new Date(Math.min(unit.activeTo.getTime(), clampTo.getTime()));
     if (effTo <= effFrom) continue;
-    const days = daysInInterval(effFrom, effTo);
-    if (days <= 0) continue;
-    const fraction = days / Math.max(1, daysInPeriod);
+    const fraction = calendarMonthFraction(effFrom, effTo, tz);
+    if (fraction <= 0) continue;
     entries.push({ unit, activeFrom: effFrom, activeTo: unit.activeTo === null ? null : effTo, fraction: fraction4(fraction) });
   }
   entries.sort((a, b) => (a.unit.externalId < b.unit.externalId ? -1 : 1));
@@ -349,9 +391,9 @@ function distribute(entries: UnitEntry[], unitAmountCents: number): { amountCent
   return { amountCents, distributed };
 }
 
-function buildMonthlyFee(service: Service, units: Unit[], periodStart: Date, periodEnd: Date, daysInPeriod: number): ComputedFee | null {
+function buildMonthlyFee(service: Service, units: Unit[], periodStart: Date, periodEnd: Date, tz: string): ComputedFee | null {
   if (service.monthlyUnitAmountCents <= 0) return null;
-  const entries = buildUnitEntries(units, periodStart, periodEnd, daysInPeriod);
+  const entries = buildUnitEntries(units, periodStart, periodEnd, tz);
   if (entries.length === 0) return null;
   const { amountCents, distributed } = distribute(entries, service.monthlyUnitAmountCents);
   const totalFractionStr = fraction4(entries.reduce((acc, e) => acc + Number(e.fraction), 0));
@@ -362,7 +404,7 @@ function buildMonthlyFee(service: Service, units: Unit[], periodStart: Date, per
   }));
   return {
     kind: 'monthly', serviceId: service.id,
-    description: `${service.name} — periodo (${entries.length} unidad${entries.length === 1 ? '' : 'es'}, factor ${totalFractionStr})`,
+    description: `${service.name} — ${entries.length} unidad${entries.length === 1 ? '' : 'es'} (factor ${totalFractionStr} meses-unidad)`,
     units: totalFractionStr, unitAmountCents: service.monthlyUnitAmountCents,
     preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
     amountCents,
@@ -396,10 +438,10 @@ function buildSetupFee(service: Service, units: Unit[], periodStart: Date, perio
 // que se activaron dentro del periodo. Modo next_cycle.
 function buildServiceAddOnFee(
   service: ServiceForBilling, addOn: ServiceAddOn, addOnFrom: Date, addOnTo: Date,
-  daysInPeriod: number, periodStart: Date, periodEnd: Date,
+  tz: string, periodStart: Date, periodEnd: Date,
 ): ComputedFee | null {
   if (addOn.amountCents <= 0) return null;
-  const entries = buildUnitEntries(service.units, periodStart, periodEnd, daysInPeriod, addOnFrom, addOnTo);
+  const entries = buildUnitEntries(service.units, periodStart, periodEnd, tz, addOnFrom, addOnTo);
   if (entries.length === 0) return null;
   const { amountCents, distributed } = distribute(entries, addOn.amountCents);
   const totalFractionStr = fraction4(entries.reduce((acc, e) => acc + Number(e.fraction), 0));
@@ -418,16 +460,15 @@ function buildServiceAddOnFee(
   };
 }
 
-function buildCustomerAddOnFee(addOn: CustomerAddOn, from: Date, to: Date, daysInPeriod: number): ComputedFee | null {
+function buildCustomerAddOnFee(addOn: CustomerAddOn, from: Date, to: Date, tz: string): ComputedFee | null {
   if (addOn.amountCents <= 0) return null;
-  const days = daysInInterval(from, to);
-  if (days <= 0) return null;
-  const fraction = days / Math.max(1, daysInPeriod);
+  const fraction = calendarMonthFraction(from, to, tz);
+  if (fraction <= 0) return null;
   const fractionStr = fraction4(fraction);
   const amountCents = bankersRound(fraction * addOn.amountCents);
   return {
     kind: 'customer_addon', customerAddOnId: addOn.id,
-    description: `${addOn.name} (flat · factor ${fractionStr})`,
+    description: `${addOn.name} (flat · factor ${fractionStr} meses)`,
     units: fractionStr, unitAmountCents: addOn.amountCents,
     preciseUnitAmount: (addOn.amountCents / 100).toFixed(2),
     amountCents,

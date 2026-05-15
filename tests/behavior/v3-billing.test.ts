@@ -41,9 +41,13 @@ describe('v3 billing (customer-level invoice)', () => {
 
   it('customer add-on stays even when the only service has zero monthly amount', async () => {
     // Create a customer with a flat add-on but a zero-priced service.
+    // Bajo v8 (proration por mes calendario), el customer_addon de un periodo
+    // FULL CALENDAR MONTH se cobra entero. Para evitar que el stub inicial
+    // prorratee la prueba a un valor parcial, forzamos period_from/period_to
+    // a un mes calendario completo (junio 2026 en CST).
     await h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c-flat', name: 'Flat', currency: 'MXN', timezone: 'America/Mexico_City' } },
+      payload: { customer: { external_id: 'c-flat', name: 'Flat', currency: 'MXN', timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z' } },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -57,7 +61,11 @@ describe('v3 billing (customer-level invoice)', () => {
     const res = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
       headers: { ...h.authHeader(), 'idempotency-key': 'flat-only' },
-      payload: { invoice: { customer_external_id: 'c-flat', metadata: { idempotency_key: 'flat-only' } } },
+      payload: { invoice: {
+        customer_external_id: 'c-flat',
+        period_from: '2026-06-01T06:00:00Z', period_to: '2026-07-01T05:59:59Z', // jun 2026 full en CST
+        metadata: { idempotency_key: 'flat-only' },
+      } },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { invoice: { fees: Array<{ kind: string; amount_cents: number }>; total_amount_cents: number } };

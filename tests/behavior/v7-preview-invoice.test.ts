@@ -169,11 +169,10 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
     expect(r.statusCode).toBe(404);
   });
 
-  it('override mid-day NO infla el factor: la fracción por unit jamás supera 1.0', async () => {
-    // Regresión: con la implementación previa daysInPeriod se calculaba con
-    // diff crudo (mid-day → mid-day = 16.47 → 16) mientras la fracción de la
-    // unit usa startOf('day') bucketing (= 17). Resultado: factor 1.0625 por
-    // unit. Con el fix ambos lados usan el mismo bucketing.
+  it('override de stub period prorratea por días del mes calendario (v8)', async () => {
+    // Bajo v8 la mensualidad se calcula como Σ días_activos_en_mes_X /
+    // días_del_mes_X. Un stub del 15-may al 1-jun (16 días bucketeados en
+    // CST) sobre un mes de 31 días = factor 16/31 ≈ 0.5161.
     await seedRecurring({ monthly: 85000 });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
@@ -189,10 +188,9 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
       fees: Array<{ kind: string; units: string; amount_cents: number }>;
     } }).preview;
     const monthly = preview.fees.find((f) => f.kind === 'monthly');
-    // 1 unit activa todo el (sub)periodo. factor debe ser exactamente 1.0000,
-    // no 1.0625.
-    expect(monthly!.units).toBe('1.0000');
-    expect(monthly!.amount_cents).toBe(85000);
+    expect(monthly!.units).toBe('0.5161');
+    // 0.5161 × 85000 = 43,868.5 → bankers (half-to-even) = 43868.
+    expect(monthly!.amount_cents).toBe(43868);
   });
 
   it('payload de NetSuite tiene la forma esperada (sin IDs persistidos)', async () => {
