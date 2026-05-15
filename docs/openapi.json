@@ -65,8 +65,17 @@
           "customer_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string" },
           "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "description": "recurring=renta por periodo + setup opcional. one_off=cargo único por unit cuando aparece." },
-          "monthly_unit_amount_cents": { "type": "integer", "description": "Recurring: renta por unidad por periodo. One-off (prepago): precio mensual unitario; total se calcula como N × monthly cuando la unit hace primer ping." },
-          "setup_unit_amount_cents": { "type": "integer", "description": "Cargo único por unidad al primer ping (aplica tanto a recurring como a one_off)." },
+          "monthly_unit_amount_cents": { "type": "integer", "description": "Precio mensual /unidad VIGENTE (resuelto al instante de leer). Si hay un pending_price_change con effective_from ya pasado, este campo refleja ese valor promovido." },
+          "setup_unit_amount_cents": { "type": "integer", "description": "Setup /unidad VIGENTE (resuelto al instante de leer)." },
+          "pending_price_change": {
+            "type": ["object", "null"],
+            "description": "Cambio de precio programado a futuro (v7). Solo presente cuando hay un cambio con effective_from > ahora. Aplica a recurring (cycle next ≥ effective_from) y a one_off (cycle/ping next ≥ effective_from).",
+            "properties": {
+              "monthly_unit_amount_cents": { "type": "integer" },
+              "setup_unit_amount_cents": { "type": "integer" },
+              "effective_from": { "type": "string", "format": "date-time" }
+            }
+          },
           "prepaid_months_default": { "type": ["integer", "null"], "description": "Solo one_off: default de meses prepagados por unit. Sobreescribible por unit en POST /events o POST /units (campo prepaid_months)." },
           "status": { "type": "string", "enum": ["active", "terminated"] }
         }
@@ -221,6 +230,28 @@
       "delete": { "summary": "Delete (409 si tiene fees — usa terminate)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/v1/services/{code}/terminate": { "post": { "summary": "Terminate service + sus units activas", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service terminated" } } } },
+    "/api/v1/services/{code}/price": {
+      "put": {
+        "summary": "Programar cambio de precio con vigencia desde el siguiente ciclo (v7)",
+        "description": "Aplica a recurring y one_off. El nuevo precio se usa cuando el periodStart del cycle invoice (o el timestamp del ping immediate) sea on-or-after effective_from. Clientes mid-cycle mantienen el precio viejo hasta su cierre. Si ya existe un pending sin vencer, se sobreescribe. Si el pending existente ya está en vigor, se promueve a base antes de escribir el nuevo.",
+        "tags": ["services"],
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "price": { "type": "object", "required": ["monthly_unit_amount_cents", "setup_unit_amount_cents", "effective_from"], "properties": { "monthly_unit_amount_cents": { "type": "integer", "minimum": 0 }, "setup_unit_amount_cents": { "type": "integer", "minimum": 0 }, "effective_from": { "type": "string", "format": "date-time", "description": "Debe ser futuro (> ahora)." } } } } } } }
+        },
+        "responses": { "200": { "description": "Service con pending_price_change" }, "409": { "description": "service_terminated" }, "422": { "description": "Validación (must_be_in_the_future, must_be_non_negative_integer, etc.)" } }
+      }
+    },
+    "/api/v1/services/{code}/pending-price": {
+      "delete": {
+        "summary": "Cancelar un cambio de precio programado (v7)",
+        "description": "Solo tiene éxito si effective_from > ahora. Si el cambio ya entró en vigor, devuelve 409 (la única forma de revertirlo es programar otro cambio en sentido opuesto).",
+        "tags": ["services"],
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Service con pending_price_change=null" }, "409": { "description": "no_pending_price_change | pending_price_already_in_effect" } }
+      }
+    },
     "/api/v1/services/{code}/add-ons": {
       "post": { "summary": "Create service-level per-unit add-on", "tags": ["add-ons"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "type": "object", "required": ["code", "name", "amount_cents"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "amount_cents": { "type": "integer", "minimum": 0 }, "active_from": { "type": "string", "format": "date-time" } } } } } } } }, "responses": { "200": { "description": "ServiceAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "$ref": "#/components/schemas/ServiceAddOn" } } } } } } } },
       "get": { "summary": "List service add-ons", "tags": ["add-ons"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }

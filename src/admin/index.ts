@@ -544,14 +544,29 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
+    // v7: el precio "vigente ahora" puede ser el `pending*` si su effective_from
+    // ya pasó. Resolvemos para mostrar valores correctos.
+    const now = new Date();
+    const pendingActive =
+      service.pendingEffectiveFrom !== null
+      && service.pendingMonthlyUnitAmountCents !== null
+      && service.pendingSetupUnitAmountCents !== null
+      && service.pendingEffectiveFrom <= now;
+    const effectiveMonthly = pendingActive ? service.pendingMonthlyUnitAmountCents! : service.monthlyUnitAmountCents;
+    const effectiveSetup = pendingActive ? service.pendingSetupUnitAmountCents! : service.setupUnitAmountCents;
+    const pendingFuture =
+      service.pendingEffectiveFrom !== null
+      && service.pendingMonthlyUnitAmountCents !== null
+      && service.pendingSetupUnitAmountCents !== null
+      && service.pendingEffectiveFrom > now;
     const info = kv([
       ['Code', `<code>${escapeHtml(service.code)}</code>`],
       ['Nombre', escapeHtml(service.name)],
       ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">${escapeHtml(service.customer.externalId)}</a>`],
       ['Status', statusBadge(service.status)],
       ['Pricing model', badge(service.pricingModel, service.pricingModel === 'one_off' ? 'green' : 'blue')],
-      ['Monto /unidad', fmtMoney(service.monthlyUnitAmountCents, service.currency) + (service.pricingModel === 'one_off' ? ' /mes prepagado' : ' /periodo')],
-      ['Setup /unidad', fmtMoney(service.setupUnitAmountCents, service.currency)],
+      ['Monto /unidad (vigente)', fmtMoney(effectiveMonthly, service.currency) + (service.pricingModel === 'one_off' ? ' /mes prepagado' : ' /periodo')],
+      ['Setup /unidad (vigente)', fmtMoney(effectiveSetup, service.currency)],
       ['Meses prepagados (default)', service.pricingModel === 'one_off' ? (service.prepaidMonthsDefault !== null ? String(service.prepaidMonthsDefault) + ' meses' : '<span class="text-red-600">no configurado — se debe especificar por unit</span>') : '<span class="text-gray-400">n/a (recurring)</span>'],
       ['Terminated at', fmtDate(service.terminatedAt)],
     ]);
@@ -582,6 +597,52 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     // invoices.
     const invoicesLink = `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">Ver invoices del customer →</a>`;
     const terminateForm = service.status !== 'terminated' ? postButton(`/admin/services/${service.code}/terminate`, 'Terminar service', 'danger', `¿Terminar ${service.code}?`) : '';
+
+    // v7: card de cambio de precio. Muestra el cambio pendiente (si existe y
+    // aún no entra en vigor), permite programar uno nuevo (sobreescribe el
+    // anterior) y permite cancelarlo si aún no entró en vigor.
+    const priceChangeBlock = service.status === 'terminated'
+      ? '<p class="text-sm text-gray-500">Service terminado — los precios no se pueden modificar.</p>'
+      : (() => {
+        const pendingRow = pendingFuture
+          ? `
+            <div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm space-y-1">
+              <div class="font-medium text-amber-900">Cambio programado</div>
+              <div>Mensual: <strong>${escapeHtml(fmtMoney(service.pendingMonthlyUnitAmountCents!, service.currency))}</strong></div>
+              <div>Setup: <strong>${escapeHtml(fmtMoney(service.pendingSetupUnitAmountCents!, service.currency))}</strong></div>
+              <div>Entra en vigor: <strong>${escapeHtml(fmtDate(service.pendingEffectiveFrom!))}</strong></div>
+              <div class="pt-2">${postButton(`/admin/services/${service.code}/pending-price/cancel`, 'Cancelar cambio programado', 'danger', '¿Cancelar el cambio de precio programado?')}</div>
+            </div>`
+          : '<p class="text-sm text-gray-500">No hay cambio de precio programado.</p>';
+
+        // Default effective_from sugerido: mañana 00:00 UTC (input datetime-local).
+        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        const yyyy = tomorrow.getUTCFullYear();
+        const mm = String(tomorrow.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(tomorrow.getUTCDate()).padStart(2, '0');
+        const defaultEffective = `${yyyy}-${mm}-${dd}T00:00`;
+
+        const form = `
+          <details class="mt-4"${pendingFuture ? '' : ' open'}>
+            <summary class="cursor-pointer text-indigo-700 font-medium">${pendingFuture ? 'Sobrescribir' : '+ Programar'} cambio de precio</summary>
+            <form method="post" action="/admin/services/${escapeHtml(service.code)}/price" class="mt-3 space-y-3 max-w-2xl">
+              <p class="text-xs text-gray-500">El nuevo precio aplicará a la facturación de cada cliente cuyo ciclo empiece on-or-after la fecha indicada. Clientes mid-cycle mantienen el precio vigente hasta el siguiente cierre. Aplica igual a servicios recurring y one_off.</p>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block"><span class="text-sm text-gray-700">Monto mensual /unidad (cents)</span>
+                  <input required type="number" name="monthly_unit_amount_cents" min="0" value="${effectiveMonthly}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+                </label>
+                <label class="block"><span class="text-sm text-gray-700">Setup /unidad (cents)</span>
+                  <input required type="number" name="setup_unit_amount_cents" min="0" value="${effectiveSetup}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+                </label>
+                <label class="block col-span-2"><span class="text-sm text-gray-700">Vigente a partir de (UTC)</span>
+                  <input required type="datetime-local" name="effective_from" value="${defaultEffective}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+                </label>
+              </div>
+              <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">${pendingFuture ? 'Sobrescribir' : 'Programar'} cambio</button>
+            </form>
+          </details>`;
+        return pendingRow + form;
+      })();
 
     const addOnsBlock = table({
       rows: service.addOns,
@@ -628,6 +689,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       title: `Service · ${service.code}`, active: '/admin/services', orgSlug: org.slug, flash,
       body: pageHeader(service.name, btn('/admin/services', '← back'))
         + card('Identidad', info)
+        + card('Precio', priceChangeBlock)
         + card('Acciones', `${terminateForm} <span class="ml-3">${invoicesLink}</span>`)
         + card(`Add-ons per-unit (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
         + card(`Units (${service.units.length})`, unitsBlock),
@@ -755,6 +817,51 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
     else setFlash(reply, 'success', `Service ${svcCode} terminado.`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
+  // v7: programar cambio de precio (form HTML → API JSON).
+  app.post('/admin/services/:code/price', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    // <input type="datetime-local"> envía "YYYY-MM-DDTHH:mm" (a veces con
+    // segundos). Lo interpretamos como UTC para que coincida con la etiqueta
+    // "(UTC)" del form.
+    const raw = (body.effective_from ?? '').trim();
+    let effectiveFromIso = raw;
+    if (raw && !raw.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(raw)) {
+      effectiveFromIso = /T\d{2}:\d{2}:\d{2}/.test(raw) ? `${raw}Z` : `${raw}:00Z`;
+    }
+    const result = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/services/${encodeURIComponent(svcCode)}/price`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: {
+        price: {
+          monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
+          setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
+          effective_from: effectiveFromIso,
+        },
+      },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Cambio de precio programado para ${svcCode}.`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
+  app.post('/admin/services/:code/pending-price/cancel', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const result = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/services/${encodeURIComponent(svcCode)}/pending-price`,
+      headers: { authorization: `Bearer ${org.apiKey}` },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Cambio de precio programado cancelado.`);
     reply.redirect(`/admin/services/${svcCode}`);
   });
 

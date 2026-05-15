@@ -128,6 +128,14 @@ model Service {
   pricingModel           String    @default("recurring") @map("pricing_model")
   monthlyUnitAmountCents Int       @default(0) @map("monthly_unit_amount_cents")
   setupUnitAmountCents   Int       @default(0) @map("setup_unit_amount_cents")
+  // v7: cambio de precio programado. Cuando los tres campos están poblados y
+  // el periodo a facturar empieza on-or-after `pendingEffectiveFrom`, el motor
+  // usa los valores `pending*` en lugar de los de arriba. Aplica igual para
+  // recurring y one_off (mensualidades prepagadas aún no facturadas usan el
+  // precio vigente al momento de emitir la cycle invoice).
+  pendingMonthlyUnitAmountCents Int?      @map("pending_monthly_unit_amount_cents")
+  pendingSetupUnitAmountCents   Int?      @map("pending_setup_unit_amount_cents")
+  pendingEffectiveFrom          DateTime? @map("pending_effective_from")
   // Default de meses prepagados por unit (solo aplica a pricing_model=one_off).
   // Puede ser sobreescrito a nivel Unit (Unit.prepaidMonths). Si ambos son
   // null al momento de facturar, se aborta el cobro con un error.

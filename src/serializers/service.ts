@@ -1,11 +1,23 @@
-// Service serializer (v5 — sin tax stack, NetSuite calcula impuestos).
+// Service serializer (v7 — expone precio efectivo + cambio pendiente).
+// `monthly_unit_amount_cents` y `setup_unit_amount_cents` reflejan el precio
+// EFECTIVO AHORA (si hay un pending con effective_from <= ahora, sus valores
+// ganan). `pending_price_change` describe un cambio programado a futuro;
+// es null cuando no hay pending o cuando el pending ya está en vigor.
 
 import type { Service } from '@prisma/client';
+import { effectivePriceFor } from '../services/billing-engine.js';
 import { isoUtc } from '../services/tz.js';
 
 export type ServiceWithLinks = Service;
 
 export function serializeService(service: ServiceWithLinks) {
+  const now = new Date();
+  const effective = effectivePriceFor(service, now);
+  const pendingInFuture =
+    service.pendingEffectiveFrom !== null
+    && service.pendingMonthlyUnitAmountCents !== null
+    && service.pendingSetupUnitAmountCents !== null
+    && service.pendingEffectiveFrom > now;
   return {
     service: {
       id: service.id,
@@ -15,8 +27,15 @@ export function serializeService(service: ServiceWithLinks) {
       customer_id: service.customerId,
       currency: service.currency,
       pricing_model: service.pricingModel,
-      monthly_unit_amount_cents: service.monthlyUnitAmountCents,
-      setup_unit_amount_cents: service.setupUnitAmountCents,
+      monthly_unit_amount_cents: effective.monthlyUnitAmountCents,
+      setup_unit_amount_cents: effective.setupUnitAmountCents,
+      pending_price_change: pendingInFuture
+        ? {
+            monthly_unit_amount_cents: service.pendingMonthlyUnitAmountCents!,
+            setup_unit_amount_cents: service.pendingSetupUnitAmountCents!,
+            effective_from: isoUtc(service.pendingEffectiveFrom!),
+          }
+        : null,
       prepaid_months_default: service.prepaidMonthsDefault ?? null,
       status: service.status,
       terminated_at: service.terminatedAt ? isoUtc(service.terminatedAt) : null,

@@ -142,7 +142,7 @@ export function registerEventRoutes(
           && unit.oneoffBilledAt === null;
 
         if (isImmediateOneOff) {
-          const computed = computeOneOffPingInvoice({ service, unit });
+          const computed = computeOneOffPingInvoice({ service, unit, now: timestamp });
 
           const orgUpdate = await tx.organization.update({
             where: { id: org.id },

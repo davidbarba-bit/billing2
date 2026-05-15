@@ -67,6 +67,53 @@ export type ServiceForBilling = Service & {
   addOns: ServiceAddOn[];
 };
 
+// v7: resuelve el precio efectivo del Service para un instante dado. Si el
+// service tiene un cambio de precio programado y el instante alcanza o pasa
+// `pendingEffectiveFrom`, devuelve los valores `pending*`. Si no, los actuales.
+// `at` es el inicio del periodo facturado (cycle) o `now` para cargos one-off
+// inmediatos.
+export function effectivePriceFor(
+  service: Pick<Service,
+    | 'monthlyUnitAmountCents'
+    | 'setupUnitAmountCents'
+    | 'pendingMonthlyUnitAmountCents'
+    | 'pendingSetupUnitAmountCents'
+    | 'pendingEffectiveFrom'
+  >,
+  at: Date,
+): { monthlyUnitAmountCents: number; setupUnitAmountCents: number } {
+  if (
+    service.pendingEffectiveFrom !== null
+    && service.pendingMonthlyUnitAmountCents !== null
+    && service.pendingSetupUnitAmountCents !== null
+    && at >= service.pendingEffectiveFrom
+  ) {
+    return {
+      monthlyUnitAmountCents: service.pendingMonthlyUnitAmountCents,
+      setupUnitAmountCents: service.pendingSetupUnitAmountCents,
+    };
+  }
+  return {
+    monthlyUnitAmountCents: service.monthlyUnitAmountCents,
+    setupUnitAmountCents: service.setupUnitAmountCents,
+  };
+}
+
+function withEffectivePrice<S extends Service>(service: S, at: Date): S {
+  const eff = effectivePriceFor(service, at);
+  if (
+    eff.monthlyUnitAmountCents === service.monthlyUnitAmountCents
+    && eff.setupUnitAmountCents === service.setupUnitAmountCents
+  ) {
+    return service;
+  }
+  return {
+    ...service,
+    monthlyUnitAmountCents: eff.monthlyUnitAmountCents,
+    setupUnitAmountCents: eff.setupUnitAmountCents,
+  };
+}
+
 export type ComputeOptions = {
   customer: Customer;
   services: ServiceForBilling[];
@@ -88,8 +135,13 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
   const { customer, services, customerAddOns, periodStart, periodEnd, daysInPeriod } = opts;
   const fees: ComputedFee[] = [];
 
-  for (const service of services) {
-    if (service.status !== 'active') continue;
+  for (const rawService of services) {
+    if (rawService.status !== 'active') continue;
+    // v7: resuelve el precio efectivo en función del inicio del periodo. Si
+    // el customer está mid-cycle cuando se programa el cambio, su periodo
+    // actual mantiene el precio viejo; el próximo ciclo (start >= effective_from)
+    // ya usa el nuevo.
+    const service = withEffectivePrice(rawService, periodStart);
 
     if (service.pricingModel === 'recurring') {
       const monthlyFee = buildMonthlyFee(service, service.units, periodStart, periodEnd, daysInPeriod);
@@ -142,9 +194,17 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
 export function computeOneOffPingInvoice(opts: {
   service: Service;
   unit: Unit;
+  now?: Date;
 }): ComputedInvoice {
-  const { service, unit } = opts;
-  if (service.pricingModel !== 'one_off') throw new Error('computeOneOffPingInvoice requires pricing_model=one_off');
+  const { service: rawService, unit } = opts;
+  if (rawService.pricingModel !== 'one_off') throw new Error('computeOneOffPingInvoice requires pricing_model=one_off');
+  // v7: pings inmediatos toman el precio vigente AL MOMENTO del ping (no
+  // existe "siguiente ciclo" para nonrecurring_trigger=immediate; el ping
+  // genera la invoice al instante). Si el admin programó un cambio con
+  // effective_from futuro, este ping aún usa el precio viejo. Si effective_from
+  // ya pasó, usa el nuevo.
+  const at = opts.now ?? new Date();
+  const service = withEffectivePrice(rawService, at);
   if (service.monthlyUnitAmountCents <= 0) throw new Error('one_off service has zero monthlyUnitAmountCents');
   return finalize(buildOneOffFeesForUnit(service, unit));
 }
