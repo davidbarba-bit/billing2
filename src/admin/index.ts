@@ -51,6 +51,16 @@ type Deps = {
   callbackBaseUrl: string;
 };
 
+// <input type="datetime-local"> envía "YYYY-MM-DDTHH:mm" (a veces con
+// segundos). Lo interpretamos como UTC para que coincida con la etiqueta
+// "(UTC)" de los forms.
+function toUtcIso(raw: string): string {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(trimmed)) return trimmed;
+  return /T\d{2}:\d{2}:\d{2}/.test(trimmed) ? `${trimmed}Z` : `${trimmed}:00Z`;
+}
+
 function timingSafeStringEqual(a: string, b: string): boolean {
   const aBuf = Buffer.from(a);
   const bBuf = Buffer.from(b);
@@ -351,6 +361,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/invoice" class="inline">
         <button type="submit" class="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Calcular factura del periodo</button>
       </form>
+      <a href="/admin/customers/${escapeHtml(customer.externalId)}/preview" class="ml-2 px-3 py-1.5 rounded bg-white text-gray-700 border text-sm font-medium hover:bg-gray-50 inline-flex items-center">Vista previa (dry-run)</a>
     `;
 
     const servicesBlock = table({
@@ -740,6 +751,124 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     reply.redirect(`/admin/services/${addOn.service.code}`);
   });
 
+  // GET /admin/customers/:external_id/preview — vista previa (dry-run) de la
+  // cycle invoice. No persiste nada. Acepta query params para iterar:
+  //   ?period_from=YYYY-MM-DDTHH:mm&period_to=...&now=YYYY-MM-DDTHH:mm
+  // Default: usa el ciclo vigente del customer y "ahora" real.
+  app.get('/admin/customers/:externalId/preview', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const q = request.query as { period_from?: string; period_to?: string; now?: string };
+
+    const customer = await prisma.customer.findUnique({
+      where: { organizationId_externalId: { organizationId: org.id, externalId } },
+    });
+    if (!customer) {
+      reply.status(404).type('text/html').send(layout({
+        title: 'Not Found', orgSlug: org.slug,
+        body: pageHeader('Customer no existe') + btn('/admin/customers', '← back'),
+      }));
+      return;
+    }
+
+    // Defaults útiles para el form: pinta el periodo vigente y "ahora" en
+    // datetime-local (UTC) si el usuario no overrideó.
+    const dt = (d: Date | null | undefined): string => {
+      if (!d) return '';
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    };
+    const realNow = new Date();
+    const defaultFrom = customer.currentBillingPeriodStartedAt ?? null;
+    const defaultTo = customer.currentBillingPeriodEndingAt ?? null;
+
+    // Llama al endpoint de preview vía app.inject para reusar la lógica.
+    const payload: Record<string, string> = { customer_external_id: externalId };
+    if (q.period_from) payload.period_from = toUtcIso(q.period_from);
+    if (q.period_to) payload.period_to = toUtcIso(q.period_to);
+    if (q.now) payload.now = toUtcIso(q.now);
+
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/v1/invoices/preview',
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { invoice: payload },
+    });
+
+    let body: string;
+    if (result.statusCode !== 200) {
+      body = `<div class="bg-red-50 border border-red-300 rounded p-4 text-red-900 text-sm"><strong>Preview falló (${result.statusCode}):</strong> <pre class="mt-2 whitespace-pre-wrap">${escapeHtml(result.body)}</pre></div>`;
+    } else {
+      const preview = (result.json() as { preview: {
+        period: { from: string; to: string; days_in_period: number };
+        reference_now: string;
+        fees: Array<{ kind: string; description: string; units: string; unit_amount_cents: number; amount_cents: number }>;
+        fees_amount_cents: number;
+        units_annex: unknown;
+        netsuite_payload: unknown;
+      } }).preview;
+
+      const totalsBox = `
+        <div class="grid grid-cols-3 gap-3 mb-4 text-sm">
+          <div class="bg-white border rounded p-3"><div class="text-xs text-gray-500 uppercase">Periodo</div><div class="font-mono">${escapeHtml(fmtDateOnly(preview.period.from))} → ${escapeHtml(fmtDateOnly(preview.period.to))}</div><div class="text-xs text-gray-500 mt-1">${preview.period.days_in_period} días</div></div>
+          <div class="bg-white border rounded p-3"><div class="text-xs text-gray-500 uppercase">Reference "now"</div><div class="font-mono">${escapeHtml(fmtDate(preview.reference_now))}</div></div>
+          <div class="bg-indigo-50 border border-indigo-300 rounded p-3"><div class="text-xs text-indigo-700 uppercase">Total a NetSuite (sin IVA)</div><div class="font-mono text-lg">${escapeHtml(fmtMoney(preview.fees_amount_cents, customer.currency))}</div></div>
+        </div>
+      `;
+
+      const feesTable = table({
+        rows: preview.fees,
+        empty: 'No hay fees — el ciclo no generaría invoice',
+        columns: [
+          { label: 'Kind', render: (f) => badge(f.kind, f.kind === 'monthly' ? 'blue' : f.kind === 'setup' ? 'yellow' : f.kind === 'one_off' ? 'green' : 'gray') },
+          { label: 'Descripción', render: (f) => escapeHtml(f.description) },
+          { label: 'Units', render: (f) => `<code>${escapeHtml(f.units)}</code>` },
+          { label: 'Precio /u', render: (f) => fmtMoney(f.unit_amount_cents, customer.currency) },
+          { label: 'Importe', render: (f) => `<strong>${escapeHtml(fmtMoney(f.amount_cents, customer.currency))}</strong>` },
+        ],
+      });
+
+      body = totalsBox + feesTable
+        + '<details class="mt-6"><summary class="cursor-pointer text-indigo-700 font-medium">units_annex (anexo de unidades)</summary>'
+        + code(preview.units_annex) + '</details>'
+        + '<details class="mt-3" open><summary class="cursor-pointer text-indigo-700 font-medium">Payload completo que se enviaría a NetSuite</summary>'
+        + code(preview.netsuite_payload) + '</details>';
+    }
+
+    const form = `
+      <form method="get" action="/admin/customers/${escapeHtml(externalId)}/preview" class="bg-white border rounded p-4 mb-6">
+        <p class="text-xs text-gray-500 mb-3">Dry-run: NO crea invoice, NO marca units como facturadas, NO envía a NetSuite. Re-ejecuta cuantas veces quieras.</p>
+        <div class="grid grid-cols-3 gap-3">
+          <label class="block text-sm"><span class="text-gray-700">Periodo desde (UTC)</span>
+            <input type="datetime-local" name="period_from" value="${escapeHtml(q.period_from ?? dt(defaultFrom))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+          </label>
+          <label class="block text-sm"><span class="text-gray-700">Periodo hasta (UTC)</span>
+            <input type="datetime-local" name="period_to" value="${escapeHtml(q.period_to ?? dt(defaultTo))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+          </label>
+          <label class="block text-sm"><span class="text-gray-700">Simular "hoy" (UTC, opcional)</span>
+            <input type="datetime-local" name="now" value="${escapeHtml(q.now ?? '')}" placeholder="${dt(realNow)}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+          </label>
+        </div>
+        <div class="mt-3 flex gap-2">
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Recalcular preview</button>
+          <a href="/admin/customers/${escapeHtml(externalId)}/preview" class="px-4 py-2 bg-white border rounded text-sm text-gray-700">Reset a defaults</a>
+          <a href="/admin/customers/${escapeHtml(externalId)}" class="ml-auto px-4 py-2 bg-white border rounded text-sm text-gray-700">← Back to customer</a>
+        </div>
+      </form>
+    `;
+
+    reply.type('text/html').send(layout({
+      title: `Preview · ${customer.externalId}`, active: '/admin/customers', orgSlug: org.slug,
+      body: pageHeader(`Vista previa: ${customer.name}`, btn(`/admin/customers/${customer.externalId}`, '← back'))
+        + form + body,
+    }));
+  });
+
   // POST /admin/customers/:external_id/invoice → calcula la factura del periodo.
   app.post('/admin/customers/:externalId/invoice', async (request, reply) => {
     const org = await getOrg(prisma);
@@ -826,14 +955,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const { code: svcCode } = request.params as { code: string };
     const body = request.body as Record<string, string>;
-    // <input type="datetime-local"> envía "YYYY-MM-DDTHH:mm" (a veces con
-    // segundos). Lo interpretamos como UTC para que coincida con la etiqueta
-    // "(UTC)" del form.
-    const raw = (body.effective_from ?? '').trim();
-    let effectiveFromIso = raw;
-    if (raw && !raw.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(raw)) {
-      effectiveFromIso = /T\d{2}:\d{2}:\d{2}/.test(raw) ? `${raw}Z` : `${raw}:00Z`;
-    }
+    const effectiveFromIso = toUtcIso(body.effective_from ?? '');
     const result = await app.inject({
       method: 'PUT',
       url: `/api/v1/services/${encodeURIComponent(svcCode)}/price`,

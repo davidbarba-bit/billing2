@@ -18,7 +18,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { hashRequestBody, IdempotencyConflictError, lookupIdempotent, recordIdempotent } from '../services/idempotency.js';
-import { emitCycleInvoiceForCustomer } from '../services/cycle-billing.js';
+import { emitCycleInvoiceForCustomer, previewCycleInvoiceForCustomer } from '../services/cycle-billing.js';
 import { serializeInvoice, type InvoiceWithRelations } from '../serializers/invoice.js';
 import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
@@ -105,6 +105,63 @@ export function registerInvoiceRoutes(
       const responseBody = serializeInvoice(final);
       await recordIdempotent(prisma, org.id, '/api/v1/invoices', idempotencyKey, bodyHash, 200, responseBody);
       reply.send(responseBody);
+    },
+  });
+
+  // v7: dry-run / preview. Calcula la cycle invoice SIN persistir, SIN
+  // marcar units como facturadas y SIN dispatchar. Re-ejecutable infinitas
+  // veces — útil para iterar precios, units, add-ons y verificar el output
+  // antes de cerrar el ciclo de verdad. Acepta override de periodo y de
+  // `now` (este último simula "qué pasaría si hoy fuera X" y sirve para
+  // probar el cambio de precio programado).
+  app.route({
+    method: 'POST',
+    url: '/api/v1/invoices/preview',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const body = (request.body ?? {}) as {
+        invoice?: {
+          customer_external_id?: string;
+          period_from?: string;
+          period_to?: string;
+          now?: string;
+        };
+      };
+      const payload = body.invoice;
+      if (!payload?.customer_external_id) {
+        throw validation({ customer_external_id: ['value_is_mandatory'] });
+      }
+      const customer = await prisma.customer.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId: payload.customer_external_id } },
+      });
+      if (!customer) throw notFound('customer');
+
+      const hasFrom = typeof payload.period_from === 'string' && payload.period_from.length > 0;
+      const hasTo = typeof payload.period_to === 'string' && payload.period_to.length > 0;
+      if (hasFrom !== hasTo) {
+        throw validation({ period: ['period_from_and_period_to_must_be_both_present_or_both_absent'] });
+      }
+      let periodOverride: { from: Date; to: Date } | null = null;
+      if (hasFrom && hasTo) {
+        const from = new Date(payload.period_from!);
+        const to = new Date(payload.period_to!);
+        if (Number.isNaN(from.getTime())) throw validation({ period_from: ['must_be_iso_datetime'] });
+        if (Number.isNaN(to.getTime())) throw validation({ period_to: ['must_be_iso_datetime'] });
+        if (to <= from) throw validation({ period_to: ['must_be_after_period_from'] });
+        periodOverride = { from, to };
+      }
+      let now: Date | undefined;
+      if (typeof payload.now === 'string' && payload.now.length > 0) {
+        const n = new Date(payload.now);
+        if (Number.isNaN(n.getTime())) throw validation({ now: ['must_be_iso_datetime'] });
+        now = n;
+      }
+
+      const preview = await previewCycleInvoiceForCustomer({
+        prisma, org, customer, periodOverride, now,
+      });
+      reply.send({ preview });
     },
   });
 

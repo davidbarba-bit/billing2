@@ -229,6 +229,18 @@
       "get": { "summary": "Read service", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service" } } },
       "delete": { "summary": "Delete (409 si tiene fees — usa terminate)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
+    "/api/v1/invoices/preview": {
+      "post": {
+        "summary": "Vista previa (dry-run) de cycle invoice — no persiste nada",
+        "description": "Computa exactamente lo que /api/v1/invoices produciría (fees, units_annex, payload a NetSuite) SIN crear invoice, SIN crear fees, SIN marcar units como facturadas, SIN incrementar contadores y SIN dispatchar. Re-ejecutable infinitas veces. Acepta override de periodo (period_from + period_to) y de `now` (para simular qué pasaría si hoy fuera X — útil con cambios de precio programados v7).",
+        "tags": ["invoices"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "type": "object", "required": ["customer_external_id"], "properties": { "customer_external_id": { "type": "string" }, "period_from": { "type": "string", "format": "date-time" }, "period_to": { "type": "string", "format": "date-time" }, "now": { "type": "string", "format": "date-time", "description": "Simula que la hora actual es X. Si no hay override de periodo, este valor se usa como reference para calcular el ciclo vigente. También determina el precio efectivo para pings one_off + immediate." } } } } } } }
+        },
+        "responses": { "200": { "description": "Preview con fees + units_annex + netsuite_payload" }, "404": { "description": "Customer no existe" }, "422": { "description": "Validación (period_from/to incompletos, fechas inválidas, etc.)" } }
+      }
+    },
     "/api/v1/services/{code}/terminate": { "post": { "summary": "Terminate service + sus units activas", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service terminated" } } } },
     "/api/v1/services/{code}/price": {
       "put": {

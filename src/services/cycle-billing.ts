@@ -237,3 +237,169 @@ export async function activatePendingCustomerInline(
 
 // Helper para que el cron pueda usar Prisma transaction-style markings.
 export type Tx = Prisma.TransactionClient;
+
+// ---------------------------------------------------------------------------
+// Preview / dry-run de la cycle invoice — v7.
+//
+// Computa exactamente lo que `emitCycleInvoiceForCustomer` produciría
+// (mismas fees, mismo units_annex, mismo payload para NetSuite) pero **sin**
+// persistir nada: no crea invoice, no crea fees, no marca units como
+// facturadas, no incrementa contadores, no dispatcha. Re-ejecutable infinitas
+// veces — ideal para iterar precios, units, add-ons y verificar el output
+// antes de cerrar el ciclo de verdad.
+//
+// Parámetros:
+//   - periodOverride: forza un periodo arbitrario (default: ciclo vigente
+//     calculado con billingPeriodFor(reference=now)).
+//   - now: simula "qué pasaría si hoy fuera X". Si no hay periodOverride,
+//     se usa como reference para billingPeriodFor (te permite previsualizar
+//     el ciclo que cerrará el día 1 del próximo mes). También se usa para
+//     resolver el precio efectivo en pings one_off + immediate.
+// ---------------------------------------------------------------------------
+
+export type PreviewCycleInvoiceOptions = {
+  prisma: PrismaClient;
+  org: Organization;
+  customer: Customer;
+  periodOverride?: { from: Date; to: Date } | null;
+  now?: Date;
+};
+
+export type PreviewCycleInvoiceResult = {
+  period: { from: Date; to: Date; days_in_period: number };
+  reference_now: Date;
+  fees: Array<{
+    kind: string;
+    description: string;
+    units: string;
+    unit_amount_cents: number;
+    precise_unit_amount: string;
+    amount_cents: number;
+    service_id: string | null;
+    service_add_on_id: string | null;
+    customer_add_on_id: string | null;
+    billed_units_detail: unknown;
+  }>;
+  fees_amount_cents: number;
+  units_annex: unknown;
+  netsuite_payload: {
+    external_id: null;
+    minilago_invoice_id: null;
+    issued_at: string;
+    currency: string;
+    customer: {
+      external_id: string;
+      name: string;
+      tax_identification_number: string | null;
+      country: string | null;
+    };
+    billing_period: { from: Date; to: Date };
+    lines: Array<{
+      fee_id: null;
+      service_id: string | null;
+      service_add_on_id: string | null;
+      customer_add_on_id: string | null;
+      kind: string;
+      description: string;
+      units: string;
+      unit_amount_cents: number;
+      amount_cents: number;
+      billed_units_detail: unknown;
+    }>;
+    units_annex: unknown;
+    totals: { fees_amount_cents: number };
+  };
+};
+
+export async function previewCycleInvoiceForCustomer(
+  opts: PreviewCycleInvoiceOptions,
+): Promise<PreviewCycleInvoiceResult> {
+  const { prisma, org, customer, periodOverride } = opts;
+  const now = opts.now ?? new Date();
+
+  const tz = applicableTimezone(customer.timezone, org.timezone);
+  const period = periodOverride
+    ? {
+        start: periodOverride.from,
+        end: periodOverride.to,
+        daysInPeriod: Math.max(1, Math.round(
+          DateTime.fromJSDate(periodOverride.to, { zone: 'utc' }).plus({ seconds: 1 })
+            .diff(DateTime.fromJSDate(periodOverride.from, { zone: 'utc' }), 'days').days,
+        )),
+      }
+    : billingPeriodFor(customer, tz, now);
+
+  const fullCustomer = await prisma.customer.findUnique({
+    where: { id: customer.id },
+    include: {
+      services: {
+        where: { status: 'active' },
+        include: { units: true, addOns: true },
+      },
+    },
+  });
+  if (!fullCustomer) throw new Error(`customer ${customer.id} not found`);
+
+  const customerAddOns = await prisma.customerAddOn.findMany({
+    where: {
+      customerId: customer.id,
+      activeFrom: { lte: period.end },
+      OR: [{ activeTo: null }, { activeTo: { gte: period.start } }],
+    },
+  });
+
+  const computed = computeCustomerInvoice({
+    customer,
+    services: fullCustomer.services,
+    customerAddOns,
+    periodStart: period.start,
+    periodEnd: period.end,
+    daysInPeriod: period.daysInPeriod,
+  });
+
+  return {
+    period: { from: period.start, to: period.end, days_in_period: period.daysInPeriod },
+    reference_now: now,
+    fees: computed.fees.map((f) => ({
+      kind: f.kind,
+      description: f.description,
+      units: f.units,
+      unit_amount_cents: f.unitAmountCents,
+      precise_unit_amount: f.preciseUnitAmount,
+      amount_cents: f.amountCents,
+      service_id: f.serviceId ?? null,
+      service_add_on_id: f.serviceAddOnId ?? null,
+      customer_add_on_id: f.customerAddOnId ?? null,
+      billed_units_detail: f.billedUnitsDetail,
+    })),
+    fees_amount_cents: computed.feesAmountCents,
+    units_annex: computed.unitsAnnex,
+    netsuite_payload: {
+      external_id: null,
+      minilago_invoice_id: null,
+      issued_at: now.toISOString(),
+      currency: customer.currency,
+      customer: {
+        external_id: customer.externalId,
+        name: customer.name,
+        tax_identification_number: customer.taxIdentificationNumber,
+        country: customer.country,
+      },
+      billing_period: { from: period.start, to: period.end },
+      lines: computed.fees.map((f) => ({
+        fee_id: null,
+        service_id: f.serviceId ?? null,
+        service_add_on_id: f.serviceAddOnId ?? null,
+        customer_add_on_id: f.customerAddOnId ?? null,
+        kind: f.kind,
+        description: f.description,
+        units: f.units,
+        unit_amount_cents: f.unitAmountCents,
+        amount_cents: f.amountCents,
+        billed_units_detail: f.billedUnitsDetail,
+      })),
+      units_annex: computed.unitsAnnex,
+      totals: { fees_amount_cents: computed.feesAmountCents },
+    },
+  };
+}
