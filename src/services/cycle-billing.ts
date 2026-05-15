@@ -38,21 +38,32 @@ export type EmitCycleInvoiceResult = {
   created: boolean;
 };
 
+// Resuelve el periodo a facturar. Sin override → usa billingPeriodFor
+// (canónico, anclado al startOf-day en la tz del customer). Con override →
+// respeta start/end tal cual pero calcula daysInPeriod con el MISMO
+// bucketing startOf('day' UTC) que usa daysInInterval() en billing-engine.ts
+// para que la fracción por unit jamás supere 1.0. Sin esta consistencia,
+// un override mid-day produce daysInPeriod = 16 mientras que la fracción
+// por unit cuenta 17 días → factor 1.0625 erróneo.
+export function resolvePeriod(
+  customer: Customer,
+  tz: string,
+  now: Date,
+  periodOverride: { from: Date; to: Date } | null | undefined,
+): { start: Date; end: Date; daysInPeriod: number } {
+  if (!periodOverride) return billingPeriodFor(customer, tz, now);
+  const fromBucket = DateTime.fromJSDate(periodOverride.from, { zone: 'utc' }).startOf('day');
+  const toBucket = DateTime.fromJSDate(periodOverride.to, { zone: 'utc' }).plus({ seconds: 1 }).startOf('day');
+  const days = Math.max(1, Math.round(toBucket.diff(fromBucket, 'days').days));
+  return { start: periodOverride.from, end: periodOverride.to, daysInPeriod: days };
+}
+
 export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions): Promise<EmitCycleInvoiceResult> {
   const { prisma, dispatcher, callbackBaseUrl, org, customer, periodOverride, idempotencyKey, metadata, log } = opts;
   const now = opts.now ?? new Date();
 
   const tz = applicableTimezone(customer.timezone, org.timezone);
-  const period = periodOverride
-    ? {
-        start: periodOverride.from,
-        end: periodOverride.to,
-        daysInPeriod: Math.max(1, Math.round(
-          DateTime.fromJSDate(periodOverride.to, { zone: 'utc' }).plus({ seconds: 1 })
-            .diff(DateTime.fromJSDate(periodOverride.from, { zone: 'utc' }), 'days').days,
-        )),
-      }
-    : billingPeriodFor(customer, tz, now);
+  const period = resolvePeriod(customer, tz, now, periodOverride);
 
   // Idempotencia: si ya hay invoice del customer para este periodo, no
   // emitas otra. Permite que el cron sea seguro de re-correr.
@@ -318,16 +329,7 @@ export async function previewCycleInvoiceForCustomer(
   const now = opts.now ?? new Date();
 
   const tz = applicableTimezone(customer.timezone, org.timezone);
-  const period = periodOverride
-    ? {
-        start: periodOverride.from,
-        end: periodOverride.to,
-        daysInPeriod: Math.max(1, Math.round(
-          DateTime.fromJSDate(periodOverride.to, { zone: 'utc' }).plus({ seconds: 1 })
-            .diff(DateTime.fromJSDate(periodOverride.from, { zone: 'utc' }), 'days').days,
-        )),
-      }
-    : billingPeriodFor(customer, tz, now);
+  const period = resolvePeriod(customer, tz, now, periodOverride);
 
   const fullCustomer = await prisma.customer.findUnique({
     where: { id: customer.id },

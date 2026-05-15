@@ -169,6 +169,32 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
     expect(r.statusCode).toBe(404);
   });
 
+  it('override mid-day NO infla el factor: la fracción por unit jamás supera 1.0', async () => {
+    // Regresión: con la implementación previa daysInPeriod se calculaba con
+    // diff crudo (mid-day → mid-day = 16.47 → 16) mientras la fracción de la
+    // unit usa startOf('day') bucketing (= 17). Resultado: factor 1.0625 por
+    // unit. Con el fix ambos lados usan el mismo bucketing.
+    await seedRecurring({ monthly: 85000 });
+    const r = await h.app.inject({
+      method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
+      payload: { invoice: {
+        customer_external_id: 'c-prev',
+        // Override mid-day a propósito.
+        period_from: '2026-05-15T18:37:00Z',
+        period_to: '2026-06-01T05:59:00Z',
+      } },
+    });
+    expect(r.statusCode).toBe(200);
+    const preview = (r.json() as { preview: {
+      fees: Array<{ kind: string; units: string; amount_cents: number }>;
+    } }).preview;
+    const monthly = preview.fees.find((f) => f.kind === 'monthly');
+    // 1 unit activa todo el (sub)periodo. factor debe ser exactamente 1.0000,
+    // no 1.0625.
+    expect(monthly!.units).toBe('1.0000');
+    expect(monthly!.amount_cents).toBe(85000);
+  });
+
   it('payload de NetSuite tiene la forma esperada (sin IDs persistidos)', async () => {
     await seedRecurring();
     const r = await h.app.inject({

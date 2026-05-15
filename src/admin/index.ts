@@ -24,6 +24,7 @@ import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { seedNumaris } from './seed.js';
 import { resetOrganizationData } from '../services/reset.js';
+import { billingPeriodFor } from '../services/billing-engine.js';
 import { buildSignatureHeader } from '../services/hmac.js';
 import { isValidIanaTimezone } from '../services/tz.js';
 import { adminContextStorage } from './context.js';
@@ -772,8 +773,11 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return;
     }
 
-    // Defaults útiles para el form: pinta el periodo vigente y "ahora" en
-    // datetime-local (UTC) si el usuario no overrideó.
+    // Defaults útiles para el form: pinta el periodo CANÓNICO que el preview
+    // sin override calcularía (billingPeriodFor → anclado a startOf-day en la
+    // tz del customer). Si usáramos customer.currentBillingPeriodStartedAt
+    // crudo, el form mostraría el subscription_at mid-day y "Recalcular"
+    // sin cambios produciría un periodo distinto al de la carga inicial.
     const dt = (d: Date | null | undefined): string => {
       if (!d) return '';
       const yyyy = d.getUTCFullYear();
@@ -784,8 +788,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
     };
     const realNow = new Date();
-    const defaultFrom = customer.currentBillingPeriodStartedAt ?? null;
-    const defaultTo = customer.currentBillingPeriodEndingAt ?? null;
+    const tz = customer.timezone ?? org.timezone ?? 'UTC';
+    const canonical = billingPeriodFor(customer, tz, realNow);
+    const defaultFrom: Date | null = canonical.start;
+    const defaultTo: Date | null = canonical.end;
 
     // Llama al endpoint de preview vía app.inject para reusar la lógica.
     const payload: Record<string, string> = { customer_external_id: externalId };
