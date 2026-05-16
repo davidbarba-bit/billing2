@@ -123,7 +123,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         monthlyUnitAmountCents: 10000,   // $100/mes prepagado
         setupUnitAmountCents: 150000,    // $1,500 setup
         prepaidMonthsDefault: 48,        // 48 meses default
-        netsuiteOneOffItemCode: 'NS-GPS-PREPAID',
+        netsuiteMonthlyItemCode: 'NS-GPS-MONTHLY',
         netsuiteSetupItemCode: 'NS-GPS-SETUP',
         status: 'active',
       },

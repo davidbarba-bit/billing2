@@ -17,9 +17,10 @@ type ServicePayload = {
   setup_unit_amount_cents?: number;
   prepaid_months_default?: number | null;
   // v9: códigos NetSuite por kind de fee que este service produce.
+  // monthly mapea tanto a fees kind=monthly (recurring) como a
+  // fees kind=one_off (mensualidades prepagadas).
   netsuite_monthly_item_code?: string | null;
   netsuite_setup_item_code?: string | null;
-  netsuite_one_off_item_code?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -94,7 +95,6 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
           prepaidMonthsDefault: prepaidMonthsDefault,
           netsuiteMonthlyItemCode: normalizeItemCode(payload.netsuite_monthly_item_code),
           netsuiteSetupItemCode: normalizeItemCode(payload.netsuite_setup_item_code),
-          netsuiteOneOffItemCode: normalizeItemCode(payload.netsuite_one_off_item_code),
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
@@ -174,7 +174,6 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
         description?: string | null;
         netsuite_monthly_item_code?: string | null;
         netsuite_setup_item_code?: string | null;
-        netsuite_one_off_item_code?: string | null;
         metadata?: Record<string, unknown>;
       } };
       const payload = body.service ?? {};
@@ -190,9 +189,6 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       }
       if (payload.netsuite_setup_item_code !== undefined) {
         data.netsuiteSetupItemCode = normalizeItemCode(payload.netsuite_setup_item_code);
-      }
-      if (payload.netsuite_one_off_item_code !== undefined) {
-        data.netsuiteOneOffItemCode = normalizeItemCode(payload.netsuite_one_off_item_code);
       }
       if (payload.metadata !== undefined) {
         data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;

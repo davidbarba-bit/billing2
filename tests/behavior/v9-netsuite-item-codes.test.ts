@@ -16,7 +16,8 @@
 //   G) Cycle invoice persistido: cada Fee tiene su netsuite_item_code snapshot
 //   H) Snapshot inmutable: cambiar código en el Service no afecta Fees ya emitidas
 //   I) Payload dispatch NetSuite: cada line.netsuite_item_code está presente
-//   J) one_off + immediate ping: invoice usa netsuite_one_off_item_code + netsuite_setup_item_code
+//   J) one_off + immediate ping: invoice usa netsuite_monthly_item_code (para
+//      las mensualidades prepagadas) + netsuite_setup_item_code
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
@@ -54,10 +55,9 @@ describe('v9 — códigos de producto NetSuite', () => {
       } },
     });
     expect(r.statusCode).toBe(200);
-    const body = r.json() as { service: { netsuite_monthly_item_code: string; netsuite_setup_item_code: string; netsuite_one_off_item_code: string | null } };
+    const body = r.json() as { service: { netsuite_monthly_item_code: string; netsuite_setup_item_code: string } };
     expect(body.service.netsuite_monthly_item_code).toBe('NS-MON');
     expect(body.service.netsuite_setup_item_code).toBe('NS-SET');
-    expect(body.service.netsuite_one_off_item_code).toBeNull();
   });
 
   // ===========================================================================
@@ -294,7 +294,9 @@ describe('v9 — códigos de producto NetSuite', () => {
   // ===========================================================================
   // J — one_off + immediate ping invoice
   // ===========================================================================
-  it('J) one_off + immediate ping: invoice persiste setup + one_off item codes', async () => {
+  it('J) one_off + immediate ping: invoice persiste setup + mensualidades (ambas con sus item codes)', async () => {
+    // v10: el fee kind=one_off (mensualidades prepagadas) ahora mapea al
+    // mismo netsuite_monthly_item_code que las mensualidades recurring.
     await seedCustomer('c-imm', 'immediate');
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -303,7 +305,7 @@ describe('v9 — códigos de producto NetSuite', () => {
         pricing_model: 'one_off',
         monthly_unit_amount_cents: 10000, setup_unit_amount_cents: 5000,
         prepaid_months_default: 12,
-        netsuite_one_off_item_code: 'GPS-PREPAID',
+        netsuite_monthly_item_code: 'GPS-MONTHLY',
         netsuite_setup_item_code: 'GPS-SETUP',
       } },
     });
@@ -320,6 +322,6 @@ describe('v9 — códigos de producto NetSuite', () => {
     expect(invId).toBeTruthy();
     const fees = await h.prisma.fee.findMany({ where: { invoiceId: invId } });
     expect(fees.find((f) => f.kind === 'setup')!.netsuiteItemCode).toBe('GPS-SETUP');
-    expect(fees.find((f) => f.kind === 'one_off')!.netsuiteItemCode).toBe('GPS-PREPAID');
+    expect(fees.find((f) => f.kind === 'one_off')!.netsuiteItemCode).toBe('GPS-MONTHLY');
   });
 });

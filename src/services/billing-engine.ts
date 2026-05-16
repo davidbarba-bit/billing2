@@ -271,7 +271,10 @@ function buildOneOffFeesForUnit(service: Service, unit: Unit): ComputedFee[] {
     unitAmountCents: service.monthlyUnitAmountCents,
     preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
     amountCents: monthlyTotal,
-    netsuiteItemCode: service.netsuiteOneOffItemCode ?? null,
+    // v10: la mensualidad prepagada mapea al MISMO item de NetSuite que la
+    // mensualidad recurrente (es la misma "renta mensual" conceptual, solo
+    // cobrada por anticipado).
+    netsuiteItemCode: service.netsuiteMonthlyItemCode ?? null,
     billedUnitsDetail: [{
       external_id: unit.externalId,
       label: unit.label,

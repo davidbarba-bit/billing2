@@ -77,9 +77,8 @@
             }
           },
           "prepaid_months_default": { "type": ["integer", "null"], "description": "Solo one_off: default de meses prepagados por unit. Sobreescribible por unit en POST /events o POST /units (campo prepaid_months)." },
-          "netsuite_monthly_item_code": { "type": ["string", "null"], "description": "v9 — Código del item de NetSuite al que se mapean los fees kind=monthly (recurring). null = no configurado; las invoices emitirán item_code=null." },
+          "netsuite_monthly_item_code": { "type": ["string", "null"], "description": "v9 — Código del item NetSuite al que se mapean los fees kind=monthly (recurring) Y los fees kind=one_off (mensualidades prepagadas de un service one_off — conceptualmente la misma renta mensual cobrada por anticipado). null = no configurado." },
           "netsuite_setup_item_code": { "type": ["string", "null"], "description": "v9 — Código NetSuite para fees kind=setup. Aplica si setup_unit_amount_cents > 0." },
-          "netsuite_one_off_item_code": { "type": ["string", "null"], "description": "v9 — Código NetSuite para fees kind=one_off (prepago de N meses de un service one_off)." },
           "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
@@ -96,8 +95,7 @@
           "setup_unit_amount_cents": { "type": "integer", "minimum": 0 },
           "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1, "description": "Solo para one_off — meses prepagados por defecto por unit." },
           "netsuite_monthly_item_code": { "type": ["string", "null"] },
-          "netsuite_setup_item_code": { "type": ["string", "null"] },
-          "netsuite_one_off_item_code": { "type": ["string", "null"] }
+          "netsuite_setup_item_code": { "type": ["string", "null"] }
         }
       },
       "ServiceAddOn": {
@@ -236,7 +234,7 @@
     },
     "/api/v1/services/{code}": {
       "get": { "summary": "Read service", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service" } } },
-      "patch": { "summary": "Update name/description/metadata + códigos NetSuite (v9). NO toca precios — usa PUT /price.", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": ["string", "null"] }, "netsuite_monthly_item_code": { "type": ["string", "null"] }, "netsuite_setup_item_code": { "type": ["string", "null"] }, "netsuite_one_off_item_code": { "type": ["string", "null"] }, "metadata": { "type": "object" } } } } } } } }, "responses": { "200": { "description": "Service actualizado" } } },
+      "patch": { "summary": "Update name/description/metadata + códigos NetSuite (v9). NO toca precios — usa PUT /price.", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": ["string", "null"] }, "netsuite_monthly_item_code": { "type": ["string", "null"] }, "netsuite_setup_item_code": { "type": ["string", "null"] }, "metadata": { "type": "object" } } } } } } } }, "responses": { "200": { "description": "Service actualizado" } } },
       "delete": { "summary": "Delete (409 si tiene fees — usa terminate)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/v1/invoices/preview": {

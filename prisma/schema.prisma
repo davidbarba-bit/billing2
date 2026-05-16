@@ -128,19 +128,16 @@ model Service {
   pricingModel           String    @default("recurring") @map("pricing_model")
   monthlyUnitAmountCents Int       @default(0) @map("monthly_unit_amount_cents")
   setupUnitAmountCents   Int       @default(0) @map("setup_unit_amount_cents")
-  // v9: códigos de producto NetSuite por kind de fee. Cada Service puede
-  // generar 3 tipos de fees (monthly/setup/one_off) que NetSuite mapea a
-  // items distintos de su catálogo.
-  //   - netsuiteMonthlyItemCode → para fees kind=monthly (recurring).
+  // v9: códigos de producto NetSuite por kind de fee.
+  //   - netsuiteMonthlyItemCode → para fees kind=monthly (recurring) Y para
+  //     fees kind=one_off (mensualidades prepagadas de un service one_off,
+  //     conceptualmente la misma renta mensual cobrada por anticipado).
   //   - netsuiteSetupItemCode   → para fees kind=setup (cargo único per-unit).
-  //   - netsuiteOneOffItemCode  → para fees kind=one_off (mensualidades
-  //     prepagadas de un service one_off).
   // Si falta un código al emitir, la Fee se persiste con netsuite_item_code=null
   // y el dispatch a NetSuite probablemente fallará (NetSuite no podrá mapear
   // la línea a su catálogo). La preview muestra advertencia visual.
   netsuiteMonthlyItemCode String? @map("netsuite_monthly_item_code")
   netsuiteSetupItemCode   String? @map("netsuite_setup_item_code")
-  netsuiteOneOffItemCode  String? @map("netsuite_one_off_item_code")
   // v7: cambio de precio programado. Cuando los tres campos están poblados y
   // el periodo a facturar empieza on-or-after `pendingEffectiveFrom`, el motor
   // usa los valores `pending*` en lugar de los de arriba. Aplica igual para
