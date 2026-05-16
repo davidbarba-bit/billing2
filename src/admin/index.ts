@@ -265,7 +265,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         empty: 'Sin customers — usa "Seed Numaris" en el dashboard',
         rowHref: (c) => `/admin/customers/${c.externalId}`,
         columns: [
-          { label: 'External ID', render: (c) => `<code>${escapeHtml(c.externalId)}</code>` },
           { label: 'Nombre', render: (c) => escapeHtml(c.name) },
           { label: 'Currency', render: (c) => escapeHtml(c.currency) },
           { label: 'Country', render: (c) => escapeHtml(c.country ?? '—') },
@@ -373,7 +372,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       empty: 'Sin services',
       rowHref: (s) => `/admin/services/${s.code}`,
       columns: [
-        { label: 'Code', render: (s) => `<code>${escapeHtml(s.code)}</code>` },
         { label: 'Nombre', render: (s) => escapeHtml(s.name) },
         { label: 'Status', render: (s) => statusBadge(s.status) },
         { label: 'Mensual', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) + '/u' },
@@ -440,9 +438,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         empty: 'Sin services',
         rowHref: (s) => `/admin/services/${s.code}`,
         columns: [
-          { label: 'Code', render: (s) => `<code>${escapeHtml(s.code)}</code>` },
           { label: 'Nombre', render: (s) => escapeHtml(s.name) },
-          { label: 'Customer', render: (s) => escapeHtml(s.customer.externalId) },
+          { label: 'Customer', render: (s) => escapeHtml(s.customer.name) },
           { label: 'Status', render: (s) => statusBadge(s.status) },
           { label: 'Modelo', render: (s) => badge(s.pricingModel, s.pricingModel === 'one_off' ? 'green' : 'blue') },
           { label: 'Monto /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
