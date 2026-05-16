@@ -13,6 +13,7 @@ export function serializeServiceAddOn(addOn: ServiceAddOn) {
       description: addOn.description ?? null,
       pricing_type: 'per_unit_monthly',
       amount_cents: addOn.amountCents,
+      netsuite_item_code: addOn.netsuiteItemCode ?? null,
       active_from: isoUtc(addOn.activeFrom),
       active_to: addOn.activeTo ? isoUtc(addOn.activeTo) : null,
       status: addOn.activeTo === null ? 'active' : 'terminated',

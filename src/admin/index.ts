@@ -349,6 +349,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <label class="block"><span class="text-sm text-gray-700">Amount flat (cents) /mes</span>
               <input required type="number" name="amount_cents" min="0" value="100000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
             </label>
+            <label class="block"><span class="text-sm text-gray-700">NetSuite item code</span>
+              <input name="netsuite_item_code" placeholder="ADDON-FLAT" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
             <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
               <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
             </label>
@@ -494,6 +497,21 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <span class="text-xs text-gray-500">Cuántos meses paga el cliente por adelantado por cada unit nueva. Override por unit en POST /events. Dejar vacío si es recurring.</span>
           </label>
         </div>
+        <div class="border-t pt-3 mt-3">
+          <h3 class="text-sm font-semibold text-gray-700 mb-2">Códigos de producto NetSuite</h3>
+          <p class="text-xs text-gray-500 mb-3">Códigos del catálogo de NetSuite a los que se mapean las líneas de la factura. Si quedan vacíos, las invoices se emiten con item_code=null y NetSuite probablemente las rechace.</p>
+          <div class="grid grid-cols-3 gap-3">
+            <label class="block"><span class="text-sm text-gray-700">Item code mensual (recurring)</span>
+              <input name="netsuite_monthly_item_code" placeholder="SUB-MONTHLY" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Item code setup</span>
+              <input name="netsuite_setup_item_code" placeholder="SUB-SETUP" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Item code one_off (prepago)</span>
+              <input name="netsuite_one_off_item_code" placeholder="SUB-ONEOFF" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+          </div>
+        </div>
         <p class="text-xs text-gray-500">El ciclo de facturación lo define el customer. <strong>Los impuestos los calcula NetSuite</strong> según la configuración fiscal del cliente; mini-Lago solo envía montos netos.</p>
         <label class="block"><span class="text-sm text-gray-700">Descripción</span>
           <input name="description" class="mt-1 block w-full rounded border-gray-300">
@@ -526,6 +544,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
           prepaid_months_default: body.prepaid_months_default ? Number(body.prepaid_months_default) : undefined,
+          netsuite_monthly_item_code: body.netsuite_monthly_item_code || null,
+          netsuite_setup_item_code: body.netsuite_setup_item_code || null,
+          netsuite_one_off_item_code: body.netsuite_one_off_item_code || null,
         },
       },
     });
@@ -690,6 +711,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <label class="block"><span class="text-sm text-gray-700">Amount per unit (cents) /mes</span>
               <input required type="number" name="amount_cents" min="0" value="5000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
             </label>
+            <label class="block"><span class="text-sm text-gray-700">NetSuite item code</span>
+              <input name="netsuite_item_code" placeholder="ADDON-PERUNIT" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
             <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
               <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
             </label>
@@ -731,12 +755,52 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       </details>
     `;
 
+    // v9: card de códigos NetSuite — edición inline, vacío = null.
+    const netsuiteBlock = (() => {
+      const monthlyVal = service.netsuiteMonthlyItemCode ?? '';
+      const setupVal = service.netsuiteSetupItemCode ?? '';
+      const oneOffVal = service.netsuiteOneOffItemCode ?? '';
+      const isOne = service.pricingModel === 'one_off';
+      const missing: string[] = [];
+      if (service.pricingModel === 'recurring') {
+        if (!service.netsuiteMonthlyItemCode) missing.push('monthly');
+        if (service.setupUnitAmountCents > 0 && !service.netsuiteSetupItemCode) missing.push('setup');
+      } else {
+        if (!service.netsuiteOneOffItemCode) missing.push('one_off');
+        if (service.setupUnitAmountCents > 0 && !service.netsuiteSetupItemCode) missing.push('setup');
+      }
+      const warning = missing.length > 0
+        ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>Códigos faltantes:</strong> ${missing.map((m) => `<code>${m}</code>`).join(', ')}. Las invoices emitidas tendrán item_code=null en esas líneas; NetSuite probablemente las rechace.</div>`
+        : '<div class="rounded border border-green-300 bg-green-50 p-3 text-sm text-green-900 mb-3">Todos los códigos requeridos para este service están configurados.</div>';
+      return warning + `
+        <form method="post" action="/admin/services/${escapeHtml(service.code)}/netsuite-codes" class="space-y-3 max-w-3xl">
+          <div class="grid grid-cols-${isOne ? '2' : '2'} gap-3">
+            ${!isOne ? `
+            <label class="block"><span class="text-sm text-gray-700">Item code mensual</span>
+              <input name="netsuite_monthly_item_code" value="${escapeHtml(monthlyVal)}" placeholder="SUB-MONTHLY" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+              <span class="text-xs text-gray-500">Para fees kind=monthly.</span>
+            </label>` : `
+            <label class="block"><span class="text-sm text-gray-700">Item code one_off (prepago)</span>
+              <input name="netsuite_one_off_item_code" value="${escapeHtml(oneOffVal)}" placeholder="SUB-ONEOFF" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+              <span class="text-xs text-gray-500">Para fees kind=one_off (N mensualidades prepagadas).</span>
+            </label>`}
+            <label class="block"><span class="text-sm text-gray-700">Item code setup</span>
+              <input name="netsuite_setup_item_code" value="${escapeHtml(setupVal)}" placeholder="SUB-SETUP" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+              <span class="text-xs text-gray-500">Para fees kind=setup. Aplica si setup &gt; 0.</span>
+            </label>
+          </div>
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar códigos</button>
+        </form>
+      `;
+    })();
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `Service · ${service.code}`, active: '/admin/services', orgSlug: org.slug, flash,
       body: pageHeader(service.name, btn('/admin/services', '← back'))
         + card('Identidad', info)
         + card('Precio', priceChangeBlock)
+        + card('Códigos NetSuite', netsuiteBlock)
         + card('Acciones', `${terminateForm} <span class="ml-3">${invoicesLink}</span>`)
         + card(`Add-ons per-unit (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
         + card(`Units (${service.units.length})`, unitsBlock + migrateForm),
@@ -758,6 +822,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           name: body.name,
           description: (body.description as string) || undefined,
           amount_cents: Number(body.amount_cents),
+          netsuite_item_code: body.netsuite_item_code || null,
         },
       },
     });
@@ -848,7 +913,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const preview = (result.json() as { preview: {
         period: { from: string; to: string; days_in_period: number };
         reference_now: string;
-        fees: Array<{ kind: string; description: string; units: string; unit_amount_cents: number; amount_cents: number }>;
+        fees: Array<{ kind: string; description: string; units: string; unit_amount_cents: number; amount_cents: number; netsuite_item_code: string | null }>;
         fees_amount_cents: number;
         units_annex: unknown;
         netsuite_payload: unknown;
@@ -868,6 +933,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         columns: [
           { label: 'Kind', render: (f) => badge(f.kind, f.kind === 'monthly' ? 'blue' : f.kind === 'setup' ? 'yellow' : f.kind === 'one_off' ? 'green' : 'gray') },
           { label: 'Descripción', render: (f) => escapeHtml(f.description) },
+          { label: 'NS item', render: (f) => f.netsuite_item_code
+            ? `<code class="text-xs">${escapeHtml(f.netsuite_item_code)}</code>`
+            : '<span class="text-red-600 text-xs font-medium" title="línea sin item_code — NetSuite probablemente rechace">⚠ falta</span>' },
           { label: 'Units', render: (f) => `<code>${escapeHtml(f.units)}</code>` },
           { label: 'Precio /u', render: (f) => fmtMoney(f.unit_amount_cents, customer.currency) },
           { label: 'Importe', render: (f) => `<strong>${escapeHtml(fmtMoney(f.amount_cents, customer.currency))}</strong>` },
@@ -947,6 +1015,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           name: body.name,
           description: (body.description as string) || undefined,
           amount_cents: Number(body.amount_cents),
+          netsuite_item_code: body.netsuite_item_code || null,
         },
       },
     });
@@ -1219,6 +1288,33 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
     else setFlash(reply, 'success', `Cambio de precio programado cancelado.`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
+  // v9: actualizar códigos NetSuite del service.
+  app.post('/admin/services/:code/netsuite-codes', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    // Solo enviamos los campos que el form expone (según pricingModel).
+    const payload: Record<string, unknown> = {
+      netsuite_setup_item_code: body.netsuite_setup_item_code ?? '',
+    };
+    if (body.netsuite_monthly_item_code !== undefined) {
+      payload.netsuite_monthly_item_code = body.netsuite_monthly_item_code;
+    }
+    if (body.netsuite_one_off_item_code !== undefined) {
+      payload.netsuite_one_off_item_code = body.netsuite_one_off_item_code;
+    }
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/services/${encodeURIComponent(svcCode)}`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { service: payload },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Códigos NetSuite actualizados.`);
     reply.redirect(`/admin/services/${svcCode}`);
   });
 

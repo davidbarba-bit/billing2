@@ -11,10 +11,18 @@ type Payload = {
   name?: string;
   description?: string | null;
   amount_cents?: number;
+  // v9: código NetSuite del item asociado a este customer add-on flat.
+  netsuite_item_code?: string | null;
   active_from?: string;
   active_to?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+function normalizeItemCode(v: string | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  const trimmed = v.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
 
 export function registerCustomerAddOnRoutes(app: FastifyInstance, prisma: PrismaClient): void {
   const authenticate = buildAuthHook(prisma);
@@ -56,6 +64,7 @@ export function registerCustomerAddOnRoutes(app: FastifyInstance, prisma: Prisma
           name: payload.name,
           description: payload.description ?? null,
           amountCents: payload.amount_cents,
+          netsuiteItemCode: normalizeItemCode(payload.netsuite_item_code),
           activeFrom,
           activeTo: payload.active_to ? new Date(payload.active_to) : null,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
@@ -145,6 +154,9 @@ export function registerCustomerAddOnRoutes(app: FastifyInstance, prisma: Prisma
           throw validation({ amount_cents: ['must_be_non_negative_integer'] });
         }
         data.amountCents = payload.amount_cents;
+      }
+      if (payload.netsuite_item_code !== undefined) {
+        data.netsuiteItemCode = normalizeItemCode(payload.netsuite_item_code);
       }
       if (payload.active_to !== undefined) {
         data.activeTo = payload.active_to === null ? null : new Date(payload.active_to);

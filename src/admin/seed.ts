@@ -76,6 +76,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       name: 'Reglas de evento 5→10',
       description: 'MX$1000 flat / mes — feature de plataforma, independiente de services o units',
       amountCents: 100000,
+      netsuiteItemCode: 'NS-CUSTOMER-FLAT',
       activeFrom: periodStartDate,
     },
     update: {},
@@ -95,6 +96,8 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         currency: 'MXN',
         monthlyUnitAmountCents: 45000,
         setupUnitAmountCents: 120000,
+        netsuiteMonthlyItemCode: 'NS-COMB-MONTHLY',
+        netsuiteSetupItemCode: 'NS-COMB-SETUP',
         status: 'active',
       },
     });
@@ -120,6 +123,8 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         monthlyUnitAmountCents: 10000,   // $100/mes prepagado
         setupUnitAmountCents: 150000,    // $1,500 setup
         prepaidMonthsDefault: 48,        // 48 meses default
+        netsuiteOneOffItemCode: 'NS-GPS-PREPAID',
+        netsuiteSetupItemCode: 'NS-GPS-SETUP',
         status: 'active',
       },
     });
@@ -134,6 +139,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       name: 'Historial 6→12 meses',
       description: 'MX$50 adicionales por unidad activa / mes',
       amountCents: 5000,
+      netsuiteItemCode: 'NS-HIST-12M',
       activeFrom: periodStartDate,
     },
     update: {},

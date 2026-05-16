@@ -77,6 +77,9 @@
             }
           },
           "prepaid_months_default": { "type": ["integer", "null"], "description": "Solo one_off: default de meses prepagados por unit. Sobreescribible por unit en POST /events o POST /units (campo prepaid_months)." },
+          "netsuite_monthly_item_code": { "type": ["string", "null"], "description": "v9 — Código del item de NetSuite al que se mapean los fees kind=monthly (recurring). null = no configurado; las invoices emitirán item_code=null." },
+          "netsuite_setup_item_code": { "type": ["string", "null"], "description": "v9 — Código NetSuite para fees kind=setup. Aplica si setup_unit_amount_cents > 0." },
+          "netsuite_one_off_item_code": { "type": ["string", "null"], "description": "v9 — Código NetSuite para fees kind=one_off (prepago de N meses de un service one_off)." },
           "status": { "type": "string", "enum": ["active", "terminated"] }
         }
       },
@@ -91,7 +94,10 @@
           "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "default": "recurring" },
           "monthly_unit_amount_cents": { "type": "integer", "minimum": 0 },
           "setup_unit_amount_cents": { "type": "integer", "minimum": 0 },
-          "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1, "description": "Solo para one_off — meses prepagados por defecto por unit." }
+          "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1, "description": "Solo para one_off — meses prepagados por defecto por unit." },
+          "netsuite_monthly_item_code": { "type": ["string", "null"] },
+          "netsuite_setup_item_code": { "type": ["string", "null"] },
+          "netsuite_one_off_item_code": { "type": ["string", "null"] }
         }
       },
       "ServiceAddOn": {
@@ -104,6 +110,7 @@
           "name": { "type": "string" },
           "pricing_type": { "type": "string", "enum": ["per_unit_monthly"], "description": "Solo per_unit_monthly en v3." },
           "amount_cents": { "type": "integer" },
+          "netsuite_item_code": { "type": ["string", "null"], "description": "v9 — código NetSuite del item al que se mapean los fees service_addon de este add-on." },
           "active_from": { "type": "string", "format": "date-time" },
           "active_to": { "type": ["string", "null"], "format": "date-time" },
           "status": { "type": "string", "enum": ["active", "terminated"] }
@@ -119,6 +126,7 @@
           "name": { "type": "string" },
           "pricing_type": { "type": "string", "enum": ["flat_monthly"] },
           "amount_cents": { "type": "integer" },
+          "netsuite_item_code": { "type": ["string", "null"], "description": "v9 — código NetSuite del item al que se mapea el fee customer_addon." },
           "active_from": { "type": "string", "format": "date-time" },
           "active_to": { "type": ["string", "null"], "format": "date-time" },
           "status": { "type": "string", "enum": ["active", "terminated"] }
@@ -228,6 +236,7 @@
     },
     "/api/v1/services/{code}": {
       "get": { "summary": "Read service", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service" } } },
+      "patch": { "summary": "Update name/description/metadata + códigos NetSuite (v9). NO toca precios — usa PUT /price.", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": ["string", "null"] }, "netsuite_monthly_item_code": { "type": ["string", "null"] }, "netsuite_setup_item_code": { "type": ["string", "null"] }, "netsuite_one_off_item_code": { "type": ["string", "null"] }, "metadata": { "type": "object" } } } } } } } }, "responses": { "200": { "description": "Service actualizado" } } },
       "delete": { "summary": "Delete (409 si tiene fees — usa terminate)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/v1/invoices/preview": {

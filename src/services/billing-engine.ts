@@ -48,6 +48,9 @@ export type ComputedFee = {
   unitAmountCents: number;
   preciseUnitAmount: string;
   amountCents: number;
+  // v9: código NetSuite resuelto desde la entidad fuente al momento de
+  // construir la fee. null si no estaba configurado.
+  netsuiteItemCode: string | null;
   billedUnitsDetail: BilledUnitDetail[];
   unitIds: string[];
 };
@@ -245,6 +248,7 @@ function buildOneOffFeesForUnit(service: Service, unit: Unit): ComputedFee[] {
       unitAmountCents: service.setupUnitAmountCents,
       preciseUnitAmount: (service.setupUnitAmountCents / 100).toFixed(2),
       amountCents: service.setupUnitAmountCents,
+      netsuiteItemCode: service.netsuiteSetupItemCode ?? null,
       billedUnitsDetail: [{
         external_id: unit.externalId,
         label: unit.label,
@@ -267,6 +271,7 @@ function buildOneOffFeesForUnit(service: Service, unit: Unit): ComputedFee[] {
     unitAmountCents: service.monthlyUnitAmountCents,
     preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
     amountCents: monthlyTotal,
+    netsuiteItemCode: service.netsuiteOneOffItemCode ?? null,
     billedUnitsDetail: [{
       external_id: unit.externalId,
       label: unit.label,
@@ -423,6 +428,7 @@ function buildMonthlyFee(service: Service, units: Unit[], periodStart: Date, per
     units: totalFractionStr, unitAmountCents: service.monthlyUnitAmountCents,
     preciseUnitAmount: (service.monthlyUnitAmountCents / 100).toFixed(2),
     amountCents,
+    netsuiteItemCode: service.netsuiteMonthlyItemCode ?? null,
     billedUnitsDetail: detail, unitIds: entries.map((e) => e.unit.id),
   };
 }
@@ -448,6 +454,7 @@ function buildSetupFee(service: Service, units: Unit[], periodStart: Date, perio
     units: `${setupCandidates.length}.0000`, unitAmountCents: service.setupUnitAmountCents,
     preciseUnitAmount: (service.setupUnitAmountCents / 100).toFixed(2),
     amountCents,
+    netsuiteItemCode: service.netsuiteSetupItemCode ?? null,
     billedUnitsDetail: detail, unitIds: setupCandidates.map((u) => u.id),
   };
 }
@@ -474,6 +481,7 @@ function buildServiceAddOnFee(
     units: totalFractionStr, unitAmountCents: addOn.amountCents,
     preciseUnitAmount: (addOn.amountCents / 100).toFixed(2),
     amountCents,
+    netsuiteItemCode: addOn.netsuiteItemCode ?? null,
     billedUnitsDetail: detail, unitIds: entries.map((e) => e.unit.id),
   };
 }
@@ -490,6 +498,7 @@ function buildCustomerAddOnFee(addOn: CustomerAddOn, from: Date, to: Date, tz: s
     units: fractionStr, unitAmountCents: addOn.amountCents,
     preciseUnitAmount: (addOn.amountCents / 100).toFixed(2),
     amountCents,
+    netsuiteItemCode: addOn.netsuiteItemCode ?? null,
     billedUnitsDetail: [{
       external_id: `customer-addon:${addOn.code}`, label: addOn.name,
       active_from: isoUtc(from), active_to: isoUtc(to),
@@ -588,6 +597,7 @@ export async function persistComputedInvoice(
         unitAmountCents: fee.unitAmountCents,
         preciseUnitAmount: fee.preciseUnitAmount,
         amountCents: fee.amountCents,
+        netsuiteItemCode: fee.netsuiteItemCode,
         billedUnitsDetail: fee.billedUnitsDetail as object,
         position: i,
       },

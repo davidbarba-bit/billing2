@@ -38,6 +38,7 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
       unit_amount_cents: fee.unitAmountCents,
       precise_unit_amount: fee.preciseUnitAmount,
       amount_cents: fee.amountCents,
+      netsuite_item_code: fee.netsuiteItemCode ?? null,
       billed_units_detail: fee.billedUnitsDetail ?? [],
       payment_status: fee.paymentStatus,
       created_at: isoUtc(fee.createdAt),

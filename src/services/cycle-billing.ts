@@ -172,6 +172,9 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
             service_add_on_id: f.serviceAddOnId, customer_add_on_id: f.customerAddOnId,
             kind: f.kind, description: f.description, units: f.units,
             unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
+            // v9: código NetSuite que mapea la línea a un item del catálogo.
+            // null si la entidad fuente no tenía código configurado al emitir.
+            netsuite_item_code: f.netsuiteItemCode,
             billed_units_detail: f.billedUnitsDetail,
           })),
           units_annex: hydrated.unitsAnnex,
@@ -290,6 +293,7 @@ export type PreviewCycleInvoiceResult = {
     service_id: string | null;
     service_add_on_id: string | null;
     customer_add_on_id: string | null;
+    netsuite_item_code: string | null;
     billed_units_detail: unknown;
   }>;
   fees_amount_cents: number;
@@ -316,6 +320,7 @@ export type PreviewCycleInvoiceResult = {
       units: string;
       unit_amount_cents: number;
       amount_cents: number;
+      netsuite_item_code: string | null;
       billed_units_detail: unknown;
     }>;
     units_annex: unknown;
@@ -374,6 +379,7 @@ export async function previewCycleInvoiceForCustomer(
       service_id: f.serviceId ?? null,
       service_add_on_id: f.serviceAddOnId ?? null,
       customer_add_on_id: f.customerAddOnId ?? null,
+      netsuite_item_code: f.netsuiteItemCode,
       billed_units_detail: f.billedUnitsDetail,
     })),
     fees_amount_cents: computed.feesAmountCents,
@@ -400,6 +406,7 @@ export async function previewCycleInvoiceForCustomer(
         units: f.units,
         unit_amount_cents: f.unitAmountCents,
         amount_cents: f.amountCents,
+        netsuite_item_code: f.netsuiteItemCode,
         billed_units_detail: f.billedUnitsDetail,
       })),
       units_annex: computed.unitsAnnex,

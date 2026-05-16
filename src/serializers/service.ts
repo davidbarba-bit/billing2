@@ -37,6 +37,10 @@ export function serializeService(service: ServiceWithLinks) {
           }
         : null,
       prepaid_months_default: service.prepaidMonthsDefault ?? null,
+      // v9: códigos NetSuite por kind de fee que produce este service.
+      netsuite_monthly_item_code: service.netsuiteMonthlyItemCode ?? null,
+      netsuite_setup_item_code: service.netsuiteSetupItemCode ?? null,
+      netsuite_one_off_item_code: service.netsuiteOneOffItemCode ?? null,
       status: service.status,
       terminated_at: service.terminatedAt ? isoUtc(service.terminatedAt) : null,
       metadata: service.metadata ?? {},

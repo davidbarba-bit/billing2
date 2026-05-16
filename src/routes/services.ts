@@ -16,8 +16,18 @@ type ServicePayload = {
   monthly_unit_amount_cents?: number;
   setup_unit_amount_cents?: number;
   prepaid_months_default?: number | null;
+  // v9: códigos NetSuite por kind de fee que este service produce.
+  netsuite_monthly_item_code?: string | null;
+  netsuite_setup_item_code?: string | null;
+  netsuite_one_off_item_code?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+function normalizeItemCode(v: string | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  const trimmed = v.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
 
 export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient): void {
   const authenticate = buildAuthHook(prisma);
@@ -82,6 +92,9 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
           monthlyUnitAmountCents: monthlyAmount,
           setupUnitAmountCents: setupAmount,
           prepaidMonthsDefault: prepaidMonthsDefault,
+          netsuiteMonthlyItemCode: normalizeItemCode(payload.netsuite_monthly_item_code),
+          netsuiteSetupItemCode: normalizeItemCode(payload.netsuite_setup_item_code),
+          netsuiteOneOffItemCode: normalizeItemCode(payload.netsuite_one_off_item_code),
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
@@ -143,6 +156,49 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       if (!service) throw notFound('service');
       const hydrated = await load(prisma, service.id);
       reply.send(serializeService(hydrated));
+    },
+  });
+
+  // v9: PATCH para actualizar códigos NetSuite (y otros campos no-precio).
+  // Los precios siguen yendo por PUT /price (v7) que tiene su propia lógica
+  // de pending/promoción. Aquí solo: name, description, item codes, metadata.
+  app.route({
+    method: 'PATCH',
+    url: '/api/v1/services/:code',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { code } = request.params as { code: string };
+      const body = (request.body ?? {}) as { service?: {
+        name?: string;
+        description?: string | null;
+        netsuite_monthly_item_code?: string | null;
+        netsuite_setup_item_code?: string | null;
+        netsuite_one_off_item_code?: string | null;
+        metadata?: Record<string, unknown>;
+      } };
+      const payload = body.service ?? {};
+      const service = await prisma.service.findUnique({
+        where: { organizationId_code: { organizationId: org.id, code } },
+      });
+      if (!service) throw notFound('service');
+      const data: Prisma.ServiceUpdateInput = {};
+      if (payload.name !== undefined) data.name = payload.name;
+      if (payload.description !== undefined) data.description = payload.description;
+      if (payload.netsuite_monthly_item_code !== undefined) {
+        data.netsuiteMonthlyItemCode = normalizeItemCode(payload.netsuite_monthly_item_code);
+      }
+      if (payload.netsuite_setup_item_code !== undefined) {
+        data.netsuiteSetupItemCode = normalizeItemCode(payload.netsuite_setup_item_code);
+      }
+      if (payload.netsuite_one_off_item_code !== undefined) {
+        data.netsuiteOneOffItemCode = normalizeItemCode(payload.netsuite_one_off_item_code);
+      }
+      if (payload.metadata !== undefined) {
+        data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
+      }
+      const updated = await prisma.service.update({ where: { id: service.id }, data });
+      reply.send(serializeService(updated));
     },
   });
 
