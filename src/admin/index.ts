@@ -622,7 +622,14 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
               { label: 'One-off facturado', render: (u: typeof service.units[number]) => u.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
             ]
           : [
-              { label: 'Setup billed', render: (u: typeof service.units[number]) => u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
+              // Setup gate solo aplica si el service tiene setup > 0. Si es 0,
+              // setupBilledAt nunca se marca y mostrar "pendiente" eternamente
+              // es confuso → mostramos "n/a" en gris.
+              { label: 'Setup billed', render: (u: typeof service.units[number]) =>
+                service.setupUnitAmountCents === 0
+                  ? '<span class="text-gray-400 text-xs">n/a (sin setup)</span>'
+                  : (u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow'))
+              },
             ]),
         { label: 'Acciones', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
       ],
@@ -1105,8 +1112,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Active from', fmtDate(unit.activeFrom)],
       ['Billing starts at', unit.billingStartsAt ? `<span class="text-amber-700">${escapeHtml(fmtDate(unit.billingStartsAt))}</span>` : '<span class="text-gray-400">— (usa active_from)</span>'],
       ['Active to', fmtDate(unit.activeTo)],
-      ['Setup billed', unit.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')],
-      ['One-off billed', unit.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')],
+      // Mostramos solo el gate relevante al pricing_model. Para recurring sin
+      // setup, indicamos "n/a" para no confundir con el gate de one_off.
+      ...(unit.service.pricingModel === 'one_off'
+        ? [['One-off facturada', unit.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')] as [string, string]]
+        : unit.service.setupUnitAmountCents === 0
+          ? [['Setup', '<span class="text-gray-400 text-xs">n/a (service sin setup)</span>'] as [string, string]]
+          : [['Setup billed', unit.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')] as [string, string]]),
       ...(migratedFrom ? [['Migrada desde', `${escapeHtml(migratedFrom.service_code ?? '?')} (${escapeHtml(migratedFrom.at ? fmtDate(new Date(migratedFrom.at)) : '?')})`] as [string, string]] : []),
       ...(migratedTo ? [['Migrada hacia', `<span class="text-amber-700">${escapeHtml(migratedTo.service_code ?? '?')} (${escapeHtml(migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?')})</span>`] as [string, string]] : []),
     ]);
@@ -1347,7 +1359,23 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Active from', render: (u) => fmtDate(u.activeFrom) },
           { label: 'Billing starts', render: (u) => u.billingStartsAt ? `<span class="text-amber-700">${escapeHtml(fmtDate(u.billingStartsAt))}</span>` : '<span class="text-gray-400">—</span>' },
           { label: 'Active to', render: (u) => fmtDate(u.activeTo) },
-          { label: 'Setup', render: (u) => u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
+          // Gate de facturación inicial: para recurring miramos setupBilledAt,
+          // para one_off miramos oneoffBilledAt. Son campos distintos y el
+          // motor solo marca el que corresponde al pricing_model del service.
+          { label: 'Facturada', render: (u) => {
+            const isOneOff = u.service.pricingModel === 'one_off';
+            const billedAt = isOneOff ? u.oneoffBilledAt : u.setupBilledAt;
+            // Para recurring sin setup_unit_amount_cents, setupBilledAt
+            // siempre será null pero "facturada" no aplica como concepto;
+            // mostramos "n/a" en gris.
+            if (!isOneOff && u.service.setupUnitAmountCents === 0) {
+              return '<span class="text-gray-400 text-xs">n/a (sin setup)</span>';
+            }
+            const label = isOneOff ? 'one_off' : 'setup';
+            return billedAt
+              ? badge(`${label}: billed`, 'green')
+              : badge(`${label}: pendiente`, 'yellow');
+          } },
           { label: '', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
         ],
       }),
