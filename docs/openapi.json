@@ -281,7 +281,31 @@
     },
     "/api/v1/units/{id}": {
       "get": { "summary": "Read unit", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } },
-      "patch": { "summary": "Update label / active_to", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } }
+      "patch": { "summary": "Update label / active_to / billing_starts_at", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } }
+    },
+    "/api/v1/units/{id}/migrate": {
+      "post": {
+        "summary": "Migración de plan: terminate-and-recreate atómico (v8)",
+        "description": "Cierra la unit en su service actual (activeTo = migration_at) y crea una nueva unit en `to_service_code` con el mismo external_id. Política: solo a futuro, mismo customer, mismo pricing_model. Por default NO cobra setup del plan nuevo (setupBilledAt se preestablece en la nueva unit). Add-ons per-unit del service viejo se cierran junto con la unit vieja. Audit: metadata.migrated_to (vieja) + metadata.migrated_from (nueva) + EventLog operation_type='migrate'. Tras la migración, eventos al service viejo con ese external_id son rechazados (422).",
+        "tags": ["units"],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "migration": { "type": "object", "required": ["to_service_code", "migration_at"], "properties": {
+            "to_service_code": { "type": "string", "description": "Code del service destino (mismo customer, mismo pricing_model, distinto al actual)." },
+            "migration_at": { "type": "string", "format": "date-time", "description": "Cuándo entra en vigor. Debe ser > ahora." },
+            "charge_new_setup": { "type": "boolean", "default": false, "description": "Si true, deja setupBilledAt=null en la unit nueva (se cobrará setup del plan nuevo en el próximo cycle). Default false." },
+            "new_label": { "type": ["string", "null"], "description": "Label opcional para la unit nueva. Si se omite, se hereda el label viejo." },
+            "metadata": { "type": "object", "description": "Metadata adicional para la unit nueva (se combina con migrated_from)." }
+          } } } } } }
+        },
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "old_unit": { "$ref": "#/components/schemas/Unit" }, "new_unit": { "$ref": "#/components/schemas/Unit" }, "event_id": { "type": "string", "format": "uuid" } } } } } },
+          "404": { "description": "unit | to_service no existe" },
+          "409": { "description": "unit_terminated | unit_already_migrated | external_id_collision_on_target" },
+          "422": { "description": "Validación (must_be_in_the_future, must_be_same_customer, must_be_same_pricing_model, same_as_current_service, service_terminated)" }
+        }
+      }
     },
 
     "/api/v1/events": {

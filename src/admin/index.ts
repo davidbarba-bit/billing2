@@ -1027,6 +1027,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
     };
     const flash = readFlash(request, reply);
+    const meta = (unit.metadata as Record<string, unknown> | null) ?? {};
+    const migratedTo = meta.migrated_to as { service_code?: string; at?: string } | undefined;
+    const migratedFrom = meta.migrated_from as { service_code?: string; at?: string } | undefined;
     const info = kv([
       ['Service', `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(unit.service.code)}">${escapeHtml(unit.service.code)}</a>`],
       ['External ID', `<code>${escapeHtml(unit.externalId)}</code>`],
@@ -1035,6 +1038,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Active to', fmtDate(unit.activeTo)],
       ['Setup billed', unit.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')],
       ['One-off billed', unit.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')],
+      ...(migratedFrom ? [['Migrada desde', `${escapeHtml(migratedFrom.service_code ?? '?')} (${escapeHtml(migratedFrom.at ? fmtDate(new Date(migratedFrom.at)) : '?')})`] as [string, string]] : []),
+      ...(migratedTo ? [['Migrada hacia', `<span class="text-amber-700">${escapeHtml(migratedTo.service_code ?? '?')} (${escapeHtml(migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?')})</span>`] as [string, string]] : []),
     ]);
     const form = `
       <form method="post" action="/admin/units/${unit.id}/edit" class="space-y-3 max-w-2xl">
@@ -1051,11 +1056,66 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         </div>
       </form>
     `;
+
+    // Migración: solo si la unit está activa y no ha sido migrada antes.
+    const canMigrate = unit.activeTo === null && !migratedTo;
+    let migrateBlock = '';
+    if (canMigrate) {
+      // Candidate services: mismo customer, mismo pricing_model, distinto al actual, activos.
+      const candidates = await prisma.service.findMany({
+        where: {
+          customerId: unit.service.customerId,
+          pricingModel: unit.service.pricingModel,
+          status: 'active',
+          id: { not: unit.serviceId },
+        },
+        orderBy: { code: 'asc' },
+      });
+      if (candidates.length === 0) {
+        migrateBlock = '<p class="text-sm text-gray-500">No hay otros services activos del mismo customer y pricing model (<code>' + escapeHtml(unit.service.pricingModel) + '</code>) a los que migrar.</p>';
+      } else {
+        // Default migration_at sugerido: mañana 00:00 UTC.
+        const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const defaultAt = `${tomorrow.getUTCFullYear()}-${String(tomorrow.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrow.getUTCDate()).padStart(2, '0')}T00:00`;
+        const opts = candidates.map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.code)} — ${escapeHtml(s.name)} (${fmtMoney(s.monthlyUnitAmountCents, s.currency)}/u/mes)</option>`).join('');
+        migrateBlock = `
+          <form method="post" action="/admin/units/${unit.id}/migrate" class="space-y-3 max-w-2xl"
+            onsubmit="return confirm('La unit ${escapeHtml(unit.externalId)} se cerrará en el plan actual y se creará en el nuevo plan a la fecha indicada. ¿Continuar?')">
+            <p class="text-xs text-gray-500">Migra esta unit a otro plan del mismo customer. Política: solo a futuro, mismo pricing model, sin cobrar setup del plan nuevo (a menos que marques la casilla).</p>
+            <label class="block"><span class="text-sm text-gray-700">Plan destino</span>
+              <select required name="to_service_code" class="mt-1 block w-full rounded border-gray-300 text-sm">
+                <option value="">— elegir —</option>
+                ${opts}
+              </select>
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Migration at (UTC, debe ser futuro)</span>
+              <input required type="datetime-local" name="migration_at" value="${defaultAt}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Nuevo label (opcional)</span>
+              <input name="new_label" placeholder="${escapeHtml(unit.label ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="inline-flex items-center text-sm">
+              <input type="checkbox" name="charge_new_setup" value="1" class="rounded border-gray-300">
+              <span class="ml-2 text-gray-700">Cobrar setup del plan nuevo (default: no)</span>
+            </label>
+            <div class="flex gap-2">
+              <button type="submit" class="px-4 py-2 bg-amber-600 text-white rounded text-sm hover:bg-amber-700">Migrar de plan</button>
+            </div>
+          </form>
+        `;
+      }
+    } else if (migratedTo) {
+      migrateBlock = `<p class="text-sm text-amber-700">Esta unit ya fue migrada hacia <code>${escapeHtml(migratedTo.service_code ?? '?')}</code> el ${escapeHtml(migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?')}.</p>`;
+    } else {
+      migrateBlock = '<p class="text-sm text-gray-500">La unit está terminada — no puede migrarse.</p>';
+    }
+
     reply.type('text/html').send(layout({
       title: `Unit · ${unit.externalId}`, active: '/admin/units', orgSlug: org.slug, flash,
       body: pageHeader(`Editar unit: ${unit.externalId}`, btn(`/admin/services/${unit.service.code}`, '← back'))
         + card('Info', info)
-        + card('Editar', form),
+        + card('Editar', form)
+        + card('Migrar a otro plan', migrateBlock),
     }));
   });
 
@@ -1079,6 +1139,35 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
     else setFlash(reply, 'success', `Unit ${unit.externalId} actualizada.`);
     reply.redirect(`/admin/services/${unit.service.code}`);
+  });
+
+  // v8: migración de plan (admin → API).
+  app.post('/admin/units/:id/migrate', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const body = request.body as Record<string, string>;
+    const unit = await prisma.unit.findFirst({ where: { id, service: { organizationId: org.id } }, include: { service: true } });
+    if (!unit) return reply.redirect('/admin/units');
+    const payload: Record<string, unknown> = {
+      to_service_code: body.to_service_code,
+      migration_at: toUtcIso(body.migration_at ?? ''),
+      charge_new_setup: body.charge_new_setup === '1',
+    };
+    if (body.new_label) payload.new_label = body.new_label;
+    const result = await app.inject({
+      method: 'POST',
+      url: `/api/v1/units/${id}/migrate`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { migration: payload },
+    });
+    if (result.statusCode !== 200) {
+      setFlash(reply, 'error', `Migración rechazada: ${result.body.slice(0, 240)}`);
+      return reply.redirect(`/admin/units/${id}/edit`);
+    }
+    const { new_unit } = result.json() as { new_unit: { id: string; service_id: string } };
+    setFlash(reply, 'success', `Unit ${unit.externalId} migrada a ${body.to_service_code}. Nueva unit: ${new_unit.id}`);
+    reply.redirect(`/admin/units/${new_unit.id}/edit`);
   });
 
   app.post('/admin/services/:code/terminate', async (request, reply) => {

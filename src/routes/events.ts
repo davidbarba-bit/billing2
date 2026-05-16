@@ -98,6 +98,20 @@ export function registerEventRoutes(
       });
       if (!service) throw notFound('service');
 
+      // v8: si la unit con ese external_id en este service fue MIGRADA fuera,
+      // rechaza el evento — el cliente debe dirigirlo al service destino. Esto
+      // protege contra re-activación accidental tras una migración.
+      const existingUnit = await prisma.unit.findUnique({
+        where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id } },
+      });
+      if (existingUnit) {
+        const meta = (existingUnit.metadata as Record<string, unknown> | null) ?? {};
+        if (meta.migrated_to) {
+          const target = meta.migrated_to as { service_code?: string };
+          throw validation({ unit: [`migrated_to:${target.service_code ?? 'unknown'}`] });
+        }
+      }
+
       const timestamp = new Date(payload.timestamp * 1000);
 
       const prepaidMonthsOverride = payload.prepaid_months ?? null;
