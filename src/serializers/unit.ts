@@ -12,6 +12,9 @@ export function serializeUnit(unit: Unit) {
       label: unit.label ?? null,
       active_from: isoUtc(unit.activeFrom),
       active_to: unit.activeTo ? isoUtc(unit.activeTo) : null,
+      // v8: billing_starts_at sobrescribe active_from solo para cálculos
+      // de facturación. null → motor usa active_from.
+      billing_starts_at: unit.billingStartsAt ? isoUtc(unit.billingStartsAt) : null,
       setup_billed_at: unit.setupBilledAt ? isoUtc(unit.setupBilledAt) : null,
       oneoff_billed_at: unit.oneoffBilledAt ? isoUtc(unit.oneoffBilledAt) : null,
       prepaid_months: unit.prepaidMonths ?? null,

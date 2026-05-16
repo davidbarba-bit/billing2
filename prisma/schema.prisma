@@ -222,6 +222,15 @@ model Unit {
   label         String?
   activeFrom    DateTime  @map("active_from")
   activeTo      DateTime? @map("active_to")
+  // v8: opcional override para "cuándo empieza a facturarse" la unit.
+  //   - NULL  → el motor usa activeFrom (comportamiento default).
+  //   - <set> → el motor usa este valor en lugar de activeFrom para
+  //             proration mensual, gates de setup y filtros de one_off.
+  // Útil para migración desde otras plataformas: la unit reporta desde
+  // activeFrom (verdad operativa) pero se factura desde billing_starts_at.
+  //   Cobrar mes completo aunque entre mid-mes → billing_starts_at = inicio del mes
+  //   Saltarse el mes (ya pagó en otra plataforma) → billing_starts_at = inicio del próximo mes
+  billingStartsAt DateTime? @map("billing_starts_at")
   // Gates de cobro one-off por unit:
   //   setupBilledAt   → para services recurring + setup_unit_amount_cents > 0
   //   oneoffBilledAt  → para services one_off (la unit no vuelve a aparecer en facturas)

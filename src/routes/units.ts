@@ -15,6 +15,10 @@ type UnitPayload = {
   external_id?: string;
   label?: string | null;
   active_from?: string;
+  // v8: override de fecha de facturación. Si null/omitido, el motor usa
+  // active_from. Útil para migración desde otras plataformas (cobrar mes
+  // completo aunque entre mid-mes, o saltarse el primer mes ya pagado).
+  billing_starts_at?: string | null;
   prepaid_months?: number | null;
   metadata?: Record<string, unknown>;
 };
@@ -46,6 +50,11 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
 
       const activeFrom = payload.active_from ? new Date(payload.active_from) : new Date();
       if (Number.isNaN(activeFrom.getTime())) throw validation({ active_from: ['invalid_iso_datetime'] });
+      let billingStartsAt: Date | null = null;
+      if (payload.billing_starts_at !== undefined && payload.billing_starts_at !== null) {
+        billingStartsAt = new Date(payload.billing_starts_at);
+        if (Number.isNaN(billingStartsAt.getTime())) throw validation({ billing_starts_at: ['invalid_iso_datetime'] });
+      }
       const prepaidMonths = payload.prepaid_months ?? null;
       if (prepaidMonths !== null && (!Number.isInteger(prepaidMonths) || prepaidMonths <= 0)) {
         throw validation({ prepaid_months: ['must_be_positive_integer'] });
@@ -57,6 +66,7 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
           externalId: payload.external_id,
           label: payload.label ?? null,
           activeFrom,
+          billingStartsAt,
           prepaidMonths,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
@@ -133,7 +143,7 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
     handler: async (request, reply) => {
       const org = requireOrg(request);
       const { id } = request.params as { id: string };
-      const body = (request.body ?? {}) as { unit?: { label?: string; active_to?: string | null; prepaid_months?: number | null; metadata?: Record<string, unknown> } };
+      const body = (request.body ?? {}) as { unit?: { label?: string; active_to?: string | null; billing_starts_at?: string | null; prepaid_months?: number | null; metadata?: Record<string, unknown> } };
       const payload = body.unit ?? {};
       const unit = await prisma.unit.findFirst({ where: { id, service: { organizationId: org.id } } });
       if (!unit) throw notFound('unit');
@@ -141,6 +151,15 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
       if (payload.label !== undefined) data.label = payload.label;
       if (payload.active_to !== undefined) {
         data.activeTo = payload.active_to === null ? null : new Date(payload.active_to);
+      }
+      if (payload.billing_starts_at !== undefined) {
+        if (payload.billing_starts_at === null) {
+          data.billingStartsAt = null;
+        } else {
+          const bs = new Date(payload.billing_starts_at);
+          if (Number.isNaN(bs.getTime())) throw validation({ billing_starts_at: ['invalid_iso_datetime'] });
+          data.billingStartsAt = bs;
+        }
       }
       if (payload.prepaid_months !== undefined) {
         if (payload.prepaid_months !== null && (!Number.isInteger(payload.prepaid_months) || payload.prepaid_months <= 0)) {

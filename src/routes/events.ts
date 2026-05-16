@@ -47,6 +47,10 @@ type EventPayload = {
   // one_off; sobreescribe service.prepaidMonthsDefault. Si ambos null al
   // momento de facturar, el cobro falla.
   prepaid_months?: number | null;
+  // v8: override de fecha de facturación al crear la unit (solo aplica si el
+  // event causa el CREATE de la unit; si ya existe, este campo es ignorado —
+  // usa PATCH /units/:id para ajustarla después). Útil para migración mid-mes.
+  billing_starts_at?: string | null;
   timestamp?: number | string;
   kind?: string | null;
   properties?: Record<string, unknown>;
@@ -101,6 +105,17 @@ export function registerEventRoutes(
         throw validation({ prepaid_months: ['must_be_positive_integer'] });
       }
 
+      // v8: billing_starts_at se respeta solo en CREATE de la unit. Si la
+      // unit ya existe, este campo se ignora (usa PATCH /units/:id para
+      // editar después de creada).
+      let billingStartsAtOverride: Date | null = null;
+      if (payload.billing_starts_at !== undefined && payload.billing_starts_at !== null) {
+        billingStartsAtOverride = new Date(payload.billing_starts_at);
+        if (Number.isNaN(billingStartsAtOverride.getTime())) {
+          throw validation({ billing_starts_at: ['invalid_iso_datetime'] });
+        }
+      }
+
       const result = await prisma.$transaction(async (tx) => {
         const unit = await tx.unit.upsert({
           where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id! } },
@@ -113,6 +128,7 @@ export function registerEventRoutes(
             // Solo se setea en create. Si la unit ya existe, preservamos lo
             // que tenga (se puede ajustar con PATCH /units/:id).
             prepaidMonths: prepaidMonthsOverride,
+            billingStartsAt: billingStartsAtOverride,
           },
           update: op === 'add'
             ? { activeTo: null, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) }
@@ -135,11 +151,19 @@ export function registerEventRoutes(
         });
 
         // Trigger immediate one-off invoice si aplica.
+        // v8: si la unit tiene billing_starts_at > timestamp, la facturación
+        // se difiere. En modo immediate eso significa: NO emitimos invoice
+        // ahora; la unit queda `oneoffBilledAt = null` esperando un trigger
+        // posterior. Recomendación al usuario: para clientes que requieran
+        // delay de billing one_off, usar nonrecurring_trigger='next_cycle'
+        // donde el cron / cycle invoice lo recoge automáticamente.
+        const effectiveBillingStart = unit.billingStartsAt ?? unit.activeFrom;
         let triggeredInvoiceId: string | null = null;
         const isImmediateOneOff = op === 'add'
           && service.pricingModel === 'one_off'
           && service.customer.nonrecurringTrigger === 'immediate'
-          && unit.oneoffBilledAt === null;
+          && unit.oneoffBilledAt === null
+          && effectiveBillingStart <= timestamp;
 
         if (isImmediateOneOff) {
           const computed = computeOneOffPingInvoice({ service, unit, now: timestamp });

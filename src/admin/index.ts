@@ -592,6 +592,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         { label: 'Label', render: (u) => escapeHtml(u.label ?? '—') },
         { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
         { label: 'Active from', render: (u) => fmtDate(u.activeFrom) },
+        // v8: billing_starts_at visible solo si está seteado (override).
+        { label: 'Billing starts', render: (u) => u.billingStartsAt ? `<span class="text-amber-700 font-medium" title="override de fecha de facturación (migración)">${escapeHtml(fmtDate(u.billingStartsAt))}</span>` : '<span class="text-gray-400">—</span>' },
         { label: 'Active to', render: (u) => fmtDate(u.activeTo) },
         ...(isOneOff
           ? [
@@ -601,6 +603,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           : [
               { label: 'Setup billed', render: (u: typeof service.units[number]) => u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
             ]),
+        { label: 'Acciones', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
       ],
     });
 
@@ -696,6 +699,38 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       </details>
     `;
 
+    // v8: form de migración manual — crea una unit con active_from y
+    // billing_starts_at explícitos. Útil cuando integras desde otra plataforma
+    // GPS donde la unit ya existía y necesitas controlar exactamente cuándo
+    // empieza a facturarse (full mes, skip mes, prorrateo parcial).
+    const migrateForm = service.status === 'terminated' ? '' : `
+      <details class="mt-4">
+        <summary class="cursor-pointer text-indigo-700 font-medium">+ Migrar unit (con billing_starts_at)</summary>
+        <form method="post" action="/admin/services/${escapeHtml(service.code)}/units" class="mt-3 space-y-3 max-w-3xl">
+          <p class="text-xs text-gray-500">Crea una unit con override de fecha de facturación. <code>active_from</code> = cuándo empezó a reportar (verdad operativa). <code>billing_starts_at</code> = desde cuándo se factura. Déjalo vacío para usar <code>active_from</code> (comportamiento normal con proration por mes calendario).</p>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="text-sm text-gray-700">External ID</span>
+              <input required name="external_id" placeholder="gps-001" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Label (opcional)</span>
+              <input name="label" placeholder="Camión 001" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Active from (UTC)</span>
+              <input required type="datetime-local" name="active_from" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Billing starts at (UTC, opcional)</span>
+              <input type="datetime-local" name="billing_starts_at" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            ${isOneOff ? `
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Meses prepagados (opcional — default del service: ${service.prepaidMonthsDefault ?? '—'})</span>
+              <input type="number" name="prepaid_months" min="1" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>` : ''}
+          </div>
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear unit migrada</button>
+        </form>
+      </details>
+    `;
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `Service · ${service.code}`, active: '/admin/services', orgSlug: org.slug, flash,
@@ -704,7 +739,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         + card('Precio', priceChangeBlock)
         + card('Acciones', `${terminateForm} <span class="ml-3">${invoicesLink}</span>`)
         + card(`Add-ons per-unit (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
-        + card(`Units (${service.units.length})`, unitsBlock),
+        + card(`Units (${service.units.length})`, unitsBlock + migrateForm),
     }));
   });
 
@@ -941,6 +976,111 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     reply.redirect(`/admin/customers/${addOn.customer.externalId}`);
   });
 
+  // v8: crear unit (form admin → POST /api/v1/units).
+  app.post('/admin/services/:code/units', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    const payload: Record<string, unknown> = {
+      service_code: svcCode,
+      external_id: body.external_id,
+      active_from: toUtcIso(body.active_from ?? ''),
+    };
+    if (body.label) payload.label = body.label;
+    if (body.billing_starts_at) payload.billing_starts_at = toUtcIso(body.billing_starts_at);
+    if (body.prepaid_months) payload.prepaid_months = Number(body.prepaid_months);
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/v1/units',
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { unit: payload },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Unit ${body.external_id} creada.`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
+  // v8: pantalla simple para editar una unit (label, billing_starts_at, active_to).
+  app.get('/admin/units/:id/edit', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const unit = await prisma.unit.findFirst({
+      where: { id, service: { organizationId: org.id } },
+      include: { service: true },
+    });
+    if (!unit) {
+      reply.status(404).type('text/html').send(layout({
+        title: 'Not Found', orgSlug: org.slug,
+        body: pageHeader('Unit no existe') + btn('/admin/units', '← back'),
+      }));
+      return;
+    }
+    const dt = (d: Date | null | undefined): string => {
+      if (!d) return '';
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    };
+    const flash = readFlash(request, reply);
+    const info = kv([
+      ['Service', `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(unit.service.code)}">${escapeHtml(unit.service.code)}</a>`],
+      ['External ID', `<code>${escapeHtml(unit.externalId)}</code>`],
+      ['Active from', fmtDate(unit.activeFrom)],
+      ['Billing starts at', unit.billingStartsAt ? `<span class="text-amber-700">${escapeHtml(fmtDate(unit.billingStartsAt))}</span>` : '<span class="text-gray-400">— (usa active_from)</span>'],
+      ['Active to', fmtDate(unit.activeTo)],
+      ['Setup billed', unit.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')],
+      ['One-off billed', unit.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')],
+    ]);
+    const form = `
+      <form method="post" action="/admin/units/${unit.id}/edit" class="space-y-3 max-w-2xl">
+        <p class="text-xs text-gray-500">Campos editables. <code>billing_starts_at</code> vacío = limpia override y usa <code>active_from</code>.</p>
+        <label class="block"><span class="text-sm text-gray-700">Label</span>
+          <input name="label" value="${escapeHtml(unit.label ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+        </label>
+        <label class="block"><span class="text-sm text-gray-700">Billing starts at (UTC)</span>
+          <input type="datetime-local" name="billing_starts_at" value="${escapeHtml(dt(unit.billingStartsAt))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+        </label>
+        <div class="flex gap-2">
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar</button>
+          <a href="/admin/services/${escapeHtml(unit.service.code)}" class="px-4 py-2 bg-white border rounded text-sm text-gray-700">Cancelar</a>
+        </div>
+      </form>
+    `;
+    reply.type('text/html').send(layout({
+      title: `Unit · ${unit.externalId}`, active: '/admin/units', orgSlug: org.slug, flash,
+      body: pageHeader(`Editar unit: ${unit.externalId}`, btn(`/admin/services/${unit.service.code}`, '← back'))
+        + card('Info', info)
+        + card('Editar', form),
+    }));
+  });
+
+  app.post('/admin/units/:id/edit', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const body = request.body as Record<string, string>;
+    const unit = await prisma.unit.findFirst({ where: { id, service: { organizationId: org.id } }, include: { service: true } });
+    if (!unit) return reply.redirect('/admin/units');
+    const patch: Record<string, unknown> = {};
+    patch.label = body.label ?? '';
+    // Vacío → null (limpia el override).
+    patch.billing_starts_at = body.billing_starts_at ? toUtcIso(body.billing_starts_at) : null;
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/units/${id}`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { unit: patch },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Unit ${unit.externalId} actualizada.`);
+    reply.redirect(`/admin/services/${unit.service.code}`);
+  });
+
   app.post('/admin/services/:code/terminate', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
@@ -1020,8 +1160,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Service', render: (u) => `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(u.service.code)}">${escapeHtml(u.service.code)}</a>` },
           { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
           { label: 'Active from', render: (u) => fmtDate(u.activeFrom) },
+          { label: 'Billing starts', render: (u) => u.billingStartsAt ? `<span class="text-amber-700">${escapeHtml(fmtDate(u.billingStartsAt))}</span>` : '<span class="text-gray-400">—</span>' },
           { label: 'Active to', render: (u) => fmtDate(u.activeTo) },
           { label: 'Setup', render: (u) => u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
+          { label: '', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
         ],
       }),
     }));

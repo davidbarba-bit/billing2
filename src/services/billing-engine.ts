@@ -166,8 +166,13 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
       // "immediate" emite invoice individual desde el handler de /events
       // (ver `computeOneOffPingInvoice`), no aquí.
       if (customer.nonrecurringTrigger !== 'next_cycle') continue;
+      // v8: el "trigger del periodo" usa billingStartsAt si está seteado.
       const pending = service.units
-        .filter((u) => u.oneoffBilledAt === null && u.activeFrom <= periodEnd && u.activeFrom >= periodStart)
+        .filter((u) => {
+          if (u.oneoffBilledAt !== null) return false;
+          const billStart = unitBillingStart(u);
+          return billStart <= periodEnd && billStart >= periodStart;
+        })
         .sort((a, b) => (a.externalId < b.externalId ? -1 : 1));
       for (const unit of pending) {
         const unitFees = buildOneOffFeesForUnit(service, unit);
@@ -349,6 +354,15 @@ export function calendarMonthFraction(from: Date, to: Date, tz: string): number 
 
 type UnitEntry = { unit: Unit; activeFrom: Date; activeTo: Date | null; fraction: string };
 
+// v8: para todos los cálculos de billing usamos `billingStartsAt ?? activeFrom`.
+// `activeFrom` queda como "cuándo empezó a reportar la unit" (verdad operativa),
+// `billingStartsAt` permite anclar la facturación a una fecha distinta (p.ej.
+// migrar mid-mes pero cobrar el mes completo, o saltarse el mes facturado por
+// la plataforma anterior).
+export function unitBillingStart(unit: Pick<Unit, 'activeFrom' | 'billingStartsAt'>): Date {
+  return unit.billingStartsAt ?? unit.activeFrom;
+}
+
 function buildUnitEntries(
   units: Unit[],
   periodStart: Date,
@@ -359,9 +373,10 @@ function buildUnitEntries(
 ): UnitEntry[] {
   const entries: UnitEntry[] = [];
   for (const unit of units) {
+    const billStart = unitBillingStart(unit);
     if (unit.activeTo !== null && unit.activeTo <= periodStart) continue;
-    if (unit.activeFrom > periodEnd) continue;
-    const effFrom = new Date(Math.max(unit.activeFrom.getTime(), clampFrom.getTime()));
+    if (billStart > periodEnd) continue;
+    const effFrom = new Date(Math.max(billStart.getTime(), clampFrom.getTime()));
     const effTo = unit.activeTo === null
       ? clampTo
       : new Date(Math.min(unit.activeTo.getTime(), clampTo.getTime()));
@@ -414,8 +429,11 @@ function buildMonthlyFee(service: Service, units: Unit[], periodStart: Date, per
 
 function buildSetupFee(service: Service, units: Unit[], periodStart: Date, periodEnd: Date): ComputedFee | null {
   if (service.setupUnitAmountCents <= 0) return null;
+  // v8: el gate del setup también se mueve con billing_starts_at — si la
+  // facturación de la unit empieza después del periodEnd, el setup tampoco
+  // se cobra todavía.
   const setupCandidates = units
-    .filter((u) => u.setupBilledAt === null && u.activeFrom <= periodEnd && (u.activeTo === null || u.activeTo >= periodStart))
+    .filter((u) => u.setupBilledAt === null && unitBillingStart(u) <= periodEnd && (u.activeTo === null || u.activeTo >= periodStart))
     .sort((a, b) => (a.externalId < b.externalId ? -1 : 1));
   if (setupCandidates.length === 0) return null;
   const detail: BilledUnitDetail[] = setupCandidates.map((u) => ({
