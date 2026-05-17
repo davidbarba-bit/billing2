@@ -162,11 +162,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
-    const [customers, services, activeServices, units, activeUnits, events, invoices, invCalc, invDispatched, invConfirmed, creditNotes] = await Promise.all([
+    const [customers, activeServices, activeUnits, events, invoices, invCalc, invDispatched, invConfirmed, creditNotes] = await Promise.all([
       prisma.customer.count({ where: { organizationId: org.id } }),
-      prisma.service.count({ where: { organizationId: org.id } }),
       prisma.service.count({ where: { organizationId: org.id, status: 'active' } }),
-      prisma.unit.count({ where: { service: { organizationId: org.id } } }),
       prisma.unit.count({ where: { service: { organizationId: org.id }, activeTo: null } }),
       prisma.eventLog.count({ where: { organizationId: org.id } }),
       prisma.invoice.count({ where: { organizationId: org.id } }),
@@ -179,8 +177,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const counts = `
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         ${counter('Customers', customers, '/admin/customers')}
-        ${counter('Services', `${activeServices}/${services}`, '/admin/services')}
-        ${counter('Units', `${activeUnits}/${units}`, '/admin/units')}
+        ${counter('Services', activeServices, '/admin/services')}
+        ${counter('Units', activeUnits, '/admin/units')}
         ${counter('Events', events, '/admin/events')}
         ${counter('Invoices', invoices, '/admin/invoices')}
         ${counter('Credit notes', creditNotes, '/admin/credit-notes')}
