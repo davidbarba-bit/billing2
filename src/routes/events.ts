@@ -51,6 +51,10 @@ type EventPayload = {
   // event causa el CREATE de la unit; si ya existe, este campo es ignorado —
   // usa PATCH /units/:id para ajustarla después). Útil para migración mid-mes.
   billing_starts_at?: string | null;
+  // v14: flags de "ya pagado afuera" para migración legacy. Solo aplican al
+  // CREATE de la unit. Si la unit ya existe, son ignorados.
+  setup_already_billed?: boolean;
+  one_off_already_billed?: boolean;
   timestamp?: number | string;
   kind?: string | null;
   properties?: Record<string, unknown>;
@@ -130,6 +134,15 @@ export function registerEventRoutes(
         }
       }
 
+      // v14: gates pre-pagados ("ya pagado afuera"). Solo aplican al CREATE.
+      const isOneOffService = service.pricingModel === 'one_off';
+      const setupAlreadyBilled = !isOneOffService && payload.setup_already_billed === true
+        ? timestamp
+        : null;
+      const oneOffAlreadyBilled = isOneOffService && payload.one_off_already_billed === true
+        ? timestamp
+        : null;
+
       const result = await prisma.$transaction(async (tx) => {
         const unit = await tx.unit.upsert({
           where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id! } },
@@ -143,6 +156,8 @@ export function registerEventRoutes(
             // que tenga (se puede ajustar con PATCH /units/:id).
             prepaidMonths: prepaidMonthsOverride,
             billingStartsAt: billingStartsAtOverride,
+            setupBilledAt: setupAlreadyBilled,
+            oneoffBilledAt: oneOffAlreadyBilled,
           },
           update: op === 'add'
             ? { activeTo: null, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) }

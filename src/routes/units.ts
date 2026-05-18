@@ -20,6 +20,18 @@ type UnitPayload = {
   // completo aunque entre mid-mes, o saltarse el primer mes ya pagado).
   billing_starts_at?: string | null;
   prepaid_months?: number | null;
+  // v14: flags de "ya pagado afuera" para migración desde sistemas legacy.
+  // Marcan los gates de facturación inicial sin pasar por el motor.
+  //   - setup_already_billed: para services recurring con setup > 0. Marca
+  //     setupBilledAt = active_from para que la unit NO genere fee de setup.
+  //     La unit sigue facturando mensualidad normal.
+  //   - one_off_already_billed: para services one_off. Marca oneoffBilledAt
+  //     = active_from para que la unit nunca entre al cycle invoice ni al
+  //     ping immediate.
+  // Si se envía el flag "equivocado" para el pricing_model, se ignora
+  // silenciosamente (el gate del otro tipo no afecta este pricing_model).
+  setup_already_billed?: boolean;
+  one_off_already_billed?: boolean;
   metadata?: Record<string, unknown>;
 };
 
@@ -60,6 +72,15 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
         throw validation({ prepaid_months: ['must_be_positive_integer'] });
       }
 
+      // v14: gates pre-pagados ("ya pagado afuera").
+      const isOneOff = service.pricingModel === 'one_off';
+      const setupBilledAt = (!isOneOff && payload.setup_already_billed === true)
+        ? activeFrom
+        : null;
+      const oneoffBilledAt = (isOneOff && payload.one_off_already_billed === true)
+        ? activeFrom
+        : null;
+
       const unit = await prisma.unit.create({
         data: {
           serviceId: service.id,
@@ -68,6 +89,8 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
           activeFrom,
           billingStartsAt,
           prepaidMonths,
+          setupBilledAt,
+          oneoffBilledAt,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
