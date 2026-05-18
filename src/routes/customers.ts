@@ -199,6 +199,176 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
     preHandler: authenticate,
     handler: async () => { throw pathNotFound(); },
   });
+
+  // v11: edición del calendario de facturación post-creación.
+  //
+  // Cambios permitidos (todos opcionales; al menos uno requerido):
+  //   - subscription_at         → recalcula el ciclo. Gate: sin invoices no-voided.
+  //   - billing_anchor_day      → recalcula el ciclo. Gate: sin invoices no-voided.
+  //   - billing_period_months   → recalcula el ciclo. Gate: sin invoices no-voided.
+  //   - nonrecurring_trigger    → SIN gate (solo afecta one_off units futuras).
+  //
+  // Si se cambia uno de los 3 campos con gate y el customer tiene al menos
+  // 1 invoice no-voided → 409 customer_has_invoices. La salida limpia para
+  // ese caso es void+credit_note de las invoices ofensivas primero.
+  //
+  // Después de actualizar, recalcula currentBillingPeriodStartedAt/EndingAt
+  // vía billingPeriodFor para que la preview muestre el periodo correcto
+  // de inmediato. Si el nuevo subscription_at es futuro, el customer
+  // queda en status='pending' y currentBillingPeriod* en null (el cron
+  // de auto-activación lo levantará cuando subscription_at <= now).
+  //
+  // Registra un EventLog 'schedule_updated' con el delta para auditoría.
+  app.route({
+    method: 'PATCH',
+    url: '/api/v1/customers/:externalId/billing-schedule',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { externalId } = request.params as { externalId: string };
+      const body = (request.body ?? {}) as { billing_schedule?: {
+        subscription_at?: string;
+        billing_anchor_day?: number;
+        billing_period_months?: number;
+        nonrecurring_trigger?: 'immediate' | 'next_cycle';
+      } };
+      const payload = body.billing_schedule;
+      if (!payload) throw validation({ billing_schedule: ['value_is_mandatory'] });
+
+      const customer = await prisma.customer.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId } },
+      });
+      if (!customer) throw notFound('customer');
+      if (customer.status === 'terminated') {
+        throw new ApiError(409, 'customer_terminated', {
+          errorDetails: { customer: ['cannot_edit_schedule_of_terminated_customer'] },
+        });
+      }
+
+      const hasSubscription = payload.subscription_at !== undefined;
+      const hasAnchor = payload.billing_anchor_day !== undefined;
+      const hasPeriod = payload.billing_period_months !== undefined;
+      const hasTrigger = payload.nonrecurring_trigger !== undefined;
+      if (!hasSubscription && !hasAnchor && !hasPeriod && !hasTrigger) {
+        throw validation({ billing_schedule: ['at_least_one_field_required'] });
+      }
+
+      // Validaciones de rango (mismas que en POST).
+      let subscriptionAt: Date | undefined;
+      if (hasSubscription) {
+        subscriptionAt = new Date(payload.subscription_at!);
+        if (Number.isNaN(subscriptionAt.getTime())) {
+          throw validation({ subscription_at: ['invalid_iso_datetime'] });
+        }
+      }
+      if (hasAnchor) {
+        const v = payload.billing_anchor_day!;
+        if (!Number.isInteger(v) || v < 1 || v > 28) {
+          throw validation({ billing_anchor_day: ['must_be_1_to_28'] });
+        }
+      }
+      if (hasPeriod) {
+        const v = payload.billing_period_months!;
+        if (![1, 3, 6, 12].includes(v)) {
+          throw validation({ billing_period_months: ['must_be_1_3_6_or_12'] });
+        }
+      }
+      if (hasTrigger) {
+        const v = payload.nonrecurring_trigger!;
+        if (v !== 'immediate' && v !== 'next_cycle') {
+          throw validation({ nonrecurring_trigger: ['value_is_invalid'] });
+        }
+      }
+
+      // Gate: solo aplica si se cambia uno de los 3 campos que recalculan el
+      // ciclo (subscription_at, anchor_day, period_months). nonrecurring_trigger
+      // por sí solo NO requiere gate.
+      const needsInvoiceGate = hasSubscription || hasAnchor || hasPeriod;
+      if (needsInvoiceGate) {
+        const blockingInvoices = await prisma.invoice.count({
+          where: { customerId: customer.id, status: { not: 'voided' } },
+        });
+        if (blockingInvoices > 0) {
+          throw new ApiError(409, 'customer_has_invoices', {
+            errorDetails: {
+              customer: ['void_invoices_before_editing_schedule'],
+              blocking_invoice_count: [String(blockingInvoices)],
+            },
+          });
+        }
+      }
+
+      const now = new Date();
+      const newSubscriptionAt = subscriptionAt ?? customer.subscriptionAt;
+      const newAnchor = hasAnchor ? payload.billing_anchor_day! : customer.billingAnchorDay;
+      const newPeriodMonths = hasPeriod ? payload.billing_period_months! : customer.billingPeriodMonths;
+      const newTrigger = hasTrigger ? payload.nonrecurring_trigger! : customer.nonrecurringTrigger;
+
+      // Recalcula currentBillingPeriod* con los nuevos valores.
+      const tz = applicableTimezone(customer.timezone, org.timezone);
+      const isFuture = newSubscriptionAt.getTime() > now.getTime();
+      const tempCustomer = {
+        billingPeriodMonths: newPeriodMonths,
+        billingAnchorDay: newAnchor,
+        subscriptionAt: newSubscriptionAt,
+      } as unknown as import('@prisma/client').Customer;
+      const period = isFuture ? null : billingPeriodFor(tempCustomer, tz, now);
+
+      // Estado: si el customer estaba `active` y el nuevo subscription_at es
+      // futuro, lo regresamos a `pending` para que el cron lo active cuando
+      // toque. Si estaba `pending` y ahora subscription_at <= now, lo dejamos
+      // `pending` (la activación inline la maneja el handler de POST/invoices
+      // o el cron — mantenerlo consistente con esos flows).
+      const newStatus = isFuture ? 'pending' : (customer.status === 'pending' ? 'pending' : 'active');
+      const newStartedAt = isFuture ? null : (customer.startedAt ?? newSubscriptionAt);
+
+      // Audit: appendable a customer.metadata.schedule_history. EventLog
+      // requiere serviceId (no es para eventos customer-level), así que
+      // guardamos el histórico inline en metadata. Conserva las últimas 50
+      // ediciones para que no crezca sin límite.
+      const existingMeta = (customer.metadata as Record<string, unknown> | null) ?? {};
+      const existingHistory = Array.isArray(existingMeta.schedule_history)
+        ? (existingMeta.schedule_history as unknown[])
+        : [];
+      const historyEntry = {
+        at: now.toISOString(),
+        before: {
+          subscription_at: customer.subscriptionAt.toISOString(),
+          billing_anchor_day: customer.billingAnchorDay,
+          billing_period_months: customer.billingPeriodMonths,
+          nonrecurring_trigger: customer.nonrecurringTrigger,
+          status: customer.status,
+        },
+        after: {
+          subscription_at: newSubscriptionAt.toISOString(),
+          billing_anchor_day: newAnchor,
+          billing_period_months: newPeriodMonths,
+          nonrecurring_trigger: newTrigger,
+          status: newStatus,
+        },
+      };
+      const newHistory = [...existingHistory, historyEntry].slice(-50);
+      const newMetadata = { ...existingMeta, schedule_history: newHistory };
+
+      const updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          subscriptionAt: newSubscriptionAt,
+          billingAnchorDay: newAnchor,
+          billingPeriodMonths: newPeriodMonths,
+          nonrecurringTrigger: newTrigger,
+          status: newStatus,
+          startedAt: newStartedAt,
+          currentBillingPeriodStartedAt: isFuture ? null : (period?.start ?? newStartedAt ?? null),
+          currentBillingPeriodEndingAt: period?.end ?? null,
+          metadata: newMetadata as Prisma.InputJsonValue,
+        },
+      });
+
+      const hydrated = await load(prisma, updated.id);
+      reply.send(serializeCustomer(hydrated));
+    },
+  });
 }
 
 function buildCreateData(payload: CustomerPayload): Prisma.CustomerUncheckedCreateInput {

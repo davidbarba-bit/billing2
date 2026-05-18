@@ -403,11 +403,71 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ],
     });
 
+    // v11: card "Calendario de facturación" con edición inline.
+    // El gate de "no invoices no-voided" se aplica en el API; aquí solo
+    // mostramos el aviso para que el admin sepa por qué está deshabilitado.
+    const scheduleBlock = (() => {
+      const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
+      const blocked = nonVoidedInvoices > 0;
+      const terminated = customer.status === 'terminated';
+      const dtLocal = (d: Date | null | undefined): string => {
+        if (!d) return '';
+        const yyyy = d.getUTCFullYear();
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(d.getUTCDate()).padStart(2, '0');
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const mi = String(d.getUTCMinutes()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+      };
+      const summary = kv([
+        ['Subscription at', fmtDate(customer.subscriptionAt)],
+        ['Anchor day', String(customer.billingAnchorDay)],
+        ['Period months', String(customer.billingPeriodMonths)],
+        ['Trigger no-recurrente', badge(customer.nonrecurringTrigger, customer.nonrecurringTrigger === 'immediate' ? 'green' : 'gray')],
+        ['Periodo vigente', `${fmtDate(customer.currentBillingPeriodStartedAt)} → ${fmtDate(customer.currentBillingPeriodEndingAt)}`],
+      ]);
+      const periodOptions = [1, 3, 6, 12].map((n) =>
+        `<option value="${n}" ${n === customer.billingPeriodMonths ? 'selected' : ''}>${n} mes${n === 1 ? '' : 'es'}</option>`).join('');
+      const triggerOptions = [
+        `<option value="next_cycle" ${customer.nonrecurringTrigger === 'next_cycle' ? 'selected' : ''}>next_cycle (cobrar en próximo cierre)</option>`,
+        `<option value="immediate" ${customer.nonrecurringTrigger === 'immediate' ? 'selected' : ''}>immediate (factura individual al ping)</option>`,
+      ].join('');
+      const banner = terminated
+        ? `<div class="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900 mb-3">Customer <code>terminated</code> — schedule no editable.</div>`
+        : blocked
+        ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>${nonVoidedInvoices} invoice${nonVoidedInvoices === 1 ? '' : 's'} no-voided bloque${nonVoidedInvoices === 1 ? 'a' : 'an'} cambios a <code>subscription_at</code>, <code>anchor_day</code> y <code>period_months</code>.</strong> Voidálas primero. El campo <code>nonrecurring_trigger</code> sí se puede editar.</div>`
+        : '';
+      const disabledHard = blocked || terminated ? 'disabled' : '';
+      const disabledSoft = terminated ? 'disabled' : '';
+      const form = `
+        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/billing-schedule" class="space-y-3 max-w-3xl"
+          onsubmit="return confirm('Esto recalculará el ciclo actual y guardará el cambio en el historial. ¿Continuar?')">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="text-sm text-gray-700">Subscription at (UTC)</span>
+              <input ${disabledHard} type="datetime-local" name="subscription_at" value="${escapeHtml(dtLocal(customer.subscriptionAt))}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Anchor day (1–28)</span>
+              <input ${disabledHard} type="number" name="billing_anchor_day" min="1" max="28" value="${customer.billingAnchorDay}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Period months</span>
+              <select ${disabledHard} name="billing_period_months" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${periodOptions}</select>
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Trigger no-recurrente</span>
+              <select ${disabledSoft} name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${triggerOptions}</select>
+            </label>
+          </div>
+          ${terminated ? '' : `<button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Actualizar calendario</button>`}
+        </form>
+      `;
+      return summary + '<div class="mt-4 pt-4 border-t">' + banner + form + '</div>';
+    })();
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `Customer · ${customer.externalId}`, active: '/admin/customers', orgSlug: org.slug, flash,
       body: pageHeader(customer.name, btn('/admin/customers', '← back'))
         + card('Identidad', info)
+        + card('Calendario de facturación', scheduleBlock)
         + card('Acciones', invoiceForm)
         + card(`Services (${customer.services.length})`, servicesBlock,
           btn(`/admin/services/new?customer=${customer.externalId}`, '+ Nuevo service', 'primary'))
@@ -974,6 +1034,28 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   });
 
   // POST /admin/customers/:external_id/invoice → calcula la factura del periodo.
+  // v11: edita el calendario de facturación del customer (form admin → API).
+  app.post('/admin/customers/:externalId/billing-schedule', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+    const payload: Record<string, unknown> = {};
+    if (body.subscription_at) payload.subscription_at = toUtcIso(body.subscription_at);
+    if (body.billing_anchor_day) payload.billing_anchor_day = Number(body.billing_anchor_day);
+    if (body.billing_period_months) payload.billing_period_months = Number(body.billing_period_months);
+    if (body.nonrecurring_trigger) payload.nonrecurring_trigger = body.nonrecurring_trigger;
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/customers/${encodeURIComponent(externalId)}/billing-schedule`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { billing_schedule: payload },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
+    else setFlash(reply, 'success', 'Calendario de facturación actualizado.');
+    reply.redirect(`/admin/customers/${externalId}`);
+  });
+
   app.post('/admin/customers/:externalId/invoice', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');

@@ -218,6 +218,29 @@
       "get": { "summary": "Read customer", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Customer" } } },
       "delete": { "summary": "Delete (409 si tiene services activos)", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
+    "/api/v1/customers/{externalId}/billing-schedule": {
+      "patch": {
+        "summary": "Edita el calendario de facturación del customer post-creación (v11)",
+        "description": "Permite cambiar subscription_at / billing_anchor_day / billing_period_months / nonrecurring_trigger después de crear el customer. Los 3 primeros están gateados por 'sin invoices no-voided' — si las hay, 409. nonrecurring_trigger es siempre editable. Tras actualizar, currentBillingPeriodStartedAt/EndingAt se recalculan automáticamente. Si el nuevo subscription_at es futuro, el customer pasa a status='pending'. El histórico se guarda en customer.metadata.schedule_history (append-only, últimas 50 ediciones).",
+        "tags": ["customers"],
+        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "billing_schedule": { "type": "object", "properties": {
+            "subscription_at": { "type": "string", "format": "date-time" },
+            "billing_anchor_day": { "type": "integer", "minimum": 1, "maximum": 28 },
+            "billing_period_months": { "type": "integer", "enum": [1, 3, 6, 12] },
+            "nonrecurring_trigger": { "type": "string", "enum": ["immediate", "next_cycle"] }
+          } } } } } }
+        },
+        "responses": {
+          "200": { "description": "Customer actualizado" },
+          "404": { "description": "Customer no existe" },
+          "409": { "description": "customer_terminated | customer_has_invoices (con blocking_invoice_count)" },
+          "422": { "description": "Validación: at_least_one_field_required, must_be_1_to_28, must_be_1_3_6_or_12, value_is_invalid, invalid_iso_datetime" }
+        }
+      }
+    },
     "/api/v1/customers/{externalId}/add-ons": {
       "post": { "summary": "Create customer-level flat add-on", "tags": ["add-ons"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "type": "object", "required": ["code", "name", "amount_cents"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "amount_cents": { "type": "integer", "minimum": 0 }, "active_from": { "type": "string", "format": "date-time" } } } } } } } }, "responses": { "200": { "description": "CustomerAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "$ref": "#/components/schemas/CustomerAddOn" } } } } } } } },
       "get": { "summary": "List customer add-ons", "tags": ["add-ons"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
