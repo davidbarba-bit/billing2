@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>Motor de facturación · Sesión con Finanzas</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.0.5/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.0.5/dist/theme/white.css">
+<style>
+  :root { --primary: #4f46e5; --amber: #b45309; --green: #047857; --red: #b91c1c; }
+  .reveal { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .reveal h1, .reveal h2, .reveal h3 { color: #111827; text-transform: none; letter-spacing: -0.02em; }
+  .reveal h1 { font-size: 2.6em; font-weight: 700; }
+  .reveal h2 { font-size: 1.8em; font-weight: 700; margin-bottom: 0.4em; }
+  .reveal h3 { font-size: 1.2em; font-weight: 600; color: #4b5563; }
+  .reveal p, .reveal li { font-size: 0.85em; line-height: 1.5; }
+  .reveal table { font-size: 0.7em; border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+  .reveal table th { background: #f3f4f6; padding: 8px 12px; text-align: left; border-bottom: 2px solid #d1d5db; }
+  .reveal table td { padding: 8px 12px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+  .reveal code { background: #f3f4f6; padding: 1px 6px; border-radius: 3px; font-size: 0.9em; color: #1f2937; }
+  .reveal .small { font-size: 0.7em; color: #6b7280; }
+  .reveal .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.65em; font-weight: 600; margin: 2px; }
+  .reveal .badge-green { background: #d1fae5; color: #047857; }
+  .reveal .badge-amber { background: #fef3c7; color: #b45309; }
+  .reveal .badge-blue { background: #dbeafe; color: #1e40af; }
+  .reveal .badge-red { background: #fee2e2; color: #b91c1c; }
+  .reveal .box { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px 16px; margin: 8px 0; background: #fafafa; }
+  .reveal .box-primary { border-left: 4px solid var(--primary); background: #eef2ff; }
+  .reveal .box-amber { border-left: 4px solid var(--amber); background: #fffbeb; }
+  .reveal .box-green { border-left: 4px solid var(--green); background: #ecfdf5; }
+  .reveal .box-red { border-left: 4px solid var(--red); background: #fef2f2; }
+  .reveal .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; }
+  .reveal .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.8em; }
+  .reveal .center { text-align: center; }
+  .reveal .muted { color: #6b7280; }
+  .reveal .num { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .reveal .arrow { font-size: 1.5em; color: var(--primary); text-align: center; }
+  .footer { position: absolute; bottom: 8px; right: 16px; font-size: 0.5em; color: #9ca3af; }
+  .reveal .diagram { font-family: ui-monospace, monospace; font-size: 0.7em; background: #f9fafb; border: 1px solid #e5e7eb; padding: 16px; border-radius: 8px; white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<div class="reveal">
+<div class="slides">
+
+<!-- ============================================================ -->
+<!-- Slide 1: Portada -->
+<!-- ============================================================ -->
+<section data-background-color="#1e1b4b">
+  <div style="color: white;">
+    <h1 style="color: white; margin-bottom: 0;">Motor de facturación</h1>
+    <h3 style="color: #c7d2fe; margin-top: 0;">Sesión con CFO y equipo de Finanzas</h3>
+    <p style="margin-top: 2em; color: #a5b4fc; font-size: 1em;">Estado actual · qué hace y cómo se controla</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 2: Agenda -->
+<!-- ============================================================ -->
+<section>
+  <h2>Agenda</h2>
+  <ol style="font-size: 0.85em;">
+    <li>Qué hace el motor (y qué <strong>no</strong> hace)</li>
+    <li>Modelo conceptual: cliente, servicios, unidades</li>
+    <li>Tipos de cobro y proración por mes calendario</li>
+    <li>Add-ons y cargos extra</li>
+    <li>Cambios de precio programados</li>
+    <li>Migraciones (entre planes y desde sistema legacy)</li>
+    <li>Vista previa antes de facturar (dry-run)</li>
+    <li>Integración con NetSuite y CFDI</li>
+    <li>Estados de una factura</li>
+    <li>Edición post-creación y salvaguardas</li>
+    <li>Roadmap</li>
+  </ol>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 3: Qué hace -->
+<!-- ============================================================ -->
+<section>
+  <h2>¿Qué hace este motor?</h2>
+  <div class="grid-2">
+    <div class="box box-green">
+      <h3 style="margin-top: 0;">Sí hace</h3>
+      <ul>
+        <li>Calcular cuánto cobrarle a cada cliente cada periodo</li>
+        <li>Aplicar proración cuando una unidad entra mid-mes</li>
+        <li>Aplicar add-ons, descuentos, cargos extra</li>
+        <li>Manejar migraciones y cambios de plan</li>
+        <li>Generar el detalle <strong>neto</strong> de cada factura</li>
+        <li>Enviar el detalle a NetSuite</li>
+      </ul>
+    </div>
+    <div class="box box-red">
+      <h3 style="margin-top: 0;">No hace</h3>
+      <ul>
+        <li>No calcula IVA, IEPS ni retenciones</li>
+        <li>No genera CFDI (lo hace NetSuite)</li>
+        <li>No maneja cobranza (estatus de pago)</li>
+        <li>No conoce el catálogo contable de NetSuite</li>
+      </ul>
+      <p class="small" style="margin-top: 1em;">Cada sistema hace lo que mejor sabe hacer. Mini-Lago sabe de unidades y proración; NetSuite sabe de impuestos y cumplimiento fiscal.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 4: Modelo conceptual -->
+<!-- ============================================================ -->
+<section>
+  <h2>Modelo conceptual</h2>
+  <div class="diagram">
+Cliente (ej. <em>Transportes MARVA</em>)
+  ├─ Calendario propio (cuándo le cierra el mes)
+  ├─ Datos fiscales (RFC, dirección, moneda)
+  │
+  ├─ Service A: <em>Videotelemetría Premium</em>
+  │    ├─ Unidad 1 (camión IDNEXT001)
+  │    ├─ Unidad 2 (camión IDNEXT002)
+  │    └─ Add-on por unidad: "Historial 12 meses +$50/u"
+  │
+  ├─ Service B: <em>Mensajería</em>
+  │    └─ Unidad 1 (operador OPR-005)
+  │
+  └─ Add-on flat del cliente: "Acceso plataforma +$1,000/mes"</div>
+  <p class="small">Una factura del cliente agrega <strong>todos</strong> sus servicios + sus add-ons en un solo documento.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 5: Pricing models -->
+<!-- ============================================================ -->
+<section>
+  <h2>Dos modelos de cobro</h2>
+  <table>
+    <thead>
+      <tr><th>Concepto</th><th>Recurring (renta mensual)</th><th>One-off prepago (pago único)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Cuándo factura</td>
+        <td>Cada periodo del cliente (1/3/6/12 meses)</td>
+        <td>1 sola vez por unidad nueva</td>
+      </tr>
+      <tr>
+        <td>Qué cobra</td>
+        <td>Renta mensual × unidades activas + setup opcional</td>
+        <td>Setup + N meses por adelantado</td>
+      </tr>
+      <tr>
+        <td>Ejemplo</td>
+        <td><span class="num">$850/u/mes</span><br>50 unidades → <span class="num">$42,500/mes</span></td>
+        <td>Setup <span class="num">$1,500</span> + 48 × <span class="num">$100</span> = <span class="num">$6,300</span> por unidad nueva</td>
+      </tr>
+      <tr>
+        <td>Casos típicos</td>
+        <td>Suscripción mensual estándar</td>
+        <td>"Págame todo por adelantado y olvídate"</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="small muted">Cada servicio del catálogo elige un modelo al crearse.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 6: Ciclo de facturación -->
+<!-- ============================================================ -->
+<section>
+  <h2>Ciclo de facturación</h2>
+  <p>Cada cliente tiene su propio calendario configurable:</p>
+  <div class="grid-2">
+    <div class="box">
+      <h3>Cuántos meses por ciclo</h3>
+      <p><strong>1</strong>, <strong>3</strong>, <strong>6</strong> o <strong>12</strong> meses.</p>
+      <p class="small">Cliente mensual paga cada mes; cliente trimestral paga 3 mensualidades cada 3 meses; etc.</p>
+    </div>
+    <div class="box">
+      <h3>Día de corte</h3>
+      <p>Del <strong>1</strong> al <strong>28</strong> del mes.</p>
+      <p class="small">Ej. anchor = 1 → ciclos del 1 al último día del mes. Anchor = 15 → ciclos del 15 al 14 del mes siguiente.</p>
+    </div>
+  </div>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Ejemplo Transportes MARVA</strong>: mensual, anchor día 1 → su factura sale el 1 de cada mes cubriendo el mes calendario anterior completo.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 7: Proration por mes calendario -->
+<!-- ============================================================ -->
+<section>
+  <h2>Proración por mes calendario</h2>
+  <p>La renta mensual representa <strong>un mes calendario completo</strong> (28/29/30/31 días según el mes).</p>
+  <p>Si una unidad está activa solo parte del mes, se prorratea por días reales.</p>
+  <table>
+    <thead>
+      <tr><th>Escenario (renta $850/u/mes en mayo · 31 días)</th><th>Factor</th><th>Cobro</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>4 unidades activas todo el mes</td><td class="num">4.0000</td><td class="num">$3,400</td></tr>
+      <tr><td>4 unidades, una entra el día 15</td><td class="num">3.5484<br><span class="small">(3 + 17/31)</span></td><td class="num">$3,016.14</td></tr>
+      <tr><td>1 unidad activa solo del 15 al 31</td><td class="num">0.5484<br><span class="small">(17/31)</span></td><td class="num">$466.14</td></tr>
+      <tr><td>1 unidad cancelada el día 20 (activa 1–20)</td><td class="num">0.6452<br><span class="small">(20/31)</span></td><td class="num">$548.39</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 8: Ciclo multi-mes -->
+<!-- ============================================================ -->
+<section>
+  <h2>Ciclo de 3 meses</h2>
+  <p>Para clientes que pagan cada 3 meses, el ciclo cubre 3 mensualidades:</p>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Periodo:</strong> 1-jun → 31-ago (92 días)</p>
+    <p style="margin: 0;"><strong>Unidades activas todo el periodo:</strong> 1 × (30/30 + 31/31 + 31/31) = <strong>3.0000</strong></p>
+    <p style="margin: 0;"><strong>Cobro:</strong> 3 × $850 = <span class="num">$2,550</span></p>
+  </div>
+  <p>Si una unidad solo está activa parte del periodo:</p>
+  <table>
+    <thead><tr><th>Activa</th><th>Factor</th><th>Detalle</th></tr></thead>
+    <tbody>
+      <tr><td>15-jun → 15-ago</td><td class="num">2.0172</td><td>16/30 + 1.0 + 15/31</td></tr>
+      <tr><td>solo julio completo</td><td class="num">1.0000</td><td>31/31</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 9: Add-ons -->
+<!-- ============================================================ -->
+<section>
+  <h2>Add-ons (cargos extra)</h2>
+  <div class="grid-2">
+    <div class="box">
+      <h3>Add-on por unidad</h3>
+      <p>Se cobra por cada unidad activa del servicio.</p>
+      <p><strong>Ejemplo:</strong> "Historial 12 meses +$50 por unidad/mes"</p>
+      <p>50 unidades × $50 = <span class="num">$2,500/mes adicional</span></p>
+    </div>
+    <div class="box">
+      <h3>Add-on flat del cliente</h3>
+      <p>Cargo fijo independiente del número de unidades.</p>
+      <p><strong>Ejemplo:</strong> "Acceso plataforma +$1,000/mes"</p>
+      <p>Siempre <span class="num">$1,000/mes</span>, tenga 1 o 100 unidades.</p>
+    </div>
+  </div>
+  <p class="small muted">Ambos prorratean igual que la mensualidad si el customer está mid-cycle.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 10: Cambios de precio programados -->
+<!-- ============================================================ -->
+<section>
+  <h2>Cambios de precio programados</h2>
+  <p>Se decide <strong>hoy</strong> que a partir del 1-jul la renta sube de $850 a $950:</p>
+  <ol>
+    <li>Se programa el cambio con <strong>fecha de vigencia</strong>.</li>
+    <li>Clientes mid-cycle <strong>mantienen el precio viejo</strong> hasta su próximo cierre.</li>
+    <li>El próximo ciclo que arranque on-or-after 1-jul ya usa $950.</li>
+    <li>Es cancelable mientras no haya entrado en vigor.</li>
+    <li>Auditable: queda registrado quién y cuándo lo programó.</li>
+  </ol>
+  <div class="box box-green">
+    <p style="margin: 0;"><strong>Sin sorpresas para el cliente:</strong> nadie paga un precio nuevo a mitad de su periodo facturado.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 11: Migración entre planes -->
+<!-- ============================================================ -->
+<section>
+  <h2>Migración de unidades entre planes</h2>
+  <p>Una unidad puede cambiar de plan a mitad de mes (upgrade/downgrade).</p>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Ejemplo:</strong> "Camión 001" migra de Premium ($850) a Lite ($500) el día 16 de junio.</p>
+  </div>
+  <table>
+    <thead><tr><th>Concepto</th><th>Plan Premium</th><th>Plan Lite</th><th>Total</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Días facturados</td>
+        <td class="num">14 (jun 1–14)</td>
+        <td class="num">16 (jun 15–30)</td>
+        <td class="num">30</td>
+      </tr>
+      <tr>
+        <td>Factor</td>
+        <td class="num">14/30 = 0.4667</td>
+        <td class="num">16/30 = 0.5333</td>
+        <td class="num">~1.0</td>
+      </tr>
+      <tr>
+        <td>Importe</td>
+        <td class="num">$396.66</td>
+        <td class="num">$266.65</td>
+        <td class="num">$663.31</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="small">Sin huecos ni doble cobro. Por default <strong>no</strong> se cobra setup del plan nuevo.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 12: Migración desde sistema legacy -->
+<!-- ============================================================ -->
+<section>
+  <h2>Migración desde sistema legacy</h2>
+  <p>Trayendo clientes/unidades de otra plataforma. <strong>3 herramientas</strong>:</p>
+  <table>
+    <thead><tr><th>Herramienta</th><th>Significa</th><th>Caso típico</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>billing_starts_at</strong></td>
+        <td>Desde qué fecha mini-Lago empieza a contarle al cliente (separado de cuándo reporta operativamente)</td>
+        <td>"La unidad reporta desde el 5 de mayo, pero el cliente ya pagó mayo afuera → mini-Lago factura desde el 1 de junio."</td>
+      </tr>
+      <tr>
+        <td><strong>setup_already_billed</strong></td>
+        <td>El setup ya se cobró en el sistema viejo</td>
+        <td>"El cliente ya pagó la instalación en la plataforma anterior → no re-cobrar setup."</td>
+      </tr>
+      <tr>
+        <td><strong>one_off_already_billed</strong></td>
+        <td>El bundle prepago completo ya se cobró</td>
+        <td>"El cliente ya pagó los 48 meses por adelantado en la plataforma vieja → unidad silenciosa en mini-Lago."</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="small muted">Las 3 son independientes y se combinan según el caso real.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 13: Dry-run preview -->
+<!-- ============================================================ -->
+<section>
+  <h2>Vista previa antes de facturar</h2>
+  <p>Antes de cerrar un ciclo, se puede ver <strong>exactamente</strong> qué facturaría — sin ejecutar nada.</p>
+  <ul>
+    <li>Lista las partidas: renta, setup, add-ons, prepago.</li>
+    <li>Muestra el total neto que se enviaría a NetSuite.</li>
+    <li>Muestra los códigos de producto que se mapean a cada línea.</li>
+    <li>Alerta en rojo si falta algún código (NetSuite rechazaría la línea).</li>
+    <li>Permite simular "qué pasaría si hoy fuera X" (útil para validar cambios de precio).</li>
+  </ul>
+  <div class="box box-green">
+    <p style="margin: 0;"><strong>Re-ejecutable:</strong> se puede correr 50 veces seguidas sin ensuciar la DB. Útil para validar cambios antes de comprometerlos.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 14: Integración NetSuite -->
+<!-- ============================================================ -->
+<section>
+  <h2>Integración con NetSuite</h2>
+  <p>Responsabilidades claramente separadas:</p>
+  <table>
+    <thead><tr><th>mini-Lago</th><th>NetSuite</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Maneja el catálogo de clientes, servicios, unidades</td>
+        <td>Maneja el catálogo contable</td>
+      </tr>
+      <tr>
+        <td>Calcula partidas y montos <strong>netos</strong> (sin IVA)</td>
+        <td>Calcula IVA, IEPS, retenciones</td>
+      </tr>
+      <tr>
+        <td>Aplica proración, add-ons, migraciones</td>
+        <td>Genera el CFDI y lo timbra con el SAT</td>
+      </tr>
+      <tr>
+        <td>Envía cada línea con su código de producto</td>
+        <td>Reconoce los códigos y los factura</td>
+      </tr>
+      <tr>
+        <td>Recibe el folio fiscal de vuelta</td>
+        <td>Envía el folio + PDF/XML</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 15: Códigos NetSuite -->
+<!-- ============================================================ -->
+<section>
+  <h2>Códigos de producto NetSuite</h2>
+  <p>Cada concepto facturable se mapea a un <strong>item code</strong> del catálogo NetSuite.</p>
+  <table>
+    <thead><tr><th>Concepto</th><th>Item code en NetSuite (ejemplo)</th></tr></thead>
+    <tbody>
+      <tr><td>Renta mensual Service Premium</td><td><code>NS-PREMIUM-MONTHLY</code></td></tr>
+      <tr><td>Setup Service Premium</td><td><code>NS-PREMIUM-SETUP</code></td></tr>
+      <tr><td>Add-on "Historial 12 meses"</td><td><code>NS-HIST-12M</code></td></tr>
+      <tr><td>Add-on flat "Acceso plataforma"</td><td><code>NS-PLATFORM-ACCESS</code></td></tr>
+    </tbody>
+  </table>
+  <p class="small">Cada línea de la factura va etiquetada con su código. NetSuite los reconoce y usa la cuenta contable / tasa de IVA configurada para cada item.</p>
+  <div class="box box-amber">
+    <p style="margin: 0;"><strong>Inmutable post-emisión:</strong> el código asignado a una factura ya emitida no cambia, aunque luego se actualice el catálogo. Auditoría correcta.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 16: Cómo identificamos al cliente en NetSuite -->
+<!-- ============================================================ -->
+<section>
+  <h2>¿Cómo identificamos al cliente en NetSuite?</h2>
+  <p>Usamos el <strong>External ID</strong> de mini-Lago como handle estable.</p>
+  <ol>
+    <li>Numaris crea el cliente en mini-Lago con un external_id (ej. <code>transportes-marva</code>).</li>
+    <li>El mismo string se manda a NetSuite como <code>externalId</code> al crear el customer en su catálogo.</li>
+    <li>Las facturas referencian al cliente con ese identificador, no por RFC.</li>
+  </ol>
+  <div class="box box-amber">
+    <p style="margin: 0;"><strong>¿Por qué no RFC?</strong> El RFC genérico <code>XAXX010101000</code> tiene miles de clientes (público en general). Identificar por RFC causaría colisiones masivas y reportes corruptos.</p>
+  </div>
+  <p class="small">El RFC sí se manda como atributo en cada factura — NetSuite lo usa para el CFDI — pero no como identificador.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 17: Estados de invoice -->
+<!-- ============================================================ -->
+<section>
+  <h2>Ciclo de vida de una factura</h2>
+  <div class="grid-3">
+    <div class="box box-amber">
+      <h3 style="margin-top: 0;">1. Calculated</h3>
+      <p>mini-Lago calculó las partidas. Lista para enviarse.</p>
+      <span class="badge badge-amber">calculated</span>
+    </div>
+    <div class="box box-blue">
+      <h3 style="margin-top: 0;">2. Dispatched</h3>
+      <p>Enviada a NetSuite. En proceso de generar CFDI.</p>
+      <span class="badge badge-blue">dispatched</span>
+    </div>
+    <div class="box box-green">
+      <h3 style="margin-top: 0;">3. Confirmed</h3>
+      <p>CFDI emitido con SAT. Mini-Lago tiene el folio fiscal y el PDF/XML.</p>
+      <span class="badge badge-green">confirmed</span>
+    </div>
+  </div>
+  <p style="margin-top: 1em;">Estados adicionales:</p>
+  <ul>
+    <li><span class="badge badge-red">voided</span> Anulada (operativa o por credit note posterior).</li>
+    <li><span class="badge badge-red">failed</span> NetSuite rechazó (típicamente: falta código de producto, RFC inválido, etc.).</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 18: Edición post-creación -->
+<!-- ============================================================ -->
+<section>
+  <h2>Edición post-creación</h2>
+  <table>
+    <thead><tr><th>Qué se puede cambiar</th><th>Cuándo</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Datos del cliente (nombre, RFC, dirección, contacto)</td>
+        <td><span class="badge badge-green">Siempre</span></td>
+      </tr>
+      <tr>
+        <td>Timezone, metadata</td>
+        <td><span class="badge badge-green">Siempre</span></td>
+      </tr>
+      <tr>
+        <td>Calendario de facturación (anchor day, period_months, subscription_at)</td>
+        <td><span class="badge badge-amber">Solo si NO hay facturas activas</span></td>
+      </tr>
+      <tr>
+        <td>Moneda</td>
+        <td><span class="badge badge-amber">Solo si NO hay facturas activas</span></td>
+      </tr>
+      <tr>
+        <td>Precio de un servicio</td>
+        <td><span class="badge badge-blue">Programable a futuro (no inmediato)</span></td>
+      </tr>
+      <tr>
+        <td>External ID, secuencial</td>
+        <td><span class="badge badge-red">Nunca (inmutables)</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="small">Si necesitas mover un calendario con facturas activas, primero se voidan/credit-notean esas facturas, luego se mueve.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 19: Salvaguardas -->
+<!-- ============================================================ -->
+<section>
+  <h2>Salvaguardas y controles</h2>
+  <ul>
+    <li><strong>Inmutabilidad de facturas emitidas:</strong> una factura cerrada no se altera. Cambios posteriores requieren credit note + nueva factura.</li>
+    <li><strong>Snapshots de configuración:</strong> cada factura conserva los códigos de producto y nombres que tenía al momento de emitirse, aunque el catálogo cambie después.</li>
+    <li><strong>Vista previa obligatoria-pero-no-bloqueante:</strong> el operador puede revisar antes de comprometer. La interfaz hace el preview fácil de re-ejecutar.</li>
+    <li><strong>Confirmaciones explícitas:</strong> acciones de alto impacto (terminar service, migrar unidad, cambiar calendario) piden confirmación.</li>
+    <li><strong>Historial:</strong> cambios de calendario y migraciones quedan registrados con fecha y delta.</li>
+    <li><strong>Idempotencia:</strong> una factura no se duplica si se invoca dos veces — el sistema reconoce que ya existe.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 20: Operación día-a-día -->
+<!-- ============================================================ -->
+<section>
+  <h2>Operación día-a-día (vista finanzas)</h2>
+  <div class="grid-2">
+    <div class="box box-green">
+      <h3 style="margin-top: 0;">Automático</h3>
+      <ul>
+        <li>El cron cierra los ciclos cuando vencen.</li>
+        <li>Las facturas se calculan y se envían a NetSuite.</li>
+        <li>NetSuite confirma con folio fiscal y mini-Lago lo guarda.</li>
+      </ul>
+    </div>
+    <div class="box box-amber">
+      <h3 style="margin-top: 0;">Manual / supervisado</h3>
+      <ul>
+        <li>Onboarding de cliente nuevo + sus servicios.</li>
+        <li>Migraciones desde sistema legacy.</li>
+        <li>Cambios de precio programados.</li>
+        <li>Voids y credit notes cuando hay error.</li>
+        <li>Revisión mensual de los dispatches fallidos.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 21: Roadmap -->
+<!-- ============================================================ -->
+<section>
+  <h2>Lo que sigue</h2>
+  <p>Iteraciones planeadas (no en este orden):</p>
+  <ul>
+    <li><strong>Bulk operations:</strong> subir 1,000 unidades de una migración masiva en un solo paso.</li>
+    <li><strong>Reporting financiero nativo:</strong> MRR, churn, ARR, cohortes — para que no tengas que sacar reportes desde NetSuite.</li>
+    <li><strong>Reglas de descuento por volumen:</strong> "después de 100 unidades, $10 menos por unidad adicional".</li>
+    <li><strong>Sincronización bidireccional con NetSuite:</strong> hoy mandamos facturas; mañana recibimos también actualizaciones de pagos (estatus cobrado/vencido).</li>
+    <li><strong>Notificaciones automáticas:</strong> alertar a operaciones cuando un dispatch falla, cuando un cliente se acerca a un cambio de precio, etc.</li>
+    <li><strong>Roles y permisos:</strong> hoy todos los operadores tienen los mismos accesos; granularizar.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 22: Preguntas que el CFO seguramente tiene -->
+<!-- ============================================================ -->
+<section>
+  <h2>Anticipando preguntas</h2>
+  <div class="grid-2">
+    <div class="box">
+      <h3>"¿Y si me equivoco al configurar un cliente?"</h3>
+      <p class="small">Mientras no tenga facturas emitidas, todo es editable. Después: void + credit note + reconfigurar.</p>
+    </div>
+    <div class="box">
+      <h3>"¿Cómo me entero si una factura falló en NetSuite?"</h3>
+      <p class="small">Estado <code>failed</code> con mensaje de error. Hoy se revisa manual desde el admin; el roadmap incluye notificaciones.</p>
+    </div>
+    <div class="box">
+      <h3>"¿Puedo probar antes de cerrar el mes?"</h3>
+      <p class="small">Sí: la vista previa simula el cierre completo sin tocar nada. Re-ejecutable cuantas veces quieras.</p>
+    </div>
+    <div class="box">
+      <h3>"¿Quién mantiene el catálogo de productos NetSuite?"</h3>
+      <p class="small">Finanzas crea/edita los items en NetSuite. Operaciones asigna el código correcto a cada servicio en mini-Lago. La vista previa avisa si falta.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Slide 23: Cierre -->
+<!-- ============================================================ -->
+<section data-background-color="#1e1b4b">
+  <div style="color: white;">
+    <h1 style="color: white;">Preguntas y discusión</h1>
+    <p style="color: #c7d2fe; margin-top: 2em; font-size: 1em;">El sistema está vivo — pueden pedir demos en vivo de cualquier flujo.</p>
+    <p style="color: #a5b4fc; margin-top: 1em; font-size: 0.7em;">URL de admin · usuario y contraseña al equipo de finanzas con permisos de solo-lectura</p>
+  </div>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.0.5/dist/reveal.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: 'c/t',
+    controls: true,
+    progress: true,
+    center: false,
+    transition: 'slide',
+    width: 1280,
+    height: 800,
+    margin: 0.05,
+  });
+</script>
+</body>
+</html>
