@@ -67,6 +67,7 @@
     <li>Vista previa antes de facturar</li>
     <li>Integración con NetSuite y CFDI</li>
     <li>Estados de una factura</li>
+    <li><strong>Notas de crédito (ajustes por SLA)</strong></li>
     <li>Edición post-creación y salvaguardas</li>
     <li>Roadmap</li>
   </ol>
@@ -356,6 +357,105 @@
   <ul>
     <li><span class="badge badge-red">voided</span> Anulada (operativa o por credit note).</li>
     <li><span class="badge badge-red">failed</span> NetSuite rechazó (código faltante, RFC inválido, etc.).</li>
+  </ul>
+</section>
+
+<!-- 19a: Notas de crédito -->
+<section>
+  <h2>Notas de crédito (ajustes a facturas)</h2>
+  <p>Cuando hay que devolverle dinero al cliente sobre una factura ya emitida, Numaris Billing emite una <strong>credit note</strong>:</p>
+  <ul>
+    <li>Apunta a una factura específica (la "ofensiva").</li>
+    <li>Tiene <strong>razón</strong>: duplicated_charge, product_unsatisfactory, order_change, order_cancellation, fraudulent_charge, other.</li>
+    <li>Tiene <strong>partidas (items)</strong>: por cada línea de la factura, cuánto se acredita (puede ser parcial).</li>
+    <li>El monto total ≤ monto de las líneas afectadas.</li>
+    <li>Se envía a NetSuite, que emite el CFDI de egreso (tipo "E").</li>
+  </ul>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Requisito:</strong> la factura debe estar <code>finalized</code> + <code>confirmed</code> (con folio fiscal). No se emite NC sobre facturas no timbradas.</p>
+  </div>
+</section>
+
+<!-- 19b: Flujo automático SLA -->
+<section>
+  <h2>Flujo automático: Numaris ↔ Numaris Billing</h2>
+  <p>Caso de uso principal: <strong>ajuste por SLA de conectividad</strong>.</p>
+  <div class="diagram">1. Numaris monitorea conectividad de cada unidad durante el mes.
+
+2. Al cierre, Numaris evalúa cada unidad contra el SLA del contrato:
+     - ¿La unidad cumplió el % mínimo de conectividad?
+     - ¿Cuántos días estuvo por debajo del umbral?
+
+3. Para unidades que NO cumplieron, Numaris calcula el ajuste
+   proporcional ($ a acreditar por cada unidad ofensiva).
+
+4. Numaris llama a Numaris Billing solicitando la credit note:
+     POST /api/v1/credit_notes
+     { invoice_id, reason: "product_unsatisfactory",
+       items: [{ fee_id, amount_cents }, ...] }
+
+5. Numaris Billing valida y emite la credit note.
+6. Se envía a NetSuite → CFDI de egreso timbrado con SAT.
+7. El folio de la nota de crédito regresa a Numaris Billing.</div>
+  <p class="small muted">Numaris es la fuente de verdad del cumplimiento de SLA; Numaris Billing es la fuente de verdad fiscal/contable.</p>
+</section>
+
+<!-- 19c: Ejemplo SLA -->
+<section>
+  <h2>Ejemplo: ajuste por baja conectividad</h2>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Cliente:</strong> Transportes MARVA · factura junio: 50 unidades × $850 = <span class="num">$42,500</span></p>
+    <p style="margin: 0;"><strong>SLA contractual:</strong> 95% de conectividad mensual mínima.</p>
+  </div>
+  <p>Numaris detecta al cierre:</p>
+  <table>
+    <thead><tr><th>Unidades</th><th>Conectividad</th><th>Ajuste</th><th>Crédito</th></tr></thead>
+    <tbody>
+      <tr><td>47</td><td class="num">≥ 95%</td><td>Sin ajuste</td><td class="num">—</td></tr>
+      <tr><td>2</td><td class="num">70%</td><td>30% del cobro</td><td class="num">2 × $255 = $510</td></tr>
+      <tr><td>1</td><td class="num">40%</td><td>60% del cobro</td><td class="num">1 × $510 = $510</td></tr>
+      <tr><td colspan="3" style="text-align: right;"><strong>Total credit note:</strong></td><td class="num"><strong>$1,020</strong></td></tr>
+    </tbody>
+  </table>
+  <p class="small">Numaris arma el payload con esos montos, lo manda a Numaris Billing, y el cliente recibe su CFDI de egreso por $1,020 (más IVA que NetSuite calcula).</p>
+</section>
+
+<!-- 19d: Estados credit note -->
+<section>
+  <h2>Ciclo de vida de una credit note</h2>
+  <div class="grid-3">
+    <div class="box box-amber">
+      <h3>1. Calculated</h3>
+      <p class="small">Numaris Billing creó la NC con sus partidas. Lista para enviar.</p>
+      <span class="badge badge-amber">calculated</span>
+    </div>
+    <div class="box" style="border-left: 3px solid #1e40af; background: #eff6ff;">
+      <h3>2. Dispatched</h3>
+      <p class="small">Enviada a NetSuite. Esperando CFDI de egreso.</p>
+      <span class="badge badge-blue">dispatched</span>
+    </div>
+    <div class="box box-green">
+      <h3>3. Confirmed</h3>
+      <p class="small">CFDI emitido. Tenemos folio y PDF/XML.</p>
+      <span class="badge badge-green">confirmed</span>
+    </div>
+  </div>
+  <p style="margin-top: 0.6em;"><strong>Modos de uso del crédito</strong> (la NC puede:):</p>
+  <ul>
+    <li><strong>Compensarse</strong> contra una factura futura del mismo cliente (saldo a favor).</li>
+    <li><strong>Reembolsarse</strong> (refund) — devolución de dinero al cliente. El monto refund se captura aparte.</li>
+  </ul>
+</section>
+
+<!-- 19e: Validaciones credit notes -->
+<section>
+  <h2>Salvaguardas en credit notes</h2>
+  <ul>
+    <li><strong>Factura debe estar timbrada:</strong> NC solo sobre facturas <code>finalized + confirmed</code>. No se puede acreditar lo que SAT no reconoce.</li>
+    <li><strong>Monto por línea ≤ línea original:</strong> no se puede acreditar más de lo que se facturó. Si se pide $1,500 sobre una línea de $800, rechazo automático.</li>
+    <li><strong>Razón obligatoria:</strong> 6 razones predefinidas; Numaris envía la apropiada según el caso.</li>
+    <li><strong>Idempotencia:</strong> Numaris puede reenviar la misma solicitud (ej. timeout) sin duplicar — el sistema reconoce el marker.</li>
+    <li><strong>Inmutable post-emisión:</strong> la credit note ya timbrada no se altera. Para corregir, se emite otra nota o se factura de nuevo el monto correcto.</li>
   </ul>
 </section>
 
