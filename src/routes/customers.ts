@@ -200,6 +200,131 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
     handler: async () => { throw pathNotFound(); },
   });
 
+  // v12: edición de soft fields del customer post-creación.
+  // Campos permitidos: name, email, phone, tax_identification_number,
+  // address_line1, address_line2, state, zipcode, city, country, timezone,
+  // currency (con gate), metadata.
+  //
+  // Para editar billing schedule (subscription_at, anchor_day, period_months,
+  // nonrecurring_trigger) usar PATCH /:externalId/billing-schedule. Si se
+  // envían acá, se devuelve 422 con use_billing_schedule_endpoint.
+  //
+  // `currency` es el único soft con gate: si hay invoices no-voided no se
+  // puede cambiar (las invoices viejas seguirían en la currency anterior,
+  // los reportes se corromperían).
+  app.route({
+    method: 'PATCH',
+    url: '/api/v1/customers/:externalId',
+    preHandler: authenticate,
+    handler: async (request, reply) => {
+      const org = requireOrg(request);
+      const { externalId } = request.params as { externalId: string };
+      const body = (request.body ?? {}) as { customer?: Record<string, unknown> };
+      const payload = body.customer;
+      if (!payload) throw validation({ customer: ['value_is_mandatory'] });
+
+      const customer = await prisma.customer.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId } },
+      });
+      if (!customer) throw notFound('customer');
+      if (customer.status === 'terminated') {
+        throw new ApiError(409, 'customer_terminated', {
+          errorDetails: { customer: ['cannot_edit_terminated_customer'] },
+        });
+      }
+
+      // Rechazo explícito de hard fields — deben ir por /billing-schedule.
+      const hardFields = ['subscription_at', 'billing_anchor_day', 'billing_period_months', 'nonrecurring_trigger'];
+      const hardErrors: Record<string, string[]> = {};
+      for (const f of hardFields) {
+        if (payload[f] !== undefined) {
+          hardErrors[f] = ['use_billing_schedule_endpoint'];
+        }
+      }
+      if (Object.keys(hardErrors).length > 0) throw validation(hardErrors);
+
+      // Validaciones de soft fields.
+      const softPayload = payload as {
+        name?: string;
+        email?: string | null;
+        phone?: string | null;
+        tax_identification_number?: string | null;
+        address_line1?: string | null;
+        address_line2?: string | null;
+        state?: string | null;
+        zipcode?: string | null;
+        city?: string | null;
+        country?: string | null;
+        currency?: string;
+        timezone?: string | null;
+        metadata?: Record<string, unknown>;
+      };
+
+      if (softPayload.timezone !== undefined && softPayload.timezone !== null && !isValidIanaTimezone(softPayload.timezone)) {
+        throw validation({ timezone: ['invalid_iana'] });
+      }
+      if (softPayload.name !== undefined && (typeof softPayload.name !== 'string' || softPayload.name.trim().length === 0)) {
+        throw validation({ name: ['must_not_be_empty'] });
+      }
+
+      // Gate para currency: solo si efectivamente cambia.
+      if (softPayload.currency !== undefined && softPayload.currency !== customer.currency) {
+        const blockingInvoices = await prisma.invoice.count({
+          where: { customerId: customer.id, status: { not: 'voided' } },
+        });
+        if (blockingInvoices > 0) {
+          throw new ApiError(409, 'customer_has_invoices', {
+            errorDetails: {
+              currency: ['cannot_change_with_existing_invoices'],
+              blocking_invoice_count: [String(blockingInvoices)],
+            },
+          });
+        }
+      }
+
+      // Verificar que al menos un campo soft venga seteado.
+      const anySoftField =
+        softPayload.name !== undefined
+        || softPayload.email !== undefined
+        || softPayload.phone !== undefined
+        || softPayload.tax_identification_number !== undefined
+        || softPayload.address_line1 !== undefined
+        || softPayload.address_line2 !== undefined
+        || softPayload.state !== undefined
+        || softPayload.zipcode !== undefined
+        || softPayload.city !== undefined
+        || softPayload.country !== undefined
+        || softPayload.currency !== undefined
+        || softPayload.timezone !== undefined
+        || softPayload.metadata !== undefined;
+      if (!anySoftField) {
+        throw validation({ customer: ['at_least_one_field_required'] });
+      }
+
+      const data: Prisma.CustomerUpdateInput = {};
+      if (softPayload.name !== undefined) data.name = softPayload.name;
+      if (softPayload.email !== undefined) data.email = softPayload.email;
+      if (softPayload.phone !== undefined) data.phone = softPayload.phone;
+      if (softPayload.tax_identification_number !== undefined) data.taxIdentificationNumber = softPayload.tax_identification_number;
+      if (softPayload.address_line1 !== undefined) data.addressLine1 = softPayload.address_line1;
+      if (softPayload.address_line2 !== undefined) data.addressLine2 = softPayload.address_line2;
+      if (softPayload.state !== undefined) data.state = softPayload.state;
+      if (softPayload.zipcode !== undefined) data.zipcode = softPayload.zipcode;
+      if (softPayload.city !== undefined) data.city = softPayload.city;
+      if (softPayload.country !== undefined) data.country = softPayload.country;
+      if (softPayload.currency !== undefined) data.currency = softPayload.currency;
+      if (softPayload.timezone !== undefined) data.timezone = softPayload.timezone;
+      if (softPayload.metadata !== undefined) data.metadata = (softPayload.metadata ?? {}) as Prisma.InputJsonValue;
+
+      const updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data,
+      });
+      const hydrated = await load(prisma, updated.id);
+      reply.send(serializeCustomer(hydrated));
+    },
+  });
+
   // v11: edición del calendario de facturación post-creación.
   //
   // Cambios permitidos (todos opcionales; al menos uno requerido):

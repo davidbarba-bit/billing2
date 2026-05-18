@@ -216,6 +216,36 @@
     },
     "/api/v1/customers/{externalId}": {
       "get": { "summary": "Read customer", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Customer" } } },
+      "patch": {
+        "summary": "Edita soft fields del customer (v12) — name, email, dirección, etc.",
+        "description": "Edita campos NO billing-impacting. Para subscription_at, anchor_day, period_months o nonrecurring_trigger usar PATCH /:externalId/billing-schedule (v11). currency tiene gate: 409 si hay invoices no-voided (cambiar moneda con invoices viejas corrompe reportes). timezone se valida contra IANA. Customer terminated → 409.",
+        "tags": ["customers"],
+        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "type": "object", "properties": {
+            "name": { "type": "string" },
+            "email": { "type": ["string", "null"], "format": "email" },
+            "phone": { "type": ["string", "null"] },
+            "tax_identification_number": { "type": ["string", "null"] },
+            "address_line1": { "type": ["string", "null"] },
+            "address_line2": { "type": ["string", "null"] },
+            "city": { "type": ["string", "null"] },
+            "state": { "type": ["string", "null"] },
+            "zipcode": { "type": ["string", "null"] },
+            "country": { "type": ["string", "null"], "description": "ISO 2 letras" },
+            "timezone": { "type": ["string", "null"], "description": "IANA timezone" },
+            "currency": { "type": "string", "description": "ISO 3 letras. Solo editable si NO hay invoices no-voided." },
+            "metadata": { "type": "object" }
+          } } } } } }
+        },
+        "responses": {
+          "200": { "description": "Customer actualizado" },
+          "404": { "description": "Customer no existe" },
+          "409": { "description": "customer_terminated | customer_has_invoices (al cambiar currency)" },
+          "422": { "description": "Validación: use_billing_schedule_endpoint (si se envían hard fields), invalid_iana, must_not_be_empty, at_least_one_field_required" }
+        }
+      },
       "delete": { "summary": "Delete (409 si tiene services activos)", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/v1/customers/{externalId}/billing-schedule": {

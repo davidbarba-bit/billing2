@@ -462,11 +462,71 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return summary + '<div class="mt-4 pt-4 border-t">' + banner + form + '</div>';
     })();
 
+    // v12: card "Datos del cliente" — edición de soft fields.
+    // currency tiene gate por invoices (mismo aviso que el de schedule, pero
+    // independiente — currency es soft "tirando a hard").
+    const softBlock = (() => {
+      const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
+      const currencyBlocked = nonVoidedInvoices > 0;
+      const terminated = customer.status === 'terminated';
+      if (terminated) {
+        return `<div class="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900">Customer <code>terminated</code> — datos no editables.</div>`;
+      }
+      const currencyHint = currencyBlocked
+        ? `<span class="text-xs text-amber-700">Bloqueada: hay invoices emitidas en <code>${escapeHtml(customer.currency)}</code>.</span>`
+        : '<span class="text-xs text-gray-500">Puede cambiarse mientras no haya invoices no-voided.</span>';
+      return `
+        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/edit" class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="text-sm text-gray-700">Nombre</span>
+              <input required name="name" value="${escapeHtml(customer.name)}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Tax ID (RFC)</span>
+              <input name="tax_identification_number" value="${escapeHtml(customer.taxIdentificationNumber ?? '')}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Email</span>
+              <input type="email" name="email" value="${escapeHtml(customer.email ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Teléfono</span>
+              <input name="phone" value="${escapeHtml(customer.phone ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Dirección línea 1</span>
+              <input name="address_line1" value="${escapeHtml(customer.addressLine1 ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Dirección línea 2</span>
+              <input name="address_line2" value="${escapeHtml(customer.addressLine2 ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Ciudad</span>
+              <input name="city" value="${escapeHtml(customer.city ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Estado</span>
+              <input name="state" value="${escapeHtml(customer.state ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">CP</span>
+              <input name="zipcode" value="${escapeHtml(customer.zipcode ?? '')}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">País (ISO 2 letras)</span>
+              <input name="country" value="${escapeHtml(customer.country ?? '')}" maxlength="2" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Timezone (IANA)</span>
+              <input name="timezone" value="${escapeHtml(customer.timezone ?? '')}" placeholder="America/Mexico_City" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Currency</span>
+              <input ${currencyBlocked ? 'readonly' : ''} name="currency" value="${escapeHtml(customer.currency)}" maxlength="3" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase ${currencyBlocked ? 'bg-gray-100' : ''}">
+              ${currencyHint}
+            </label>
+          </div>
+          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar datos</button>
+        </form>
+      `;
+    })();
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `Customer · ${customer.externalId}`, active: '/admin/customers', orgSlug: org.slug, flash,
       body: pageHeader(customer.name, btn('/admin/customers', '← back'))
         + card('Identidad', info)
+        + card('Datos del cliente', softBlock)
         + card('Calendario de facturación', scheduleBlock)
         + card('Acciones', invoiceForm)
         + card(`Services (${customer.services.length})`, servicesBlock,
@@ -1034,6 +1094,39 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   });
 
   // POST /admin/customers/:external_id/invoice → calcula la factura del periodo.
+  // v12: edita soft fields del customer (form admin → API PATCH).
+  app.post('/admin/customers/:externalId/edit', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+    const payload: Record<string, unknown> = {};
+    // Solo mandar campos que vinieron con valor (los vacíos del form los
+    // tratamos como "no cambiar"). Para limpiar a null, mejor usar el API
+    // directo — el admin form mantiene el valor previo.
+    if (body.name !== undefined) payload.name = body.name;
+    if (body.email !== undefined) payload.email = body.email || null;
+    if (body.phone !== undefined) payload.phone = body.phone || null;
+    if (body.tax_identification_number !== undefined) payload.tax_identification_number = body.tax_identification_number || null;
+    if (body.address_line1 !== undefined) payload.address_line1 = body.address_line1 || null;
+    if (body.address_line2 !== undefined) payload.address_line2 = body.address_line2 || null;
+    if (body.city !== undefined) payload.city = body.city || null;
+    if (body.state !== undefined) payload.state = body.state || null;
+    if (body.zipcode !== undefined) payload.zipcode = body.zipcode || null;
+    if (body.country !== undefined) payload.country = body.country ? body.country.toUpperCase() : null;
+    if (body.timezone !== undefined) payload.timezone = body.timezone || null;
+    if (body.currency !== undefined) payload.currency = body.currency ? body.currency.toUpperCase() : undefined;
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/customers/${encodeURIComponent(externalId)}`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { customer: payload },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
+    else setFlash(reply, 'success', 'Datos del cliente actualizados.');
+    reply.redirect(`/admin/customers/${externalId}`);
+  });
+
   // v11: edita el calendario de facturación del customer (form admin → API).
   app.post('/admin/customers/:externalId/billing-schedule', async (request, reply) => {
     const org = await getOrg(prisma);
