@@ -257,6 +257,10 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         country?: string | null;
         currency?: string;
         timezone?: string | null;
+        // v13: cache del internal id que NetSuite asigna al customer.
+        // Numaris/integración hace POST a NetSuite, lee el id que NetSuite
+        // devuelve, y lo guarda acá vía PATCH.
+        netsuite_internal_id?: string | null;
         metadata?: Record<string, unknown>;
       };
 
@@ -296,6 +300,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         || softPayload.country !== undefined
         || softPayload.currency !== undefined
         || softPayload.timezone !== undefined
+        || softPayload.netsuite_internal_id !== undefined
         || softPayload.metadata !== undefined;
       if (!anySoftField) {
         throw validation({ customer: ['at_least_one_field_required'] });
@@ -314,6 +319,13 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       if (softPayload.country !== undefined) data.country = softPayload.country;
       if (softPayload.currency !== undefined) data.currency = softPayload.currency;
       if (softPayload.timezone !== undefined) data.timezone = softPayload.timezone;
+      if (softPayload.netsuite_internal_id !== undefined) {
+        // Normaliza string vacío / whitespace a null.
+        const v = softPayload.netsuite_internal_id;
+        data.netsuiteInternalId = v === null || (typeof v === 'string' && v.trim().length === 0)
+          ? null
+          : v.trim();
+      }
       if (softPayload.metadata !== undefined) data.metadata = (softPayload.metadata ?? {}) as Prisma.InputJsonValue;
 
       const updated = await prisma.customer.update({

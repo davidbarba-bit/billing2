@@ -38,6 +38,16 @@ export function serializeCustomer(customer: CustomerWithLinks) {
         ? isoUtc(customer.currentBillingPeriodStartedAt) : null,
       current_billing_period_ending_at: customer.currentBillingPeriodEndingAt
         ? isoUtc(customer.currentBillingPeriodEndingAt) : null,
+      // v13: cache del internal id que NetSuite asignó al customer.
+      // Si está null, el dispatch usa "eid:<external_id>" como handle.
+      netsuite_internal_id: customer.netsuiteInternalId ?? null,
+      // v13: handle ya construido listo para usarse en `entity: { id: ... }`
+      // del payload REST de NetSuite. Si hay internal id, devuelve "<id>"
+      // (más rápido para NetSuite). Si no, devuelve "eid:<external_id>"
+      // (NetSuite resuelve por externalId).
+      netsuite_entity_handle: customer.netsuiteInternalId
+        ? customer.netsuiteInternalId
+        : `eid:${customer.externalId}`,
       metadata: customer.metadata ?? {},
       created_at: isoUtc(customer.createdAt),
       updated_at: isoUtc(customer.updatedAt),

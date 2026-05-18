@@ -83,6 +83,13 @@ model Customer {
   terminatedAt                  DateTime? @map("terminated_at")
   currentBillingPeriodStartedAt DateTime? @map("current_billing_period_started_at")
   currentBillingPeriodEndingAt  DateTime? @map("current_billing_period_ending_at")
+  // v13: contrato con NetSuite — customer.externalId es el handle estable
+  // (se envía como `externalId` cuando se crea el customer en NetSuite).
+  // Cuando NetSuite responde con su internal id, lo cacheamos acá para que
+  // el dispatch de invoices pueda referenciar al customer directamente por
+  // id (más rápido que `eid:` lookup). null = todavía no sincronizado;
+  // el payload de dispatch usa "eid:<external_id>" como fallback.
+  netsuiteInternalId            String?   @map("netsuite_internal_id")
   status                        String    @default("active") // pending | active | terminated
   metadata                      Json      @default("{}")
   createdAt                     DateTime  @default(now()) @map("created_at")

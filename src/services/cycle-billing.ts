@@ -165,6 +165,14 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
             name: hydrated.customer.name,
             tax_identification_number: hydrated.customer.taxIdentificationNumber,
             country: hydrated.customer.country,
+            // v13: handle listo para usar en `entity: { id: ... }` del POST
+            // de NetSuite. Si tenemos cacheado el internal id de NetSuite,
+            // lo usamos directo (faster path). Si no, mandamos
+            // "eid:<external_id>" para que NetSuite resuelva por externalId.
+            netsuite_internal_id: hydrated.customer.netsuiteInternalId,
+            netsuite_entity_handle: hydrated.customer.netsuiteInternalId
+              ? hydrated.customer.netsuiteInternalId
+              : `eid:${hydrated.customer.externalId}`,
           },
           billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
           lines: hydrated.fees.map((f) => ({
@@ -308,6 +316,8 @@ export type PreviewCycleInvoiceResult = {
       name: string;
       tax_identification_number: string | null;
       country: string | null;
+      netsuite_internal_id: string | null;
+      netsuite_entity_handle: string;
     };
     billing_period: { from: Date; to: Date };
     lines: Array<{
@@ -394,6 +404,10 @@ export async function previewCycleInvoiceForCustomer(
         name: customer.name,
         tax_identification_number: customer.taxIdentificationNumber,
         country: customer.country,
+        netsuite_internal_id: customer.netsuiteInternalId,
+        netsuite_entity_handle: customer.netsuiteInternalId
+          ? customer.netsuiteInternalId
+          : `eid:${customer.externalId}`,
       },
       billing_period: { from: period.start, to: period.end },
       lines: computed.fees.map((f) => ({

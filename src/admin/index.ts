@@ -515,6 +515,15 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
               <input ${currencyBlocked ? 'readonly' : ''} name="currency" value="${escapeHtml(customer.currency)}" maxlength="3" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase ${currencyBlocked ? 'bg-gray-100' : ''}">
               ${currencyHint}
             </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">NetSuite internal ID <span class="text-gray-400">(cache)</span></span>
+              <input name="netsuite_internal_id" value="${escapeHtml(customer.netsuiteInternalId ?? '')}" placeholder="ej. 614" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+              <span class="text-xs text-gray-500">Si NetSuite ya creó el customer y conoces su internal id, ponlo aquí para que el dispatch lo use directo. Si queda vacío, el dispatch envía <code>eid:${escapeHtml(customer.externalId)}</code> (NetSuite resolverá por externalId).</span>
+            </label>
+            <div class="block col-span-2 bg-indigo-50 border border-indigo-200 rounded p-3 text-sm">
+              <div class="text-xs text-indigo-700 uppercase font-semibold">Entity handle al dispatch</div>
+              <code class="font-mono text-indigo-900">${escapeHtml(customer.netsuiteInternalId ? customer.netsuiteInternalId : `eid:${customer.externalId}`)}</code>
+              <div class="text-xs text-indigo-700 mt-1">${customer.netsuiteInternalId ? 'Internal id directo (faster path).' : 'Fallback por external id — NetSuite hará lookup.'}</div>
+            </div>
           </div>
           <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar datos</button>
         </form>
@@ -1116,6 +1125,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (body.country !== undefined) payload.country = body.country ? body.country.toUpperCase() : null;
     if (body.timezone !== undefined) payload.timezone = body.timezone || null;
     if (body.currency !== undefined) payload.currency = body.currency ? body.currency.toUpperCase() : undefined;
+    if (body.netsuite_internal_id !== undefined) payload.netsuite_internal_id = body.netsuite_internal_id || null;
     const result = await app.inject({
       method: 'PATCH',
       url: `/api/v1/customers/${encodeURIComponent(externalId)}`,
