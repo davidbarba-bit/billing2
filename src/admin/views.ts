@@ -6,7 +6,7 @@
 import { DateTime } from 'luxon';
 import { adminContextStorage } from './context.js';
 
-const NAV_ITEMS: Array<{ href: string; label: string }> = [
+const NAV_ITEMS: Array<{ href: string; label: string; target?: string }> = [
   { href: '/admin', label: 'Dashboard' },
   { href: '/admin/customers', label: 'Customers' },
   { href: '/admin/services', label: 'Services' },
@@ -14,6 +14,7 @@ const NAV_ITEMS: Array<{ href: string; label: string }> = [
   { href: '/admin/events', label: 'Events' },
   { href: '/admin/invoices', label: 'Invoices' },
   { href: '/admin/credit-notes', label: 'Credit notes' },
+  { href: '/admin/presentacion.html', label: 'Presentación', target: '_blank' },
   { href: '/admin/settings', label: 'Settings' },
 ];
 
@@ -100,7 +101,8 @@ export function layout(options: {
     const classes = active
       ? 'bg-gray-900 text-white'
       : 'text-gray-300 hover:bg-gray-700 hover:text-white';
-    return `<a href="${item.href}" class="block px-4 py-2 rounded text-sm font-medium ${classes}">${escapeHtml(item.label)}</a>`;
+    const targetAttr = item.target ? ` target="${item.target}" rel="noopener"` : '';
+    return `<a href="${item.href}"${targetAttr} class="block px-4 py-2 rounded text-sm font-medium ${classes}">${escapeHtml(item.label)}</a>`;
   }).join('');
 
   const flashBanner = options.flash

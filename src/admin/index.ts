@@ -15,6 +15,8 @@
 //   - Settings (display timezone + cookie).
 
 import { timingSafeEqual } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import basicAuth from '@fastify/basic-auth';
 import formbody from '@fastify/formbody';
@@ -152,6 +154,25 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   // ------------------------------------------------------------------
   // Dashboard.
   // ------------------------------------------------------------------
+  // Presentación HTML para Finanzas. Servimos el archivo de docs/ tal cual
+  // (el Dockerfile lo copia). Cacheamos en memoria para evitar disk reads en
+  // cada request. Protegida por el preHandler basicAuth como el resto de /admin.
+  let presentacionCache: { content: string; loadedAt: number } | null = null;
+  app.get('/admin/presentacion.html', async (_request, reply) => {
+    const ttlMs = 5 * 60 * 1000;
+    if (!presentacionCache || Date.now() - presentacionCache.loadedAt > ttlMs) {
+      try {
+        const filePath = resolvePath(process.cwd(), 'docs/presentations/finanzas-motor-billing.html');
+        const content = await readFile(filePath, 'utf-8');
+        presentacionCache = { content, loadedAt: Date.now() };
+      } catch (err) {
+        reply.status(500).type('text/plain').send(`No se pudo cargar la presentación: ${err instanceof Error ? err.message : 'unknown'}`);
+        return;
+      }
+    }
+    reply.type('text/html; charset=utf-8').send(presentacionCache.content);
+  });
+
   app.get('/admin', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) {
