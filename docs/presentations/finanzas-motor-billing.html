@@ -142,20 +142,25 @@
 <!-- 6: Ciclo -->
 <section>
   <h2>Ciclo de facturación por cliente</h2>
-  <div class="grid-2">
+  <div class="grid-3">
     <div class="box">
-      <h3>Cuántos meses por ciclo</h3>
+      <h3>Largo del ciclo</h3>
       <p><strong>1</strong>, <strong>3</strong>, <strong>6</strong> o <strong>12</strong> meses.</p>
       <p class="small">Mensual paga cada mes; trimestral paga 3 mensualidades cada 3 meses.</p>
     </div>
     <div class="box">
       <h3>Día de corte</h3>
       <p>Del <strong>1</strong> al <strong>28</strong> del mes.</p>
-      <p class="small">Anchor = 1 → ciclos del 1 al último del mes.</p>
+      <p class="small">Anchor day = 1 → ciclos del 1 al último del mes.</p>
+    </div>
+    <div class="box">
+      <h3>Mes ancla</h3>
+      <p>Opcional (1–12), solo multi-mes.</p>
+      <p class="small">Para alinear trimestrales/semestrales/anuales a meses calendario específicos (año fiscal, calendar quarters, etc.).</p>
     </div>
   </div>
   <div class="box box-primary">
-    <p style="margin: 0;"><strong>Ejemplo MARVA:</strong> mensual, anchor 1 → factura sale el 1 de cada mes cubriendo el mes calendario anterior.</p>
+    <p style="margin: 0;"><strong>Ejemplo MARVA:</strong> mensual, anchor day 1 → factura sale el 1 de cada mes cubriendo el mes calendario anterior.</p>
   </div>
 </section>
 
@@ -190,6 +195,26 @@
       <tr><td>solo julio completo</td><td class="num">1.0000</td><td>31/31</td></tr>
     </tbody>
   </table>
+</section>
+
+<!-- 8b: Mes ancla (v15) — alineación al calendario fiscal -->
+<section>
+  <h2>Mes ancla: alineación al calendario</h2>
+  <p>Por default, el primer ciclo de un cliente multi-mes <strong>arranca en el mes en que se suscribió</strong>. Para alinear los ciclos a un calendario fiscal o calendar quarters, se define un <strong>mes ancla</strong> (1–12).</p>
+  <table>
+    <thead><tr><th>Largo</th><th>Mes ancla</th><th>Ciclos resultantes</th></tr></thead>
+    <tbody>
+      <tr><td>Trimestral (3)</td><td>1 (Ene)</td><td>Ene-Mar, Abr-Jun, Jul-Sep, Oct-Dic</td></tr>
+      <tr><td>Trimestral (3)</td><td>2 (Feb)</td><td>Feb-Abr, May-Jul, Ago-Oct, Nov-Ene</td></tr>
+      <tr><td>Semestral (6)</td><td>7 (Jul)</td><td>Jul-Dic, Ene-Jun</td></tr>
+      <tr><td>Anual (12)</td><td>4 (Abr)</td><td>Año fiscal Abr-Mar</td></tr>
+      <tr><td>Anual (12)</td><td>1 (Ene)</td><td>Año calendario Ene-Dic</td></tr>
+    </tbody>
+  </table>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Ejemplo:</strong> cliente trimestral suscrito el 15-may con mes ancla = Jul → primer ciclo es un stub 15-may → 30-jun, luego ciclos regulares Jul-Sep, Oct-Dic, Ene-Mar, Abr-Jun.</p>
+  </div>
+  <p class="small muted">Opcional. Si no se define, los ciclos arrancan en el mes de suscripción (comportamiento por default). Cambiable post-creación si el cliente no tiene facturas activas.</p>
 </section>
 
 <!-- 9: Add-ons -->
@@ -472,7 +497,7 @@
     <tbody>
       <tr><td>Datos del cliente (nombre, RFC, dirección, contacto)</td><td><span class="badge badge-green">Siempre</span></td></tr>
       <tr><td>Timezone, metadata</td><td><span class="badge badge-green">Siempre</span></td></tr>
-      <tr><td>Calendario (anchor, period_months, subscription_at)</td><td><span class="badge badge-amber">Solo si NO hay facturas activas</span></td></tr>
+      <tr><td>Calendario (subscription_at, anchor day, period months, mes ancla)</td><td><span class="badge badge-amber">Solo si NO hay facturas activas</span></td></tr>
       <tr><td>Moneda</td><td><span class="badge badge-amber">Solo si NO hay facturas activas</span></td></tr>
       <tr><td>Precio de un servicio</td><td><span class="badge badge-blue">Programable a futuro</span></td></tr>
       <tr><td>External ID, secuencial</td><td><span class="badge badge-red">Nunca (inmutables)</span></td></tr>
