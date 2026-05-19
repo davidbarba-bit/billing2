@@ -253,7 +253,7 @@
   <div class="box box-primary">
     <h3>1. <code>billing_starts_at</code></h3>
     <p>Desde qué fecha Numaris Billing empieza a cobrar al cliente (separado de cuándo la unidad reporta operativamente).</p>
-    <p class="small"><strong>Caso:</strong> "La unidad reporta desde el 5-may, pero el cliente ya pagó mayo afuera → Numaris factura desde el 1-jun."</p>
+    <p class="small"><strong>Caso:</strong> "La unidad reporta desde el 5-may, pero el cliente ya pagó mayo afuera → Numaris Billing factura desde el 1-jun."</p>
   </div>
 </section>
 
@@ -382,18 +382,19 @@
 
 <!-- 19b: Flujo automático SLA -->
 <section>
-  <h2>Flujo automático: Numaris ↔ Numaris Billing</h2>
+  <h2>Flujo automático: Next ↔ Numaris Billing</h2>
   <p>Caso de uso principal: <strong>ajuste por SLA de conectividad</strong>.</p>
-  <div class="diagram">1. Numaris monitorea conectividad de cada unidad durante el mes.
+  <p class="small muted"><em>Next</em> es la plataforma de rastreo GPS de Numaris; <em>Numaris Billing</em> es el motor de facturación.</p>
+  <div class="diagram">1. Next monitorea conectividad de cada unidad durante el mes.
 
-2. Al cierre, Numaris evalúa cada unidad contra el SLA del contrato:
+2. Al cierre, Next evalúa cada unidad contra el SLA del contrato:
      - ¿La unidad cumplió el % mínimo de conectividad?
      - ¿Cuántos días estuvo por debajo del umbral?
 
-3. Para unidades que NO cumplieron, Numaris calcula el ajuste
+3. Para unidades que NO cumplieron, Next calcula el ajuste
    proporcional ($ a acreditar por cada unidad ofensiva).
 
-4. Numaris llama a Numaris Billing solicitando la credit note:
+4. Next llama a Numaris Billing solicitando la credit note:
      POST /api/v1/credit_notes
      { invoice_id, reason: "product_unsatisfactory",
        items: [{ fee_id, amount_cents }, ...] }
@@ -401,7 +402,7 @@
 5. Numaris Billing valida y emite la credit note.
 6. Se envía a NetSuite → CFDI de egreso timbrado con SAT.
 7. El folio de la nota de crédito regresa a Numaris Billing.</div>
-  <p class="small muted">Numaris es la fuente de verdad del cumplimiento de SLA; Numaris Billing es la fuente de verdad fiscal/contable.</p>
+  <p class="small muted">Next es la fuente de verdad del cumplimiento de SLA; Numaris Billing es la fuente de verdad fiscal/contable.</p>
 </section>
 
 <!-- 19c: Ejemplo SLA -->
@@ -411,7 +412,7 @@
     <p style="margin: 0;"><strong>Cliente:</strong> Transportes MARVA · factura junio: 50 unidades × $850 = <span class="num">$42,500</span></p>
     <p style="margin: 0;"><strong>SLA contractual:</strong> 95% de conectividad mensual mínima.</p>
   </div>
-  <p>Numaris detecta al cierre:</p>
+  <p>Next detecta al cierre:</p>
   <table>
     <thead><tr><th>Unidades</th><th>Conectividad</th><th>Ajuste</th><th>Crédito</th></tr></thead>
     <tbody>
@@ -421,7 +422,7 @@
       <tr><td colspan="3" style="text-align: right;"><strong>Total credit note:</strong></td><td class="num"><strong>$1,020</strong></td></tr>
     </tbody>
   </table>
-  <p class="small">Numaris arma el payload con esos montos, lo manda a Numaris Billing, y el cliente recibe su CFDI de egreso por $1,020 (más IVA que NetSuite calcula).</p>
+  <p class="small">Next arma el payload con esos montos, lo manda a Numaris Billing, y el cliente recibe su CFDI de egreso por $1,020 (más IVA que NetSuite calcula).</p>
 </section>
 
 <!-- 19d: Estados credit note -->
@@ -457,8 +458,8 @@
   <ul>
     <li><strong>Factura debe estar timbrada:</strong> NC solo sobre facturas <code>finalized + confirmed</code>. No se puede acreditar lo que SAT no reconoce.</li>
     <li><strong>Monto por línea ≤ línea original:</strong> no se puede acreditar más de lo que se facturó. Si se pide $1,500 sobre una línea de $800, rechazo automático.</li>
-    <li><strong>Razón obligatoria:</strong> 6 razones predefinidas; Numaris envía la apropiada según el caso.</li>
-    <li><strong>Idempotencia:</strong> Numaris puede reenviar la misma solicitud (ej. timeout) sin duplicar — el sistema reconoce el marker.</li>
+    <li><strong>Razón obligatoria:</strong> 6 razones predefinidas; Next envía la apropiada según el caso.</li>
+    <li><strong>Idempotencia:</strong> Next puede reenviar la misma solicitud (ej. timeout) sin duplicar — el sistema reconoce el marker.</li>
     <li><strong>Inmutable post-emisión:</strong> la credit note ya timbrada no se altera. Para corregir, se emite otra nota o se factura de nuevo el monto correcto.</li>
   </ul>
 </section>
@@ -549,7 +550,7 @@
     </div>
     <div class="box">
       <h3>¿Quién mantiene el catálogo NetSuite?</h3>
-      <p class="small">Finanzas crea/edita items en NetSuite. Operaciones asigna el código en Numaris. La preview avisa si falta.</p>
+      <p class="small">Finanzas crea/edita items en NetSuite. Operaciones asigna el código en Numaris Billing. La preview avisa si falta.</p>
     </div>
   </div>
 </section>
