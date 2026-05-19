@@ -117,7 +117,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const passOk = timingSafeStringEqual(password, adminPassword);
       if (!userOk || !passOk) throw new Error('invalid credentials');
     },
-    authenticate: { realm: 'mini-Lago admin' },
+    authenticate: { realm: 'Numaris Billing admin' },
   });
 
   app.addHook('preHandler', (request, reply, done) => {
@@ -442,10 +442,14 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         const mi = String(d.getUTCMinutes()).padStart(2, '0');
         return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
       };
+      const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
       const summary = kv([
         ['Subscription at', fmtDate(customer.subscriptionAt)],
         ['Anchor day', String(customer.billingAnchorDay)],
         ['Period months', String(customer.billingPeriodMonths)],
+        ['Anchor month', customer.billingAnchorMonth
+          ? `${customer.billingAnchorMonth} (${monthNames[customer.billingAnchorMonth - 1]})`
+          : '<span class="text-gray-400">— (anclado a subscription_at)</span>'],
         ['Trigger no-recurrente', badge(customer.nonrecurringTrigger, customer.nonrecurringTrigger === 'immediate' ? 'green' : 'gray')],
         ['Periodo vigente', `${fmtDate(customer.currentBillingPeriodStartedAt)} → ${fmtDate(customer.currentBillingPeriodEndingAt)}`],
       ]);
@@ -455,10 +459,17 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         `<option value="next_cycle" ${customer.nonrecurringTrigger === 'next_cycle' ? 'selected' : ''}>next_cycle (cobrar en próximo cierre)</option>`,
         `<option value="immediate" ${customer.nonrecurringTrigger === 'immediate' ? 'selected' : ''}>immediate (factura individual al ping)</option>`,
       ].join('');
+      // v15: anchor_month options. Solo aplica si period_months > 1.
+      const anchorMonthOptions = ['<option value="">— (anclado a subscription_at)</option>']
+        .concat(monthNames.map((name, i) => {
+          const n = i + 1;
+          return `<option value="${n}" ${n === customer.billingAnchorMonth ? 'selected' : ''}>${n} — ${name}</option>`;
+        }))
+        .join('');
       const banner = terminated
         ? `<div class="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900 mb-3">Customer <code>terminated</code> — schedule no editable.</div>`
         : blocked
-        ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>${nonVoidedInvoices} invoice${nonVoidedInvoices === 1 ? '' : 's'} no-voided bloque${nonVoidedInvoices === 1 ? 'a' : 'an'} cambios a <code>subscription_at</code>, <code>anchor_day</code> y <code>period_months</code>.</strong> Voidálas primero. El campo <code>nonrecurring_trigger</code> sí se puede editar.</div>`
+        ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>${nonVoidedInvoices} invoice${nonVoidedInvoices === 1 ? '' : 's'} no-voided bloque${nonVoidedInvoices === 1 ? 'a' : 'an'} cambios a <code>subscription_at</code>, <code>anchor_day</code>, <code>period_months</code> y <code>anchor_month</code>.</strong> Voidálas primero. El campo <code>nonrecurring_trigger</code> sí se puede editar.</div>`
         : '';
       const disabledHard = blocked || terminated ? 'disabled' : '';
       const disabledSoft = terminated ? 'disabled' : '';
@@ -475,7 +486,11 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <label class="block"><span class="text-sm text-gray-700">Period months</span>
               <select ${disabledHard} name="billing_period_months" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${periodOptions}</select>
             </label>
-            <label class="block"><span class="text-sm text-gray-700">Trigger no-recurrente</span>
+            <label class="block"><span class="text-sm text-gray-700">Anchor month <span class="text-xs text-gray-500">(solo trimestral/semestral/anual)</span></span>
+              <select ${disabledHard} name="billing_anchor_month" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${anchorMonthOptions}</select>
+              <span class="text-xs text-gray-500">Define en qué mes calendario inicia un ciclo. Ej. trimestral con Jul → cycles Jul-Sep, Oct-Dic, Ene-Mar, Abr-Jun.</span>
+            </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Trigger no-recurrente</span>
               <select ${disabledSoft} name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${triggerOptions}</select>
             </label>
           </div>
@@ -658,7 +673,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             </label>
           </div>
         </div>
-        <p class="text-xs text-gray-500">El ciclo de facturación lo define el customer. <strong>Los impuestos los calcula NetSuite</strong> según la configuración fiscal del cliente; mini-Lago solo envía montos netos.</p>
+        <p class="text-xs text-gray-500">El ciclo de facturación lo define el customer. <strong>Los impuestos los calcula NetSuite</strong> según la configuración fiscal del cliente; Numaris Billing solo envía montos netos.</p>
         <label class="block"><span class="text-sm text-gray-700">Descripción</span>
           <input name="description" class="mt-1 block w-full rounded border-gray-300">
         </label>
@@ -1182,6 +1197,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (body.subscription_at) payload.subscription_at = toUtcIso(body.subscription_at);
     if (body.billing_anchor_day) payload.billing_anchor_day = Number(body.billing_anchor_day);
     if (body.billing_period_months) payload.billing_period_months = Number(body.billing_period_months);
+    // billing_anchor_month: string vacío → null (limpia override); número → set.
+    if (body.billing_anchor_month !== undefined) {
+      payload.billing_anchor_month = body.billing_anchor_month === '' ? null : Number(body.billing_anchor_month);
+    }
     if (body.nonrecurring_trigger) payload.nonrecurring_trigger = body.nonrecurring_trigger;
     const result = await app.inject({
       method: 'PATCH',

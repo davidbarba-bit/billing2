@@ -528,9 +528,28 @@ export function billingPeriodFor(
   const subDt = DateTime.fromJSDate(customer.subscriptionAt, { zone: 'utc' }).setZone(tz).startOf('day');
   const refDt = DateTime.fromJSDate(reference, { zone: 'utc' }).setZone(tz).startOf('day');
 
-  // Primer anchor alineado on-or-after subscription_at.
-  let firstAnchor = subDt.set({ day: anchor });
-  if (firstAnchor < subDt) firstAnchor = firstAnchor.plus({ months: 1 });
+  // v15: si el customer tiene billing_anchor_month set y el periodo es
+  // multi-mes, alineamos los ciclos a ese mes calendario (independiente
+  // del mes en que cae subscription_at). Si NULL o monthly, comportamiento
+  // legacy: anclamos al mes de subscription_at avanzando 1 mes si el día
+  // de anchor ya pasó.
+  let firstAnchor: DateTime;
+  if (customer.billingAnchorMonth != null && months > 1) {
+    // Candidate: anchor_month/anchor_day en el año de subscription_at.
+    // Avanzamos por `months` (no 1) hasta caer on-or-after subscription_at,
+    // así los cycles quedan alineados al mes ancla independientemente de
+    // dónde caiga subscription_at.
+    const anchorMonth = Math.min(12, Math.max(1, customer.billingAnchorMonth));
+    firstAnchor = subDt.set({ month: anchorMonth, day: anchor });
+    while (firstAnchor < subDt) firstAnchor = firstAnchor.plus({ months });
+  } else {
+    // Legacy: primer anchor alineado on-or-after subscription_at en el mismo
+    // mes (o el siguiente si el día ya pasó). Para monthly, avanza 1 mes;
+    // para multi-mes sin anchor_month, equivale a anclar al mes de
+    // subscription_at.
+    firstAnchor = subDt.set({ day: anchor });
+    if (firstAnchor < subDt) firstAnchor = firstAnchor.plus({ months: 1 });
+  }
 
   if (refDt < firstAnchor) {
     // Stub: [subscription_at, primer anchor).

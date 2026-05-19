@@ -114,7 +114,7 @@ export function layout(options: {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(options.title)} · mini-Lago admin</title>
+<title>${escapeHtml(options.title)} · Numaris Billing admin</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
 <style>
@@ -125,7 +125,7 @@ export function layout(options: {
 <div class="flex">
   <aside class="w-60 min-h-screen bg-gray-800 text-white p-4 sticky top-0">
     <div class="mb-6">
-      <div class="text-xl font-bold">mini-Lago</div>
+      <div class="text-xl font-bold">Numaris Billing</div>
       <div class="text-xs text-gray-400 mt-1">${escapeHtml(options.orgSlug)}</div>
       <a href="/admin/settings" class="text-xs text-gray-400 hover:text-white mt-1 inline-block">
         tz: <code>${escapeHtml(currentTz())}</code> ✎

@@ -70,7 +70,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     }
     const statusCode = (err as { statusCode?: number }).statusCode;
     if (statusCode === 401) {
-      reply.status(401).header('www-authenticate', 'Basic realm="mini-Lago admin"');
+      reply.status(401).header('www-authenticate', 'Basic realm="Numaris Billing admin"');
       if (request.url.startsWith('/admin')) {
         reply.type('text/html').send('<h1>401 Unauthorized</h1><p>Bad credentials.</p>');
       } else {

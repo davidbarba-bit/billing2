@@ -74,6 +74,11 @@ model Customer {
   // `billing_time` (calendar/anniversary) — siempre es calendario con día N.
   billingPeriodMonths           Int       @default(1) @map("billing_period_months") // 1 | 3 | 6 | 12
   billingAnchorDay              Int       @default(1) @map("billing_anchor_day") // 1..28
+  // v15: mes ancla del ciclo (1..12). Solo aplica si billing_period_months > 1.
+  // NULL → comportamiento legacy (anclado al mes de subscription_at).
+  // Si está set: cycles arrancan en {anchor_month + k * period_months} mod 12.
+  // Ej: trimestral con anchor_month=1 → Ene/Abr/Jul/Oct cycles.
+  billingAnchorMonth            Int?      @map("billing_anchor_month")
   // Cómo cobrar units de servicios one-off cuando entran (primer ping):
   //   "immediate"   → 1 invoice por ping, emitida al instante del POST /events
   //   "next_cycle"  → unit pendiente hasta el cierre del ciclo, sale en la cycle invoice del customer
