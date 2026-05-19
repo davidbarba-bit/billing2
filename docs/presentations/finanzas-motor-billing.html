@@ -33,6 +33,10 @@
   .reveal .box h3 { margin-top: 0; }
   .reveal .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6em; }
   .reveal .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5em; }
+  /* Evita overflow horizontal cuando el contenido de un grid-item es largo. */
+  .reveal .grid-2 > *, .reveal .grid-3 > * { min-width: 0; overflow-wrap: break-word; word-break: normal; }
+  .reveal *, .reveal *::before, .reveal *::after { box-sizing: border-box; }
+  .reveal .slides section { max-width: 100%; }
   .reveal .muted { color: #6b7280; }
   .reveal .num { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
   .reveal .diagram { font-family: ui-monospace, monospace; font-size: 0.62em; background: #f9fafb; border: 1px solid #e5e7eb; padding: 10px 14px; border-radius: 6px; white-space: pre; line-height: 1.35; }
@@ -573,7 +577,7 @@
     transition: 'slide',
     width: 1024,
     height: 720,
-    margin: 0.06,
+    margin: 0.04,
     minScale: 0.2,
     maxScale: 1.5,
   });
