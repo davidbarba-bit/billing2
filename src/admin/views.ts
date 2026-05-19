@@ -14,7 +14,7 @@ const NAV_ITEMS: Array<{ href: string; label: string; target?: string }> = [
   { href: '/admin/events', label: 'Events' },
   { href: '/admin/invoices', label: 'Invoices' },
   { href: '/admin/credit-notes', label: 'Credit notes' },
-  { href: '/admin/presentacion.html', label: 'Presentación', target: '_blank' },
+  { href: '/presentacion.html', label: 'Presentación', target: '_blank' },
   { href: '/admin/settings', label: 'Settings' },
 ];
 

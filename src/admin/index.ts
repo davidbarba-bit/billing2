@@ -154,11 +154,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   // ------------------------------------------------------------------
   // Dashboard.
   // ------------------------------------------------------------------
-  // Presentación HTML para Finanzas. Servimos el archivo de docs/ tal cual
-  // (el Dockerfile lo copia). Cacheamos en memoria para evitar disk reads en
-  // cada request. Protegida por el preHandler basicAuth como el resto de /admin.
+  // Presentación HTML pública (sin auth) para que se pueda compartir vía
+  // link en Slack u otros canales — los .html como attachment se muestran
+  // como código y no son útiles. El handler vive en el módulo admin por
+  // proximidad con el archivo, pero la ruta no empieza con /admin así que
+  // el preHandler de basicAuth la deja pasar. Cache en memoria 5 min.
   let presentacionCache: { content: string; loadedAt: number } | null = null;
-  app.get('/admin/presentacion.html', async (_request, reply) => {
+  app.get('/presentacion.html', async (_request, reply) => {
     const ttlMs = 5 * 60 * 1000;
     if (!presentacionCache || Date.now() - presentacionCache.loadedAt > ttlMs) {
       try {
