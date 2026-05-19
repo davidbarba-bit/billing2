@@ -109,6 +109,28 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   const { default: fastifyCookie } = await import('@fastify/cookie');
   await app.register(fastifyCookie);
 
+  const authMode = deps.config.adminAuthMode;
+
+  // v16: si ADMIN_AUTH_MODE=google, registra el flow de Google OAuth.
+  let googleConfigured = false;
+  if (authMode === 'google') {
+    const { registerGoogleAuth } = await import('./auth-google.js');
+    if (deps.config.googleOauthClientId && deps.config.googleOauthClientSecret && deps.config.sessionSecret) {
+      await registerGoogleAuth(app, {
+        clientId: deps.config.googleOauthClientId,
+        clientSecret: deps.config.googleOauthClientSecret,
+        publicBaseUrl: deps.callbackBaseUrl,
+        allowedDomain: deps.config.adminAllowedEmailDomain,
+        sessionSecret: deps.config.sessionSecret,
+      });
+      googleConfigured = true;
+    } else {
+      app.log.warn('ADMIN_AUTH_MODE=google requires GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET y SESSION_SECRET. Cayendo a basic auth como fallback de emergencia.');
+    }
+  }
+
+  // Basic auth se mantiene como break-glass — si Google está configurado, basic
+  // queda inactivo pero el plugin sigue registrado para no romper otras partes.
   const adminUser = process.env.ADMIN_USER ?? 'admin';
   const adminPassword = process.env.ADMIN_PASSWORD ?? 'admin';
   await app.register(basicAuth, {
@@ -120,12 +142,37 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     authenticate: { realm: 'Numaris Billing admin' },
   });
 
-  app.addHook('preHandler', (request, reply, done) => {
-    if (request.url.startsWith('/admin')) {
-      app.basicAuth(request, reply, done);
+  const sessionSecret = deps.config.sessionSecret ?? '';
+
+  app.addHook('preHandler', async (request, reply) => {
+    const url = request.url;
+    // Rutas de auth (login/callback/logout) — no protegidas, son el propio flow.
+    if (url.startsWith('/admin/auth/')) return;
+    // No-admin → siempre pasa.
+    if (!url.startsWith('/admin')) return;
+
+    // Admin → requiere auth.
+    if (googleConfigured && authMode === 'google') {
+      const { getGoogleSession } = await import('./auth-google.js');
+      const session = getGoogleSession(request, sessionSecret);
+      if (!session) {
+        const target = encodeURIComponent(url);
+        reply.redirect(`/admin/auth/login?next=${target}`);
+        return reply;
+      }
+      // Decora request con la sesión para que los handlers puedan leerla.
+      (request as unknown as Record<string, unknown>).googleSession = session;
+      // Y la propaga al AsyncLocalStorage para que `layout()` la pueda renderizar
+      // en la sidebar sin tener que recibirla como argumento.
+      const store = adminContextStorage.getStore();
+      if (store) store.user = { email: session.email, name: session.name, picture: session.picture };
       return;
     }
-    done();
+
+    // Basic auth fallback.
+    await new Promise<void>((resolve, reject) => {
+      app.basicAuth(request, reply, (err: Error | null | undefined) => err ? reject(err) : resolve());
+    });
   });
 
   const { prisma } = deps;
@@ -147,7 +194,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies ?? {};
     let tz = cookies.admin_display_tz;
     if (!tz || !isValidIanaTimezone(tz)) tz = cachedOrgTz;
-    adminContextStorage.enterWith({ displayTz: tz });
+    adminContextStorage.enterWith({ displayTz: tz, user: null });
     done();
   });
 

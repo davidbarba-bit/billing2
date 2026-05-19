@@ -4,7 +4,7 @@
 // interactivity uses HTMX.
 
 import { DateTime } from 'luxon';
-import { adminContextStorage } from './context.js';
+import { adminContextStorage, getCurrentAdminUser } from './context.js';
 
 const NAV_ITEMS: Array<{ href: string; label: string; target?: string }> = [
   { href: '/admin', label: 'Dashboard' },
@@ -95,6 +95,8 @@ export function layout(options: {
   body: string;
   orgSlug: string;
   flash?: { kind: 'success' | 'error'; message: string } | null;
+  // v16: si hay sesión Google, mostramos el email + botón logout en el sidebar.
+  user?: { email: string; name: string; picture: string | null } | null;
 }): string {
   const nav = NAV_ITEMS.map((item) => {
     const active = options.active === item.href || (item.href !== '/admin' && options.active?.startsWith(item.href));
@@ -123,7 +125,7 @@ export function layout(options: {
 </head>
 <body class="min-h-screen bg-gray-50 text-gray-900">
 <div class="flex">
-  <aside class="w-60 min-h-screen bg-gray-800 text-white p-4 sticky top-0">
+  <aside class="w-60 min-h-screen bg-gray-800 text-white p-4 sticky top-0 flex flex-col">
     <div class="mb-6">
       <div class="text-xl font-bold">Numaris Billing</div>
       <div class="text-xs text-gray-400 mt-1">${escapeHtml(options.orgSlug)}</div>
@@ -132,6 +134,28 @@ export function layout(options: {
       </a>
     </div>
     <nav class="space-y-1">${nav}</nav>
+    ${(() => {
+      // v16: usuario activo (Google session) — viene del options.user explícito O del
+      // AsyncLocalStorage (el hook lo pone para que cualquier handler que llame
+      // `layout()` herede el usuario sin tener que recibirlo como argumento).
+      const u = options.user ?? getCurrentAdminUser();
+      return u ? `
+    <div class="mt-auto pt-4 border-t border-gray-700">
+      <div class="flex items-center gap-2 mb-2">
+        ${u.picture
+          ? `<img src="${escapeHtml(u.picture)}" referrerpolicy="no-referrer" class="w-8 h-8 rounded-full" alt="">`
+          : `<div class="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-bold">${escapeHtml(u.email.charAt(0).toUpperCase())}</div>`}
+        <div class="min-w-0 flex-1">
+          <div class="text-xs font-medium truncate">${escapeHtml(u.name)}</div>
+          <div class="text-xs text-gray-400 truncate">${escapeHtml(u.email)}</div>
+        </div>
+      </div>
+      <form method="post" action="/admin/auth/logout">
+        <button type="submit" class="block w-full text-left text-xs text-gray-300 hover:text-white py-1 px-2 hover:bg-gray-700 rounded">Cerrar sesión</button>
+      </form>
+    </div>
+    ` : '';
+    })()}
   </aside>
   <main class="flex-1 p-8 max-w-7xl">
     ${flashBanner}
