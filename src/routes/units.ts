@@ -283,10 +283,14 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
 
       const tx = await prisma.$transaction(async (tx) => {
         // 1) Marca la unit vieja como terminada en migrationAt y deja huella.
+        //    v17: neutralizamos el cargo de baja porque migración != desinstalación
+        //    real. Setear removalBilledAt = migrationAt hace que buildRemovalFee
+        //    salte esta unit (símil al patrón de setupBilledAt en la nueva unit).
         const closedOld = await tx.unit.update({
           where: { id: oldUnit.id },
           data: {
             activeTo: migrationAt,
+            removalBilledAt: migrationAt,
             metadata: {
               ...(oldMeta as object),
               migrated_to: {

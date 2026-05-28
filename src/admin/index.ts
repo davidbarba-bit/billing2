@@ -656,6 +656,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           { label: 'Modelo', render: (s) => badge(s.pricingModel, s.pricingModel === 'one_off' ? 'green' : 'blue') },
           { label: 'Monto /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
           { label: 'Setup /u', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) },
+          { label: 'Baja /u', render: (s) => s.removalUnitAmountCents > 0 ? fmtMoney(s.removalUnitAmountCents, s.currency) : '<span class="text-gray-400">—</span>' },
           { label: 'Prepaid (m)', render: (s) => s.pricingModel === 'one_off' ? (s.prepaidMonthsDefault !== null ? String(s.prepaidMonthsDefault) : '<span class="text-red-600">—</span>') : '<span class="text-gray-400">n/a</span>' },
           { label: 'Units', render: (s) => String(s._count.units) },
         ],
@@ -701,6 +702,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <input type="number" name="setup_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
             <span class="text-xs text-gray-500">Cargo único por unit al primer ping. Aplica a recurring y one_off.</span>
           </label>
+          <label class="block"><span class="text-sm text-gray-700">Baja por unidad (cents)</span>
+            <input type="number" name="removal_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
+            <span class="text-xs text-gray-500">v17: cargo único al dar de baja la unit (active_to). Solo recurring. Migración de plan NO lo dispara.</span>
+          </label>
           <label class="block col-span-2"><span class="text-sm text-gray-700">Meses prepagados por defecto (solo one_off)</span>
             <input type="number" name="prepaid_months_default" min="1" placeholder="48" class="mt-1 block w-full rounded border-gray-300">
             <span class="text-xs text-gray-500">Cuántos meses paga el cliente por adelantado por cada unit nueva. Override por unit en POST /events. Dejar vacío si es recurring.</span>
@@ -717,6 +722,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <label class="block"><span class="text-sm text-gray-700">Item code setup</span>
               <input name="netsuite_setup_item_code" placeholder="SUB-SETUP" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
               <span class="text-xs text-gray-500">Cargo único per-unit (si setup &gt; 0).</span>
+            </label>
+            <label class="block"><span class="text-sm text-gray-700">Item code baja</span>
+              <input name="netsuite_removal_item_code" placeholder="SUB-BAJA" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+              <span class="text-xs text-gray-500">Cargo único per-unit al dar de baja (si baja &gt; 0).</span>
             </label>
           </div>
         </div>
@@ -751,9 +760,11 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           pricing_model: body.pricing_model || 'recurring',
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
+          removal_unit_amount_cents: Number(body.removal_unit_amount_cents ?? 0),
           prepaid_months_default: body.prepaid_months_default ? Number(body.prepaid_months_default) : undefined,
           netsuite_monthly_item_code: body.netsuite_monthly_item_code || null,
           netsuite_setup_item_code: body.netsuite_setup_item_code || null,
+          netsuite_removal_item_code: body.netsuite_removal_item_code || null,
         },
       },
     });
@@ -807,6 +818,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Pricing model', badge(service.pricingModel, service.pricingModel === 'one_off' ? 'green' : 'blue')],
       ['Monto /unidad (vigente)', fmtMoney(effectiveMonthly, service.currency) + (service.pricingModel === 'one_off' ? ' /mes prepagado' : ' /periodo')],
       ['Setup /unidad (vigente)', fmtMoney(effectiveSetup, service.currency)],
+      ['Baja /unidad', service.pricingModel === 'recurring'
+        ? fmtMoney(service.removalUnitAmountCents, service.currency) + (service.removalUnitAmountCents === 0 ? ' <span class="text-gray-400">(sin cargo)</span>' : '')
+        : '<span class="text-gray-400">n/a (one_off)</span>'],
       ['Meses prepagados (default)', service.pricingModel === 'one_off' ? (service.prepaidMonthsDefault !== null ? String(service.prepaidMonthsDefault) + ' meses' : '<span class="text-red-600">no configurado — se debe especificar por unit</span>') : '<span class="text-gray-400">n/a (recurring)</span>'],
       ['Terminated at', fmtDate(service.terminatedAt)],
     ]);
@@ -836,6 +850,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
                 service.setupUnitAmountCents === 0
                   ? '<span class="text-gray-400 text-xs">n/a (sin setup)</span>'
                   : (u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow'))
+              },
+              { label: 'Baja billed', render: (u: typeof service.units[number]) =>
+                service.removalUnitAmountCents === 0
+                  ? '<span class="text-gray-400 text-xs">n/a (sin baja)</span>'
+                  : (u.activeTo === null
+                    ? '<span class="text-gray-400 text-xs">activa</span>'
+                    : (u.removalBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')))
               },
             ]),
         { label: 'Acciones', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },

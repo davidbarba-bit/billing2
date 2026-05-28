@@ -15,12 +15,15 @@ type ServicePayload = {
   pricing_model?: 'recurring' | 'one_off';
   monthly_unit_amount_cents?: number;
   setup_unit_amount_cents?: number;
+  // v17: cargo de baja per-unit. Solo recurring. 0 (default) = sin cargo.
+  removal_unit_amount_cents?: number;
   prepaid_months_default?: number | null;
   // v9: códigos NetSuite por kind de fee que este service produce.
   // monthly mapea tanto a fees kind=monthly (recurring) como a
   // fees kind=one_off (mensualidades prepagadas).
   netsuite_monthly_item_code?: string | null;
   netsuite_setup_item_code?: string | null;
+  netsuite_removal_item_code?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -64,11 +67,15 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       }
       const monthlyAmount = payload.monthly_unit_amount_cents ?? 0;
       const setupAmount = payload.setup_unit_amount_cents ?? 0;
-      if (monthlyAmount < 0 || setupAmount < 0) {
+      const removalAmount = payload.removal_unit_amount_cents ?? 0;
+      if (monthlyAmount < 0 || setupAmount < 0 || removalAmount < 0) {
         throw validation({ amount: ['must_be_non_negative'] });
       }
       if (pricingModel === 'one_off' && monthlyAmount === 0) {
         throw validation({ monthly_unit_amount_cents: ['must_be_positive_for_one_off'] });
+      }
+      if (pricingModel === 'one_off' && removalAmount > 0) {
+        throw validation({ removal_unit_amount_cents: ['only_applicable_to_recurring'] });
       }
       // prepaid_months_default solo aplica a one_off; en recurring debe ser null.
       const prepaidMonthsDefault = payload.prepaid_months_default ?? null;
@@ -92,9 +99,11 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
           pricingModel,
           monthlyUnitAmountCents: monthlyAmount,
           setupUnitAmountCents: setupAmount,
+          removalUnitAmountCents: removalAmount,
           prepaidMonthsDefault: prepaidMonthsDefault,
           netsuiteMonthlyItemCode: normalizeItemCode(payload.netsuite_monthly_item_code),
           netsuiteSetupItemCode: normalizeItemCode(payload.netsuite_setup_item_code),
+          netsuiteRemovalItemCode: normalizeItemCode(payload.netsuite_removal_item_code),
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
@@ -172,8 +181,11 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       const body = (request.body ?? {}) as { service?: {
         name?: string;
         description?: string | null;
+        // v17: edición del cargo de baja post-creación (sin tocar otros precios).
+        removal_unit_amount_cents?: number;
         netsuite_monthly_item_code?: string | null;
         netsuite_setup_item_code?: string | null;
+        netsuite_removal_item_code?: string | null;
         metadata?: Record<string, unknown>;
       } };
       const payload = body.service ?? {};
@@ -184,11 +196,23 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       const data: Prisma.ServiceUpdateInput = {};
       if (payload.name !== undefined) data.name = payload.name;
       if (payload.description !== undefined) data.description = payload.description;
+      if (payload.removal_unit_amount_cents !== undefined) {
+        if (!Number.isInteger(payload.removal_unit_amount_cents) || payload.removal_unit_amount_cents < 0) {
+          throw validation({ removal_unit_amount_cents: ['must_be_non_negative_integer'] });
+        }
+        if (service.pricingModel === 'one_off' && payload.removal_unit_amount_cents > 0) {
+          throw validation({ removal_unit_amount_cents: ['only_applicable_to_recurring'] });
+        }
+        data.removalUnitAmountCents = payload.removal_unit_amount_cents;
+      }
       if (payload.netsuite_monthly_item_code !== undefined) {
         data.netsuiteMonthlyItemCode = normalizeItemCode(payload.netsuite_monthly_item_code);
       }
       if (payload.netsuite_setup_item_code !== undefined) {
         data.netsuiteSetupItemCode = normalizeItemCode(payload.netsuite_setup_item_code);
+      }
+      if (payload.netsuite_removal_item_code !== undefined) {
+        data.netsuiteRemovalItemCode = normalizeItemCode(payload.netsuite_removal_item_code);
       }
       if (payload.metadata !== undefined) {
         data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;

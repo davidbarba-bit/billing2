@@ -15,7 +15,7 @@ import type {
 } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { applicableTimezone } from './tz.js';
-import { billingPeriodFor, computeCustomerInvoice, markOneOffBilled, markSetupsBilled, persistComputedInvoice } from './billing-engine.js';
+import { billingPeriodFor, computeCustomerInvoice, markOneOffBilled, markRemovalsBilled, markSetupsBilled, persistComputedInvoice } from './billing-engine.js';
 import type { NetSuiteDispatcher } from './netsuite-dispatcher.js';
 
 export type EmitCycleInvoiceOptions = {
@@ -140,6 +140,7 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     for (const fee of computed.fees) {
       if (fee.kind === 'setup' && fee.unitIds.length > 0) await markSetupsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
       if (fee.kind === 'one_off' && fee.unitIds.length > 0) await markOneOffBilled(tx as unknown as PrismaClient, fee.unitIds, now);
+      if (fee.kind === 'removal' && fee.unitIds.length > 0) await markRemovalsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
     }
 
     return invoice;

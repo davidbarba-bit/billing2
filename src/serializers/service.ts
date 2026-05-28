@@ -29,6 +29,9 @@ export function serializeService(service: ServiceWithLinks) {
       pricing_model: service.pricingModel,
       monthly_unit_amount_cents: effective.monthlyUnitAmountCents,
       setup_unit_amount_cents: effective.setupUnitAmountCents,
+      // v17: cargo de baja per-unit. No tiene mecanismo de pending (siempre
+      // refleja el valor "vigente"); cambia con PATCH /api/v1/services/:code.
+      removal_unit_amount_cents: service.removalUnitAmountCents,
       pending_price_change: pendingInFuture
         ? {
             monthly_unit_amount_cents: service.pendingMonthlyUnitAmountCents!,
@@ -42,6 +45,7 @@ export function serializeService(service: ServiceWithLinks) {
       // prepagadas) — es la misma "renta mensual" conceptual.
       netsuite_monthly_item_code: service.netsuiteMonthlyItemCode ?? null,
       netsuite_setup_item_code: service.netsuiteSetupItemCode ?? null,
+      netsuite_removal_item_code: service.netsuiteRemovalItemCode ?? null,
       status: service.status,
       terminated_at: service.terminatedAt ? isoUtc(service.terminatedAt) : null,
       metadata: service.metadata ?? {},

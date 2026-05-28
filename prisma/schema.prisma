@@ -150,6 +150,13 @@ model Service {
   // la línea a su catálogo). La preview muestra advertencia visual.
   netsuiteMonthlyItemCode String? @map("netsuite_monthly_item_code")
   netsuiteSetupItemCode   String? @map("netsuite_setup_item_code")
+  // v17: cobro de "baja" (desinstalación) — se dispara cuando una unit termina
+  // (activeTo != null) y aparece en el invoice del period que contiene la
+  // terminación. Default 0 = sin cargo de baja. Solo aplica a pricing_model=
+  // recurring (one_off no tiene mensualidades a las que sumar). NO se dispara
+  // en migración de plan (esa flujo setea removalBilledAt en la unit vieja).
+  removalUnitAmountCents  Int     @default(0) @map("removal_unit_amount_cents")
+  netsuiteRemovalItemCode String? @map("netsuite_removal_item_code")
   // v7: cambio de precio programado. Cuando los tres campos están poblados y
   // el periodo a facturar empieza on-or-after `pendingEffectiveFrom`, el motor
   // usa los valores `pending*` en lugar de los de arriba. Aplica igual para
@@ -258,10 +265,16 @@ model Unit {
   //   Saltarse el mes (ya pagó en otra plataforma) → billing_starts_at = inicio del próximo mes
   billingStartsAt DateTime? @map("billing_starts_at")
   // Gates de cobro one-off por unit:
-  //   setupBilledAt   → para services recurring + setup_unit_amount_cents > 0
-  //   oneoffBilledAt  → para services one_off (la unit no vuelve a aparecer en facturas)
-  setupBilledAt DateTime? @map("setup_billed_at")
-  oneoffBilledAt DateTime? @map("oneoff_billed_at")
+  //   setupBilledAt    → para services recurring + setup_unit_amount_cents > 0
+  //   oneoffBilledAt   → para services one_off (la unit no vuelve a aparecer en facturas)
+  //   removalBilledAt  → v17: cobro de baja al terminar la unit. NULL = pendiente
+  //                      (si la unit todavía no termina, o terminó pero aún no
+  //                      se cierra el ciclo). Setteado a la fecha de baja para
+  //                      neutralizar el cargo en flujos de migración (planos donde
+  //                      la baja no es una desinstalación real sino transferencia).
+  setupBilledAt   DateTime? @map("setup_billed_at")
+  oneoffBilledAt  DateTime? @map("oneoff_billed_at")
+  removalBilledAt DateTime? @map("removal_billed_at")
   // Meses prepagados para esta unit (override del default del Service). Solo
   // aplica si el Service es one_off. Cuando la unit se factura por primera vez,
   // se cobra setup + N × monthly y la unit queda marcada con oneoffBilledAt.

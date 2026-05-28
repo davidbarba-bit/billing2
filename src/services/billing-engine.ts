@@ -27,7 +27,7 @@ import { DateTime } from 'luxon';
 import { applyFraction, bankersRound, fraction4 } from './rounding.js';
 import { isoUtc } from './tz.js';
 
-export type FeeKind = 'monthly' | 'setup' | 'service_addon' | 'customer_addon' | 'one_off';
+export type FeeKind = 'monthly' | 'setup' | 'removal' | 'service_addon' | 'customer_addon' | 'one_off';
 
 export type BilledUnitDetail = {
   external_id: string;
@@ -154,6 +154,8 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
       if (monthlyFee) fees.push(monthlyFee);
       const setupFee = buildSetupFee(service, service.units, periodStart, periodEnd);
       if (setupFee) fees.push(setupFee);
+      const removalFee = buildRemovalFee(service, service.units, periodEnd);
+      if (removalFee) fees.push(removalFee);
       for (const addOn of service.addOns) {
         if (addOn.activeFrom > periodEnd) continue;
         if (addOn.activeTo !== null && addOn.activeTo <= periodStart) continue;
@@ -462,6 +464,34 @@ function buildSetupFee(service: Service, units: Unit[], periodStart: Date, perio
   };
 }
 
+// v17: cargo de baja (desinstalación). Espejo del setup: se cobra una sola vez
+// por unit, en el primer cycle invoice posterior a que la unit termine
+// (activeTo != null). Si removalUnitAmountCents=0 → no genera fee. Si la baja
+// fue por migración de plan, el endpoint correspondiente ya seteó
+// removalBilledAt en la unit vieja, así que naturalmente la salta.
+function buildRemovalFee(service: Service, units: Unit[], periodEnd: Date): ComputedFee | null {
+  if (service.removalUnitAmountCents <= 0) return null;
+  const candidates = units
+    .filter((u) => u.activeTo !== null && u.activeTo <= periodEnd && u.removalBilledAt === null)
+    .sort((a, b) => (a.externalId < b.externalId ? -1 : 1));
+  if (candidates.length === 0) return null;
+  const detail: BilledUnitDetail[] = candidates.map((u) => ({
+    external_id: u.externalId, label: u.label,
+    active_from: isoUtc(u.activeFrom), active_to: u.activeTo ? isoUtc(u.activeTo) : null,
+    billed_fraction: '1.0000', amount_cents: service.removalUnitAmountCents,
+  }));
+  const amountCents = service.removalUnitAmountCents * candidates.length;
+  return {
+    kind: 'removal', serviceId: service.id,
+    description: `${service.name} — baja × ${candidates.length}`,
+    units: `${candidates.length}.0000`, unitAmountCents: service.removalUnitAmountCents,
+    preciseUnitAmount: (service.removalUnitAmountCents / 100).toFixed(2),
+    amountCents,
+    netsuiteItemCode: service.netsuiteRemovalItemCode ?? null,
+    billedUnitsDetail: detail, unitIds: candidates.map((u) => u.id),
+  };
+}
+
 // One-off agrupado: 1 fee por service con TODAS las units one-off pendientes
 // que se activaron dentro del periodo. Modo next_cycle.
 function buildServiceAddOnFee(
@@ -595,6 +625,18 @@ export async function markOneOffBilled(
   await prisma.unit.updateMany({
     where: { id: { in: unitIds }, oneoffBilledAt: null },
     data: { oneoffBilledAt: billedAt },
+  });
+}
+
+export async function markRemovalsBilled(
+  prisma: PrismaClient,
+  unitIds: string[],
+  billedAt: Date = new Date(),
+): Promise<void> {
+  if (unitIds.length === 0) return;
+  await prisma.unit.updateMany({
+    where: { id: { in: unitIds }, removalBilledAt: null },
+    data: { removalBilledAt: billedAt },
   });
 }
 
