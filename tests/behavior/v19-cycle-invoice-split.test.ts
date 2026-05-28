@@ -254,4 +254,127 @@ describe('v19 — cycle invoice split', () => {
     const body = r.json() as { customer: { cycle_invoice_mode: string } };
     expect(body.customer.cycle_invoice_mode).toBe('split_by_kind');
   });
+
+  // =========================================================================
+  // v19 — ping one_off + immediate también respeta el split. Cuando el
+  // customer está en split_by_kind, el ping emite 2 invoices: una con las
+  // mensualidades prepagadas (renta), otra con el setup.
+  // =========================================================================
+
+  async function seedImmediateOneOffCustomer(extId: string, mode: 'unified' | 'split_by_kind') {
+    return h.app.inject({
+      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
+      payload: { customer: {
+        external_id: extId, name: extId, currency: 'MXN',
+        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
+        billing_anchor_day: 1, billing_period_months: 1,
+        nonrecurring_trigger: 'immediate',
+        cycle_invoice_mode: mode,
+      } },
+    });
+  }
+
+  // Helper: crea unit y dispara el evento 'add' que detona el ping immediate.
+  async function createUnitAndPing(svcCode: string, extId: string, txId: string, ts = '2026-06-15T18:00:00Z') {
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
+      payload: { unit: { service_code: svcCode, external_id: extId, active_from: ts } },
+    });
+    return h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: {
+        transaction_id: txId, service_code: svcCode, unit_external_id: extId,
+        operation_type: 'add', timestamp: ts,
+      } },
+    });
+  }
+
+  it('K) ping one_off + immediate + unified: 1 factura (backward compat)', async () => {
+    await seedImmediateOneOffCustomer('c-K', 'unified');
+    await seedService('s-K', 'c-K', {
+      pricingModel: 'one_off', monthly: 10000, setup: 5000, prepaidMonths: 12,
+    });
+
+    const ev = await createUnitAndPing('s-K', 'u-1', 'tx-K-1');
+    const body = ev.json() as { triggered_invoice_id?: string; companion_invoice_id?: string };
+    expect(body.triggered_invoice_id).toBeTruthy();
+    expect(body.companion_invoice_id).toBeUndefined();
+
+    const invoices = await h.prisma.invoice.findMany({ where: { customer: { externalId: 'c-K' } } });
+    expect(invoices.length).toBe(1);
+    expect((invoices[0]!.metadata as Record<string, unknown>).cycle_invoice_kind).toBe('unified');
+  });
+
+  it('L) ping one_off + immediate + split_by_kind: 2 facturas (recurring + oneoff)', async () => {
+    await seedImmediateOneOffCustomer('c-L', 'split_by_kind');
+    await seedService('s-L', 'c-L', {
+      pricingModel: 'one_off', monthly: 10000, setup: 5000, prepaidMonths: 12,
+    });
+
+    const ev = await createUnitAndPing('s-L', 'u-1', 'tx-L-1');
+    const body = ev.json() as { triggered_invoice_id?: string; companion_invoice_id?: string };
+    expect(body.triggered_invoice_id).toBeTruthy();
+    expect(body.companion_invoice_id).toBeTruthy();
+
+    const invoices = await h.prisma.invoice.findMany({
+      where: { customer: { externalId: 'c-L' } },
+      orderBy: { sequentialId: 'asc' },
+    });
+    expect(invoices.length).toBe(2);
+
+    const recInv = invoices.find((i) => (i.metadata as Record<string, unknown>).cycle_invoice_kind === 'recurring')!;
+    const oneInv = invoices.find((i) => (i.metadata as Record<string, unknown>).cycle_invoice_kind === 'oneoff')!;
+    expect(recInv).toBeTruthy();
+    expect(oneInv).toBeTruthy();
+
+    const recFees = await h.prisma.fee.findMany({ where: { invoiceId: recInv.id } });
+    const oneFees = await h.prisma.fee.findMany({ where: { invoiceId: oneInv.id } });
+    expect(recFees.map((f) => f.kind)).toEqual(['one_off']);
+    expect(oneFees.map((f) => f.kind)).toEqual(['setup']);
+
+    // Renta = 12 × 10000 = 120000; setup = 5000.
+    expect(recInv.feesAmountCents).toBe(120000);
+    expect(oneInv.feesAmountCents).toBe(5000);
+
+    // Sequential ids distintos (cada invoice consumió su counter).
+    expect(recInv.sequentialId).not.toBe(oneInv.sequentialId);
+
+    // Idempotency keys con sufijo.
+    expect(recInv.idempotencyKey).toBe('event:tx-L-1:recurring');
+    expect(oneInv.idempotencyKey).toBe('event:tx-L-1:oneoff');
+  });
+
+  it('M) ping one_off + immediate + split: re-emisión NO duplica (oneoff_billed_at gate)', async () => {
+    await seedImmediateOneOffCustomer('c-M', 'split_by_kind');
+    await seedService('s-M', 'c-M', {
+      pricingModel: 'one_off', monthly: 10000, setup: 5000, prepaidMonths: 6,
+    });
+    await createUnitAndPing('s-M', 'u-1', 'tx-M-1');
+
+    const before = await h.prisma.invoice.count({ where: { customer: { externalId: 'c-M' } } });
+    expect(before).toBe(2);
+
+    // Otro event 'add' con transaction_id distinto sobre la MISMA unit no
+    // re-cobra: la unit ya tiene oneoffBilledAt, el handler skipea isImmediateOneOff.
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: {
+        transaction_id: 'tx-M-dup', service_code: 's-M', unit_external_id: 'u-1',
+        operation_type: 'add', timestamp: '2026-06-15T19:00:00Z',
+      } },
+    });
+    const after = await h.prisma.invoice.count({ where: { customer: { externalId: 'c-M' } } });
+    expect(after).toBe(2);
+  });
+
+  it('N) ping one_off + immediate + split: la unit se marca billed (oneoff_billed_at no null)', async () => {
+    await seedImmediateOneOffCustomer('c-N', 'split_by_kind');
+    await seedService('s-N', 'c-N', {
+      pricingModel: 'one_off', monthly: 10000, setup: 5000, prepaidMonths: 6,
+    });
+    await createUnitAndPing('s-N', 'u-1', 'tx-N-1');
+
+    const unit = await h.prisma.unit.findFirstOrThrow({ where: { externalId: 'u-1' } });
+    expect(unit.oneoffBilledAt).not.toBeNull();
+  });
 });

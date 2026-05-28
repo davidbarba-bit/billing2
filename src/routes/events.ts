@@ -34,6 +34,7 @@ import {
   computeOneOffPingInvoice,
   markOneOffBilled,
   persistComputedInvoice,
+  splitComputedInvoiceByKind,
 } from '../services/billing-engine.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 
@@ -187,7 +188,7 @@ export function registerEventRoutes(
         // delay de billing one_off, usar nonrecurring_trigger='next_cycle'
         // donde el cron / cycle invoice lo recoge automáticamente.
         const effectiveBillingStart = unit.billingStartsAt ?? unit.activeFrom;
-        let triggeredInvoiceId: string | null = null;
+        const triggeredInvoiceIds: string[] = [];
         const isImmediateOneOff = op === 'add'
           && service.pricingModel === 'one_off'
           && service.customer.nonrecurringTrigger === 'immediate'
@@ -197,48 +198,87 @@ export function registerEventRoutes(
         if (isImmediateOneOff) {
           const computed = computeOneOffPingInvoice({ service, unit, now: timestamp });
 
-          const orgUpdate = await tx.organization.update({
-            where: { id: org.id },
-            data: { invoiceCounter: { increment: 1 } },
-            select: { invoiceCounter: true },
-          });
+          // v19: si el customer está en split_by_kind, partimos el ping en
+          // hasta 2 invoices (mensualidades prepagadas = kind one_off = renta,
+          // separadas del setup). En 'unified' (default) sale 1 factura con
+          // todo, igual que antes.
+          const splits = service.customer.cycleInvoiceMode === 'split_by_kind'
+            ? splitComputedInvoiceByKind(computed)
+            : [{ kind: 'unified' as const, invoice: computed }];
 
           const issuingDate = new Date(timestamp.getFullYear(), timestamp.getMonth(), timestamp.getDate());
-          const invoice = await tx.invoice.create({
-            data: {
-              organizationId: org.id,
-              customerId: service.customer.id,
-              sequentialId: orgUpdate.invoiceCounter,
-              currency: service.customer.currency,
-              status: 'calculated',
-              externalDispatchStatus: 'pending',
-              paymentStatus: 'pending',
-              issuingDate,
-              paymentDueDate: issuingDate,
-              feesAmountCents: computed.feesAmountCents,
-              periodFrom: timestamp,
-              periodTo: timestamp,
-              unitsAnnex: computed.unitsAnnex as object,
-              metadata: { trigger: 'one_off_immediate', transaction_id: payload.transaction_id } as object,
-              idempotencyKey: `event:${payload.transaction_id}`,
-            },
-          });
 
-          await persistComputedInvoice(tx, invoice.id, computed);
+          for (const split of splits) {
+            const orgUpdate = await tx.organization.update({
+              where: { id: org.id },
+              data: { invoiceCounter: { increment: 1 } },
+              select: { invoiceCounter: true },
+            });
+
+            // Idempotency: en split, sufijo por kind para que dos calls con la
+            // misma transaction_id no creen 4 invoices. En unified mantenemos
+            // el key sin sufijo (backward compat con consumers existentes que
+            // buscan `event:<transaction_id>`).
+            const idemKey = splits.length > 1
+              ? `event:${payload.transaction_id}:${split.kind}`
+              : `event:${payload.transaction_id}`;
+
+            const invoice = await tx.invoice.create({
+              data: {
+                organizationId: org.id,
+                customerId: service.customer.id,
+                sequentialId: orgUpdate.invoiceCounter,
+                currency: service.customer.currency,
+                status: 'calculated',
+                externalDispatchStatus: 'pending',
+                paymentStatus: 'pending',
+                issuingDate,
+                paymentDueDate: issuingDate,
+                feesAmountCents: split.invoice.feesAmountCents,
+                periodFrom: timestamp,
+                periodTo: timestamp,
+                unitsAnnex: split.invoice.unitsAnnex as object,
+                metadata: {
+                  trigger: 'one_off_immediate',
+                  transaction_id: payload.transaction_id,
+                  // v19: clasifica el documento contable. 'unified' = factura
+                  // legacy con todo; 'recurring'/'oneoff' = sub-split.
+                  cycle_invoice_kind: split.kind,
+                } as object,
+                idempotencyKey: idemKey,
+              },
+            });
+
+            await persistComputedInvoice(tx, invoice.id, split.invoice);
+            triggeredInvoiceIds.push(invoice.id);
+          }
+
+          // markOneOffBilled aplica una sola vez por unit, independiente del
+          // número de invoices emitidas. La unit queda billed para que el
+          // siguiente cierre no la re-cobre.
           await markOneOffBilled(tx as unknown as PrismaClient, [unit.id], timestamp);
-          triggeredInvoiceId = invoice.id;
         }
 
-        return { event, triggeredInvoiceId };
+        return { event, triggeredInvoiceIds };
       });
 
-      // Dispatch async (fuera de la transacción) si hubo invoice.
-      if (result.triggeredInvoiceId && opts?.dispatcher && opts.callbackBaseUrl) {
-        dispatchInBackground(prisma, org, result.triggeredInvoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
+      // Dispatch async (fuera de la transacción) por cada invoice creada.
+      if (opts?.dispatcher && opts.callbackBaseUrl) {
+        for (const invoiceId of result.triggeredInvoiceIds) {
+          dispatchInBackground(prisma, org, invoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
+        }
       }
 
-      const response = serializeEvent(result.event);
-      if (result.triggeredInvoiceId) (response as Record<string, unknown>).triggered_invoice_id = result.triggeredInvoiceId;
+      const response = serializeEvent(result.event) as Record<string, unknown>;
+      if (result.triggeredInvoiceIds.length > 0) {
+        // Primary = la primera del array (recurring en modo split; unified en
+        // modo unified). Companion expone la segunda si hubo split real, igual
+        // que el patrón del POST /api/v1/invoices.
+        response.triggered_invoice_id = result.triggeredInvoiceIds[0];
+        if (result.triggeredInvoiceIds.length > 1) {
+          response.companion_invoice_id = result.triggeredInvoiceIds[1];
+        }
+      }
       reply.send(response);
     },
   });
