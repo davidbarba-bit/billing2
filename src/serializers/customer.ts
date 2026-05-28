@@ -33,6 +33,7 @@ export function serializeCustomer(customer: CustomerWithLinks) {
       // v15: solo aplica si period_months > 1. NULL → anclado al mes de subscription_at (legacy).
       billing_anchor_month: customer.billingAnchorMonth ?? null,
       nonrecurring_trigger: customer.nonrecurringTrigger,
+      cycle_invoice_mode: customer.cycleInvoiceMode,
       subscription_at: isoUtc(customer.subscriptionAt),
       started_at: customer.startedAt ? isoUtc(customer.startedAt) : null,
       terminated_at: customer.terminatedAt ? isoUtc(customer.terminatedAt) : null,

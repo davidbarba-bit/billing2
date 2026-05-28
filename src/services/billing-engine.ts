@@ -386,6 +386,31 @@ function finalize(fees: ComputedFee[]): ComputedInvoice {
   return { fees, feesAmountCents, unitsAnnex };
 }
 
+// v19: clasifica una fee como "recurring" (renta) o "oneoff" (movimiento puntual).
+// Las mensualidades prepagadas (kind='one_off') son técnicamente recurring porque
+// representan meses de renta — el usuario las separa contablemente del setup/baja.
+export type CycleInvoiceKind = 'recurring' | 'oneoff';
+
+export function classifyFee(kind: FeeKind): CycleInvoiceKind {
+  if (kind === 'setup' || kind === 'removal') return 'oneoff';
+  return 'recurring';
+}
+
+// v19: split de una ComputedInvoice según la naturaleza contable de sus fees.
+// Devuelve hasta 2 sub-invoices con sus annexes recalculados para que cada uno
+// referencie solo las fees de su grupo. Si solo hay fees de un grupo, devuelve
+// 1 entrada con el kind correspondiente.
+export function splitComputedInvoiceByKind(
+  computed: ComputedInvoice,
+): Array<{ kind: CycleInvoiceKind; invoice: ComputedInvoice }> {
+  const recurring = computed.fees.filter((f) => classifyFee(f.kind) === 'recurring');
+  const oneoff = computed.fees.filter((f) => classifyFee(f.kind) === 'oneoff');
+  const out: Array<{ kind: CycleInvoiceKind; invoice: ComputedInvoice }> = [];
+  if (recurring.length > 0) out.push({ kind: 'recurring', invoice: finalize(recurring) });
+  if (oneoff.length > 0) out.push({ kind: 'oneoff', invoice: finalize(oneoff) });
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers de prorrateo.
 // ---------------------------------------------------------------------------

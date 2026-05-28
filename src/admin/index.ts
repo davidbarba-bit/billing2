@@ -498,6 +498,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           ? `${customer.billingAnchorMonth} (${monthNames[customer.billingAnchorMonth - 1]})`
           : '<span class="text-gray-400">— (anclado a subscription_at)</span>'],
         ['Trigger no-recurrente', badge(customer.nonrecurringTrigger, customer.nonrecurringTrigger === 'immediate' ? 'green' : 'gray')],
+        ['Modo cycle invoice', badge(customer.cycleInvoiceMode, customer.cycleInvoiceMode === 'split_by_kind' ? 'green' : 'gray')
+          + (customer.cycleInvoiceMode === 'split_by_kind'
+            ? ' <span class="text-xs text-gray-500 ml-2">recurrentes + únicos en facturas separadas</span>'
+            : ' <span class="text-xs text-gray-500 ml-2">todo en una factura</span>')],
         ['Periodo vigente', `${fmtDate(customer.currentBillingPeriodStartedAt)} → ${fmtDate(customer.currentBillingPeriodEndingAt)}`],
       ]);
       const periodOptions = [1, 3, 6, 12].map((n) =>
@@ -505,6 +509,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const triggerOptions = [
         `<option value="next_cycle" ${customer.nonrecurringTrigger === 'next_cycle' ? 'selected' : ''}>next_cycle (cobrar en próximo cierre)</option>`,
         `<option value="immediate" ${customer.nonrecurringTrigger === 'immediate' ? 'selected' : ''}>immediate (factura individual al ping)</option>`,
+      ].join('');
+      const cycleModeOptions = [
+        `<option value="unified" ${customer.cycleInvoiceMode === 'unified' ? 'selected' : ''}>unified — 1 factura con todos los conceptos</option>`,
+        `<option value="split_by_kind" ${customer.cycleInvoiceMode === 'split_by_kind' ? 'selected' : ''}>split_by_kind — 2 facturas: recurrentes + únicos</option>`,
       ].join('');
       // v15: anchor_month options. Solo aplica si period_months > 1.
       const anchorMonthOptions = ['<option value="">— (anclado a subscription_at)</option>']
@@ -539,6 +547,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             </label>
             <label class="block col-span-2"><span class="text-sm text-gray-700">Trigger no-recurrente</span>
               <select ${disabledSoft} name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${triggerOptions}</select>
+            </label>
+            <label class="block col-span-2"><span class="text-sm text-gray-700">Modo cycle invoice</span>
+              <select ${disabledSoft} name="cycle_invoice_mode" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${cycleModeOptions}</select>
+              <span class="text-xs text-gray-500">v19: 'split_by_kind' emite hasta 2 facturas al cierre — una con renta (monthly, addons, mensualidades prepagadas) y otra con instalaciones/bajas (setup, removal).</span>
             </label>
           </div>
           ${terminated ? '' : `<button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Actualizar calendario</button>`}
@@ -1289,6 +1301,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       payload.billing_anchor_month = body.billing_anchor_month === '' ? null : Number(body.billing_anchor_month);
     }
     if (body.nonrecurring_trigger) payload.nonrecurring_trigger = body.nonrecurring_trigger;
+    if (body.cycle_invoice_mode) payload.cycle_invoice_mode = body.cycle_invoice_mode;
     const result = await app.inject({
       method: 'PATCH',
       url: `/api/v1/customers/${encodeURIComponent(externalId)}/billing-schedule`,

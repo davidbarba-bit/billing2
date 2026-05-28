@@ -83,6 +83,17 @@ model Customer {
   //   "immediate"   → 1 invoice por ping, emitida al instante del POST /events
   //   "next_cycle"  → unit pendiente hasta el cierre del ciclo, sale en la cycle invoice del customer
   nonrecurringTrigger           String    @default("next_cycle") @map("nonrecurring_trigger")
+  // v19: estructura de la cycle invoice al cierre de ciclo.
+  //   "unified" (default) → 1 invoice con TODOS los conceptos (renta + setup +
+  //                         removal + addons + mensualidades prepagadas one_off).
+  //                         Backward compat 100%.
+  //   "split_by_kind"     → hasta 2 invoices: una con conceptos RECURRENTES
+  //                         (monthly, service_addon, customer_addon, one_off
+  //                         prepagado = renta) y otra con conceptos ÚNICOS
+  //                         (setup, removal). Útil para clientes contables que
+  //                         requieren separar movimientos operativos de
+  //                         instalaciones/bajas.
+  cycleInvoiceMode              String    @default("unified") @map("cycle_invoice_mode")
   subscriptionAt                DateTime  @map("subscription_at")
   startedAt                     DateTime? @map("started_at")
   terminatedAt                  DateTime? @map("terminated_at")

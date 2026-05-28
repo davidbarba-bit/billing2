@@ -15,7 +15,17 @@ import type {
 } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { applicableTimezone } from './tz.js';
-import { billingPeriodFor, computeCustomerInvoice, markOneOffBilled, markRemovalsBilled, markSetupsBilled, persistComputedInvoice } from './billing-engine.js';
+import {
+  billingPeriodFor,
+  computeCustomerInvoice,
+  markOneOffBilled,
+  markRemovalsBilled,
+  markSetupsBilled,
+  persistComputedInvoice,
+  splitComputedInvoiceByKind,
+  type ComputedInvoice,
+  type CycleInvoiceKind,
+} from './billing-engine.js';
 import type { NetSuiteDispatcher } from './netsuite-dispatcher.js';
 
 export type EmitCycleInvoiceOptions = {
@@ -34,7 +44,12 @@ export type EmitCycleInvoiceOptions = {
 };
 
 export type EmitCycleInvoiceResult = {
-  invoice: Invoice;
+  // v19: si el customer está en modo 'split_by_kind' el cierre de ciclo puede
+  // generar hasta 2 invoices (una recurrente y una de únicos). En modo 'unified'
+  // (default) siempre 1. Si no hay nada que cobrar, array vacío.
+  invoices: Invoice[];
+  // true si AL MENOS una invoice fue creada en este call; false si todas las
+  // que debían emitirse ya existían (idempotency hit).
   created: boolean;
 };
 
@@ -64,17 +79,6 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
 
   const tz = applicableTimezone(customer.timezone, org.timezone);
   const period = resolvePeriod(customer, tz, now, periodOverride);
-
-  // Idempotencia: si ya hay invoice del customer para este periodo, no
-  // emitas otra. Permite que el cron sea seguro de re-correr.
-  const existing = await prisma.invoice.findFirst({
-    where: {
-      customerId: customer.id,
-      periodFrom: period.start,
-      periodTo: period.end,
-    },
-  });
-  if (existing) return { invoice: existing, created: false };
 
   const fullCustomer = await prisma.customer.findUnique({
     where: { id: customer.id },
@@ -106,110 +110,178 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     tz,
   });
 
+  // v19: si el customer está en split_by_kind, partimos en hasta 2 sub-invoices
+  // (recurring + oneoff). Cada una emite por separado con su propio sequential_id,
+  // idempotency_key y dispatch. En 'unified' (default) emitimos 1 sola con todo.
+  const splits = customer.cycleInvoiceMode === 'split_by_kind'
+    ? splitComputedInvoiceByKind(computed)
+    : (computed.fees.length === 0
+      ? []
+      : [{ kind: 'unified' as const, invoice: computed }]);
+
+  if (splits.length === 0) {
+    // Nada que cobrar este ciclo (sin fees) — devolvemos array vacío. Mantiene
+    // backward compat porque hoy la invoice 0-fee tampoco aportaba valor.
+    // El cron interpreta esto como "skip", no como "duplicado".
+    return { invoices: [], created: false };
+  }
+
   const issuingDate = DateTime.fromJSDate(now, { zone: 'utc' }).setZone(tz).startOf('day').toUTC().toJSDate();
+  const emittedInvoices: Invoice[] = [];
+  const newlyCreatedIds = new Set<string>();
+  let anyCreated = false;
 
-  const created = await prisma.$transaction(async (tx) => {
-    const orgUpdate = await tx.organization.update({
-      where: { id: org.id },
-      data: { invoiceCounter: { increment: 1 } },
-      select: { invoiceCounter: true },
-    });
-    const sequentialId = orgUpdate.invoiceCounter;
-    const invoice = await tx.invoice.create({
-      data: {
-        organizationId: org.id,
-        customerId: customer.id,
-        sequentialId,
-        currency: customer.currency,
-        status: 'calculated',
-        externalDispatchStatus: 'pending',
-        paymentStatus: 'pending',
-        issuingDate,
-        paymentDueDate: issuingDate,
-        feesAmountCents: computed.feesAmountCents,
-        periodFrom: period.start,
-        periodTo: period.end,
-        unitsAnnex: computed.unitsAnnex as object,
-        metadata: { ...(metadata ?? {}), ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}) } as object,
-        idempotencyKey: idempotencyKey ?? null,
-      },
-    });
+  for (const split of splits) {
+    // Idempotency key por subsplit. Si el caller pasó un key explícito, le
+    // colgamos un sufijo solo si hay split real (preservamos el key tal cual
+    // en 'unified' para no romper handlers que verifican equality estricta).
+    const subKey = splits.length > 1
+      ? `${idempotencyKey ?? `cycle:${customer.id}:${period.end.getTime()}`}:${split.kind}`
+      : (idempotencyKey ?? null);
 
-    await persistComputedInvoice(tx, invoice.id, computed);
+    const existing = subKey
+      ? await prisma.invoice.findFirst({
+          where: { organizationId: org.id, idempotencyKey: subKey },
+        })
+      : await prisma.invoice.findFirst({
+          // Fallback legacy: dedupe por (customer, period_from, period_to) cuando
+          // el caller no especifica key. Mantiene comportamiento histórico del cron.
+          where: {
+            customerId: customer.id,
+            periodFrom: period.start,
+            periodTo: period.end,
+            ...(splits.length === 1 ? {} : { idempotencyKey: { contains: `:${split.kind}` } }),
+          },
+        });
 
-    for (const fee of computed.fees) {
-      if (fee.kind === 'setup' && fee.unitIds.length > 0) await markSetupsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
-      if (fee.kind === 'one_off' && fee.unitIds.length > 0) await markOneOffBilled(tx as unknown as PrismaClient, fee.unitIds, now);
-      if (fee.kind === 'removal' && fee.unitIds.length > 0) await markRemovalsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
+    if (existing) {
+      emittedInvoices.push(existing);
+      continue;
     }
 
-    return invoice;
-  });
-
-  // Dispatch (best-effort). El cron pasa dispatcher; si no hay, skip.
-  if (dispatcher && callbackBaseUrl) {
-    try {
-      const hydrated = await prisma.invoice.findUnique({
-        where: { id: created.id },
-        include: { customer: true, fees: true },
+    const created = await prisma.$transaction(async (tx) => {
+      const orgUpdate = await tx.organization.update({
+        where: { id: org.id },
+        data: { invoiceCounter: { increment: 1 } },
+        select: { invoiceCounter: true },
       });
-      if (hydrated) {
-        // Payload a NetSuite: SOLO montos netos (sin IVA). NetSuite calcula
-        // los impuestos según la configuración fiscal del cliente.
-        const dispatchPayload = {
-          external_id: hydrated.id,
-          minilago_invoice_id: hydrated.id,
-          issued_at: hydrated.createdAt.toISOString(),
-          currency: hydrated.currency,
-          customer: {
-            external_id: hydrated.customer.externalId,
-            name: hydrated.customer.name,
-            tax_identification_number: hydrated.customer.taxIdentificationNumber,
-            country: hydrated.customer.country,
-            // v13: handle listo para usar en `entity: { id: ... }` del POST
-            // de NetSuite. Si tenemos cacheado el internal id de NetSuite,
-            // lo usamos directo (faster path). Si no, mandamos
-            // "eid:<external_id>" para que NetSuite resuelva por externalId.
-            netsuite_internal_id: hydrated.customer.netsuiteInternalId,
-            netsuite_entity_handle: hydrated.customer.netsuiteInternalId
-              ? hydrated.customer.netsuiteInternalId
-              : `eid:${hydrated.customer.externalId}`,
-          },
-          billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
-          lines: hydrated.fees.map((f) => ({
-            fee_id: f.id, service_id: f.serviceId,
-            service_add_on_id: f.serviceAddOnId, customer_add_on_id: f.customerAddOnId,
-            kind: f.kind, description: f.description, units: f.units,
-            unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
-            // v9: código NetSuite que mapea la línea a un item del catálogo.
-            // null si la entidad fuente no tenía código configurado al emitir.
-            netsuite_item_code: f.netsuiteItemCode,
-            billed_units_detail: f.billedUnitsDetail,
-          })),
-          units_annex: hydrated.unitsAnnex,
-          totals: { fees_amount_cents: hydrated.feesAmountCents },
-          metadata: hydrated.metadata ?? {},
-          callback_url: `${callbackBaseUrl}/api/v1/invoices/${hydrated.id}/external-confirm`,
-        };
-        const result = await dispatcher.dispatch(org, dispatchPayload, 'invoice');
-        await prisma.invoice.update({
-          where: { id: hydrated.id },
-          data: result.status === 'accepted'
-            ? { externalDispatchStatus: 'dispatched', netsuiteDispatchId: result.netsuiteInternalId ?? null }
-            : { externalDispatchStatus: 'failed', externalDispatchError: result.error ?? 'dispatch_failed' },
-        });
+      const invoice = await tx.invoice.create({
+        data: {
+          organizationId: org.id,
+          customerId: customer.id,
+          sequentialId: orgUpdate.invoiceCounter,
+          currency: customer.currency,
+          status: 'calculated',
+          externalDispatchStatus: 'pending',
+          paymentStatus: 'pending',
+          issuingDate,
+          paymentDueDate: issuingDate,
+          feesAmountCents: split.invoice.feesAmountCents,
+          periodFrom: period.start,
+          periodTo: period.end,
+          unitsAnnex: split.invoice.unitsAnnex as object,
+          metadata: {
+            ...(metadata ?? {}),
+            // 'unified' significa 1 invoice con todo; 'recurring'/'oneoff' es el
+            // sub-split de v19. Dashboards/NetSuite usan este campo para
+            // clasificar el documento contable.
+            cycle_invoice_kind: split.kind,
+            ...(subKey ? { idempotency_key: subKey } : {}),
+          } as object,
+          idempotencyKey: subKey,
+        },
+      });
+
+      await persistComputedInvoice(tx, invoice.id, split.invoice);
+
+      for (const fee of split.invoice.fees) {
+        if (fee.kind === 'setup' && fee.unitIds.length > 0) await markSetupsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
+        if (fee.kind === 'one_off' && fee.unitIds.length > 0) await markOneOffBilled(tx as unknown as PrismaClient, fee.unitIds, now);
+        if (fee.kind === 'removal' && fee.unitIds.length > 0) await markRemovalsBilled(tx as unknown as PrismaClient, fee.unitIds, now);
       }
-    } catch (err) {
-      log?.error({ err }, 'cycle invoice dispatch failed');
-      await prisma.invoice.update({
-        where: { id: created.id },
-        data: { externalDispatchStatus: 'failed', externalDispatchError: err instanceof Error ? err.message : String(err) },
-      }).catch(() => undefined);
+
+      return invoice;
+    });
+    emittedInvoices.push(created);
+    newlyCreatedIds.add(created.id);
+    anyCreated = true;
+  }
+
+  // v19: dispatch por cada invoice creada EN ESTE CALL (skipping pre-existentes,
+  // que ya fueron dispatchadas en su momento).
+  if (dispatcher && callbackBaseUrl) {
+    for (const created of emittedInvoices) {
+      if (!newlyCreatedIds.has(created.id)) continue;
+      await dispatchCycleInvoice(prisma, org, created.id, dispatcher, callbackBaseUrl, log);
     }
   }
 
-  const final = await prisma.invoice.findUniqueOrThrow({ where: { id: created.id } });
-  return { invoice: final, created: true };
+  const final = await Promise.all(
+    emittedInvoices.map((inv) => prisma.invoice.findUniqueOrThrow({ where: { id: inv.id } })),
+  );
+  return { invoices: final, created: anyCreated };
+}
+
+// Dispatch a NetSuite. Extraído de la lógica inline previa para reusar entre
+// las 1-2 invoices generadas por split. Payload idéntico al previo; SOLO montos
+// netos — NetSuite calcula impuestos según el customer.
+async function dispatchCycleInvoice(
+  prisma: PrismaClient,
+  org: Organization,
+  invoiceId: string,
+  dispatcher: NetSuiteDispatcher,
+  callbackBaseUrl: string,
+  log: EmitCycleInvoiceOptions['log'],
+): Promise<void> {
+  try {
+    const hydrated = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { customer: true, fees: true },
+    });
+    if (!hydrated) return;
+    const dispatchPayload = {
+      external_id: hydrated.id,
+      minilago_invoice_id: hydrated.id,
+      issued_at: hydrated.createdAt.toISOString(),
+      currency: hydrated.currency,
+      customer: {
+        external_id: hydrated.customer.externalId,
+        name: hydrated.customer.name,
+        tax_identification_number: hydrated.customer.taxIdentificationNumber,
+        country: hydrated.customer.country,
+        netsuite_internal_id: hydrated.customer.netsuiteInternalId,
+        netsuite_entity_handle: hydrated.customer.netsuiteInternalId
+          ? hydrated.customer.netsuiteInternalId
+          : `eid:${hydrated.customer.externalId}`,
+      },
+      billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
+      lines: hydrated.fees.map((f) => ({
+        fee_id: f.id, service_id: f.serviceId,
+        service_add_on_id: f.serviceAddOnId, customer_add_on_id: f.customerAddOnId,
+        kind: f.kind, description: f.description, units: f.units,
+        unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
+        netsuite_item_code: f.netsuiteItemCode,
+        billed_units_detail: f.billedUnitsDetail,
+      })),
+      units_annex: hydrated.unitsAnnex,
+      totals: { fees_amount_cents: hydrated.feesAmountCents },
+      metadata: hydrated.metadata ?? {},
+      callback_url: `${callbackBaseUrl}/api/v1/invoices/${hydrated.id}/external-confirm`,
+    };
+    const result = await dispatcher.dispatch(org, dispatchPayload, 'invoice');
+    await prisma.invoice.update({
+      where: { id: hydrated.id },
+      data: result.status === 'accepted'
+        ? { externalDispatchStatus: 'dispatched', netsuiteDispatchId: result.netsuiteInternalId ?? null }
+        : { externalDispatchStatus: 'failed', externalDispatchError: result.error ?? 'dispatch_failed' },
+    });
+  } catch (err) {
+    log?.error({ err }, 'cycle invoice dispatch failed');
+    await prisma.invoice.update({
+      where: { id: invoiceId },
+      data: { externalDispatchStatus: 'failed', externalDispatchError: err instanceof Error ? err.message : String(err) },
+    }).catch(() => undefined);
+  }
 }
 
 // Helper para avanzar el periodo del customer al siguiente ciclo después de

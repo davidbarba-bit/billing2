@@ -101,8 +101,24 @@ export function registerInvoiceRoutes(
         log: request.log,
       });
 
-      const final = await loadInvoice(prisma, result.invoice.id);
-      const responseBody = serializeInvoice(final);
+      // v19: si el customer está en modo split, el cierre puede emitir hasta
+      // 2 invoices. La respuesta principal es la primera (orden estable:
+      // recurrente primero, único después). El campo opcional companion_invoice
+      // expone la segunda si existe — los clientes API que no la usan ignoran
+      // este campo sin romperse.
+      if (result.invoices.length === 0) {
+        // Sin fees → no se emitió nada. Devolvemos 422 explícito para que el
+        // caller distinga este caso de un duplicado idempotente.
+        throw new ApiError(422, 'no_billable_items', {
+          errorDetails: { invoice: ['no_fees_for_period'] },
+        });
+      }
+      const primary = await loadInvoice(prisma, result.invoices[0]!.id);
+      const responseBody = serializeInvoice(primary) as Record<string, unknown>;
+      if (result.invoices.length > 1) {
+        const companion = await loadInvoice(prisma, result.invoices[1]!.id);
+        responseBody.companion_invoice = (serializeInvoice(companion) as { invoice: unknown }).invoice;
+      }
       await recordIdempotent(prisma, org.id, '/api/v1/invoices', idempotencyKey, bodyHash, 200, responseBody);
       reply.send(responseBody);
     },

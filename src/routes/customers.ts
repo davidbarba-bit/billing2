@@ -27,9 +27,20 @@ type CustomerPayload = {
   billing_anchor_day?: number;    // 1..28
   billing_anchor_month?: number | null;  // v15: 1..12, solo aplica si period_months > 1
   nonrecurring_trigger?: 'immediate' | 'next_cycle';
+  // v19: estructura de la cycle invoice al cierre. 'unified' (default) o
+  // 'split_by_kind' (factura separada para recurrentes vs únicos).
+  cycle_invoice_mode?: 'unified' | 'split_by_kind';
   subscription_at?: string;
   metadata?: Record<string, unknown>;
 };
+
+function validateCycleInvoiceMode(v: unknown): 'unified' | 'split_by_kind' {
+  if (v === undefined) return 'unified';
+  if (v !== 'unified' && v !== 'split_by_kind') {
+    throw validation({ cycle_invoice_mode: ['must_be_unified_or_split_by_kind'] });
+  }
+  return v;
+}
 
 export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClient): void {
   const authenticate = buildAuthHook(prisma);
@@ -69,6 +80,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       if (trigger !== undefined && trigger !== 'immediate' && trigger !== 'next_cycle') {
         throw validation({ nonrecurring_trigger: ['value_is_invalid'] });
       }
+      const cycleInvoiceMode = validateCycleInvoiceMode(payload.cycle_invoice_mode);
 
       const existing = await prisma.customer.findUnique({
         where: { organizationId_externalId: { organizationId: org.id, externalId: payload.external_id } },
@@ -120,6 +132,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
               billingAnchorDay: anchorDay ?? 1,
               billingAnchorMonth: anchorMonth ?? null,
               nonrecurringTrigger: trigger ?? 'next_cycle',
+              cycleInvoiceMode,
               subscriptionAt,
               startedAt,
               status,
@@ -383,6 +396,8 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         billing_period_months?: number;
         billing_anchor_month?: number | null;
         nonrecurring_trigger?: 'immediate' | 'next_cycle';
+        // v19: split contable de la cycle invoice. Soft field (no requiere gate).
+        cycle_invoice_mode?: 'unified' | 'split_by_kind';
       } };
       const payload = body.billing_schedule;
       if (!payload) throw validation({ billing_schedule: ['value_is_mandatory'] });
@@ -402,8 +417,12 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       const hasPeriod = payload.billing_period_months !== undefined;
       const hasAnchorMonth = payload.billing_anchor_month !== undefined;
       const hasTrigger = payload.nonrecurring_trigger !== undefined;
-      if (!hasSubscription && !hasAnchor && !hasPeriod && !hasAnchorMonth && !hasTrigger) {
+      const hasCycleMode = payload.cycle_invoice_mode !== undefined;
+      if (!hasSubscription && !hasAnchor && !hasPeriod && !hasAnchorMonth && !hasTrigger && !hasCycleMode) {
         throw validation({ billing_schedule: ['at_least_one_field_required'] });
+      }
+      if (hasCycleMode) {
+        validateCycleInvoiceMode(payload.cycle_invoice_mode);
       }
 
       // Validaciones de rango (mismas que en POST).
@@ -474,6 +493,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         ? (payload.billing_anchor_month ?? null)
         : customer.billingAnchorMonth;
       const newTrigger = hasTrigger ? payload.nonrecurring_trigger! : customer.nonrecurringTrigger;
+      const newCycleMode = hasCycleMode ? payload.cycle_invoice_mode! : customer.cycleInvoiceMode;
 
       // Recalcula currentBillingPeriod* con los nuevos valores.
       const tz = applicableTimezone(customer.timezone, org.timezone);
@@ -532,6 +552,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
           billingPeriodMonths: newPeriodMonths,
           billingAnchorMonth: newAnchorMonth,
           nonrecurringTrigger: newTrigger,
+          cycleInvoiceMode: newCycleMode,
           status: newStatus,
           startedAt: newStartedAt,
           currentBillingPeriodStartedAt: isFuture ? null : (period?.start ?? newStartedAt ?? null),
@@ -587,6 +608,9 @@ function buildUpdateData(payload: CustomerPayload): Prisma.CustomerUpdateInput {
   if (payload.billing_anchor_day !== undefined) updates.billingAnchorDay = payload.billing_anchor_day;
   if (payload.billing_anchor_month !== undefined) updates.billingAnchorMonth = payload.billing_anchor_month;
   if (payload.nonrecurring_trigger !== undefined) updates.nonrecurringTrigger = payload.nonrecurring_trigger;
+  if (payload.cycle_invoice_mode !== undefined) {
+    updates.cycleInvoiceMode = validateCycleInvoiceMode(payload.cycle_invoice_mode);
+  }
   if (payload.metadata !== undefined) updates.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
   return updates;
 }

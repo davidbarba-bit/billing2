@@ -87,8 +87,9 @@ export async function tickCycleBilling(opts: CycleBillingOptions, now: Date = ne
         log,
         now,
       });
-      if (result.created) invoicesEmitted += 1;
-      else invoicesSkippedAsDuplicate += 1;
+      // v19: cuenta cada invoice emitida (puede ser 0, 1 ó 2 según mode + fees).
+      if (result.created) invoicesEmitted += result.invoices.length;
+      else if (result.invoices.length > 0) invoicesSkippedAsDuplicate += result.invoices.length;
 
       // Advance the customer's period to the next cycle.
       await rollCustomerPeriodForward(prisma, customer, tz);
