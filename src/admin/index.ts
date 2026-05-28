@@ -706,6 +706,20 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             <input type="number" name="removal_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
             <span class="text-xs text-gray-500">v17: cargo único al dar de baja la unit (active_to). Solo recurring. Migración de plan NO lo dispara.</span>
           </label>
+          <label class="block"><span class="text-sm text-gray-700">Setup — modo de emisión</span>
+            <select name="setup_billing_mode" class="mt-1 block w-full rounded border-gray-300">
+              <option value="next_cycle" selected>next_cycle — consolida con la renta al fin del periodo</option>
+              <option value="immediate">immediate — invoice independiente al instalar la unit</option>
+            </select>
+            <span class="text-xs text-gray-500">v18: con 'immediate', POST /units genera una invoice al instante con el cargo de setup. La renta sigue su curso normal en el cycle invoice.</span>
+          </label>
+          <label class="block"><span class="text-sm text-gray-700">Baja — modo de emisión</span>
+            <select name="removal_billing_mode" class="mt-1 block w-full rounded border-gray-300">
+              <option value="next_cycle" selected>next_cycle — consolida con la renta del periodo donde cae la baja</option>
+              <option value="immediate">immediate — invoice independiente al dar de baja</option>
+            </select>
+            <span class="text-xs text-gray-500">v18: análogo al setup, pero al PATCH unit con active_to.</span>
+          </label>
           <label class="block col-span-2"><span class="text-sm text-gray-700">Meses prepagados por defecto (solo one_off)</span>
             <input type="number" name="prepaid_months_default" min="1" placeholder="48" class="mt-1 block w-full rounded border-gray-300">
             <span class="text-xs text-gray-500">Cuántos meses paga el cliente por adelantado por cada unit nueva. Override por unit en POST /events. Dejar vacío si es recurring.</span>
@@ -761,6 +775,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
           setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
           removal_unit_amount_cents: Number(body.removal_unit_amount_cents ?? 0),
+          setup_billing_mode: body.setup_billing_mode || 'next_cycle',
+          removal_billing_mode: body.removal_billing_mode || 'next_cycle',
           prepaid_months_default: body.prepaid_months_default ? Number(body.prepaid_months_default) : undefined,
           netsuite_monthly_item_code: body.netsuite_monthly_item_code || null,
           netsuite_setup_item_code: body.netsuite_setup_item_code || null,
@@ -817,9 +833,12 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       ['Status', statusBadge(service.status)],
       ['Pricing model', badge(service.pricingModel, service.pricingModel === 'one_off' ? 'green' : 'blue')],
       ['Monto /unidad (vigente)', fmtMoney(effectiveMonthly, service.currency) + (service.pricingModel === 'one_off' ? ' /mes prepagado' : ' /periodo')],
-      ['Setup /unidad (vigente)', fmtMoney(effectiveSetup, service.currency)],
+      ['Setup /unidad (vigente)', fmtMoney(effectiveSetup, service.currency)
+        + (service.setupBillingMode === 'immediate' ? ' <span class="text-xs ml-2">' + badge('emisión inmediata', 'blue') + '</span>' : '')],
       ['Baja /unidad', service.pricingModel === 'recurring'
-        ? fmtMoney(service.removalUnitAmountCents, service.currency) + (service.removalUnitAmountCents === 0 ? ' <span class="text-gray-400">(sin cargo)</span>' : '')
+        ? fmtMoney(service.removalUnitAmountCents, service.currency)
+          + (service.removalUnitAmountCents === 0 ? ' <span class="text-gray-400">(sin cargo)</span>' : '')
+          + (service.removalBillingMode === 'immediate' ? ' <span class="text-xs ml-2">' + badge('emisión inmediata', 'blue') + '</span>' : '')
         : '<span class="text-gray-400">n/a (one_off)</span>'],
       ['Meses prepagados (default)', service.pricingModel === 'one_off' ? (service.prepaidMonthsDefault !== null ? String(service.prepaidMonthsDefault) + ' meses' : '<span class="text-red-600">no configurado — se debe especificar por unit</span>') : '<span class="text-gray-400">n/a (recurring)</span>'],
       ['Terminated at', fmtDate(service.terminatedAt)],

@@ -9,6 +9,15 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { serializeUnit } from '../serializers/unit.js';
+import {
+  computeRemovalImmediateInvoice,
+  computeSetupImmediateInvoice,
+} from '../services/billing-engine.js';
+import {
+  dispatchInvoiceInBackground,
+  emitImmediateInvoice,
+} from '../services/immediate-invoice.js';
+import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 
 type UnitPayload = {
   service_code?: string;
@@ -35,7 +44,11 @@ type UnitPayload = {
   metadata?: Record<string, unknown>;
 };
 
-export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): void {
+export function registerUnitRoutes(
+  app: FastifyInstance,
+  prisma: PrismaClient,
+  opts?: { dispatcher?: NetSuiteDispatcher; callbackBaseUrl?: string },
+): void {
   const authenticate = buildAuthHook(prisma);
 
   app.route({
@@ -52,6 +65,7 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
 
       const service = await prisma.service.findUnique({
         where: { organizationId_code: { organizationId: org.id, code: payload.service_code } },
+        include: { customer: true },
       });
       if (!service) throw notFound('service');
 
@@ -94,7 +108,44 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
-      reply.send(serializeUnit(unit));
+
+      // v18: si el service tiene setup_billing_mode='immediate', emitimos una
+      // invoice independiente AHORA con el cargo de setup. La unit queda con
+      // setupBilledAt seteado para que el cycle invoice no la vuelva a cobrar.
+      // Solo aplica si:
+      //   - recurring (one_off ignora este modo)
+      //   - setup > 0
+      //   - NO se marcó setup_already_billed (gate previo ya seteó setupBilledAt)
+      let triggeredInvoiceId: string | null = null;
+      if (
+        service.pricingModel === 'recurring'
+        && service.setupBillingMode === 'immediate'
+        && service.setupUnitAmountCents > 0
+        && setupBilledAt === null
+      ) {
+        const organization = await prisma.organization.findUniqueOrThrow({ where: { id: org.id } });
+        const computed = computeSetupImmediateInvoice({ service, unit });
+        const result = await emitImmediateInvoice({
+          prisma, organization, customer: service.customer,
+          computed, trigger: 'setup_immediate',
+          idempotencyKey: `setup-immediate:${unit.id}`,
+          markBilled: async (tx) => {
+            await tx.unit.update({ where: { id: unit.id }, data: { setupBilledAt: new Date() } });
+          },
+        });
+        triggeredInvoiceId = result.invoiceId;
+      }
+
+      if (triggeredInvoiceId && opts?.dispatcher && opts?.callbackBaseUrl) {
+        dispatchInvoiceInBackground(prisma, org.id, triggeredInvoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
+      }
+
+      const refreshed = triggeredInvoiceId
+        ? await prisma.unit.findUniqueOrThrow({ where: { id: unit.id } })
+        : unit;
+      const response = serializeUnit(refreshed);
+      if (triggeredInvoiceId) (response as Record<string, unknown>).triggered_invoice_id = triggeredInvoiceId;
+      reply.send(response);
     },
   });
 
@@ -198,7 +249,50 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
         data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
       }
       const updated = await prisma.unit.update({ where: { id: unit.id }, data });
-      reply.send(serializeUnit(updated));
+
+      // v18: si este PATCH dio de baja la unit (activeTo pasó de null a non-null)
+      // y el service tiene removal_billing_mode='immediate', emitimos invoice
+      // independiente AHORA con el cargo de baja. Reglas:
+      //   - Solo si la baja se acaba de aplicar en ESTE PATCH (transición null→date).
+      //   - service.pricingModel = recurring (one_off ignora).
+      //   - service.removalUnitAmountCents > 0.
+      //   - unit.removalBilledAt === null (no previamente facturada).
+      const justTerminated = unit.activeTo === null && updated.activeTo !== null;
+      let triggeredInvoiceId: string | null = null;
+      if (justTerminated && updated.removalBilledAt === null) {
+        const service = await prisma.service.findUniqueOrThrow({
+          where: { id: updated.serviceId },
+          include: { customer: true },
+        });
+        if (
+          service.pricingModel === 'recurring'
+          && service.removalBillingMode === 'immediate'
+          && service.removalUnitAmountCents > 0
+        ) {
+          const organization = await prisma.organization.findUniqueOrThrow({ where: { id: org.id } });
+          const computed = computeRemovalImmediateInvoice({ service, unit: updated });
+          const result = await emitImmediateInvoice({
+            prisma, organization, customer: service.customer,
+            computed, trigger: 'removal_immediate',
+            idempotencyKey: `removal-immediate:${updated.id}`,
+            markBilled: async (tx) => {
+              await tx.unit.update({ where: { id: updated.id }, data: { removalBilledAt: new Date() } });
+            },
+          });
+          triggeredInvoiceId = result.invoiceId;
+        }
+      }
+
+      if (triggeredInvoiceId && opts?.dispatcher && opts?.callbackBaseUrl) {
+        dispatchInvoiceInBackground(prisma, org.id, triggeredInvoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
+      }
+
+      const refreshed = triggeredInvoiceId
+        ? await prisma.unit.findUniqueOrThrow({ where: { id: updated.id } })
+        : updated;
+      const response = serializeUnit(refreshed);
+      if (triggeredInvoiceId) (response as Record<string, unknown>).triggered_invoice_id = triggeredInvoiceId;
+      reply.send(response);
     },
   });
 
@@ -351,11 +445,51 @@ export function registerUnitRoutes(app: FastifyInstance, prisma: PrismaClient): 
         return { closedOld, newUnit, event };
       });
 
-      reply.send({
+      // v18: si la migración cobra setup del plan nuevo Y el plan nuevo está en
+      // modo immediate, emitimos la invoice del setup AHORA (no esperamos a
+      // migration_at). Justificación: la migración es una decisión comercial
+      // tomada hoy; cobrar el setup al instante alinea cash flow con la decisión.
+      // En el cycle invoice posterior NO aparece porque setupBilledAt ya se
+      // setea durante emitImmediateInvoice.
+      let migrationSetupInvoiceId: string | null = null;
+      if (
+        chargeNewSetup
+        && toService.setupBillingMode === 'immediate'
+        && toService.setupUnitAmountCents > 0
+      ) {
+        const organization = await prisma.organization.findUniqueOrThrow({ where: { id: org.id } });
+        const toServiceWithCustomer = await prisma.service.findUniqueOrThrow({
+          where: { id: toService.id }, include: { customer: true },
+        });
+        const computed = computeSetupImmediateInvoice({
+          service: toServiceWithCustomer, unit: tx.newUnit,
+        });
+        const result = await emitImmediateInvoice({
+          prisma, organization, customer: toServiceWithCustomer.customer,
+          computed, trigger: 'setup_immediate',
+          idempotencyKey: `setup-immediate:${tx.newUnit.id}`,
+          markBilled: async (innerTx) => {
+            await innerTx.unit.update({ where: { id: tx.newUnit.id }, data: { setupBilledAt: new Date() } });
+          },
+          metadata: { source: 'plan_migration', from_unit_id: tx.closedOld.id },
+        });
+        migrationSetupInvoiceId = result.invoiceId;
+      }
+
+      if (migrationSetupInvoiceId && opts?.dispatcher && opts?.callbackBaseUrl) {
+        dispatchInvoiceInBackground(prisma, org.id, migrationSetupInvoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
+      }
+
+      const refreshedNew = migrationSetupInvoiceId
+        ? await prisma.unit.findUniqueOrThrow({ where: { id: tx.newUnit.id } })
+        : tx.newUnit;
+      const response: Record<string, unknown> = {
         old_unit: serializeUnit(tx.closedOld).unit,
-        new_unit: serializeUnit(tx.newUnit).unit,
+        new_unit: serializeUnit(refreshedNew).unit,
         event_id: tx.event.id,
-      });
+      };
+      if (migrationSetupInvoiceId) response.triggered_invoice_id = migrationSetupInvoiceId;
+      reply.send(response);
     },
   });
 }

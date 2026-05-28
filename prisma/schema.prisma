@@ -157,6 +157,15 @@ model Service {
   // en migración de plan (esa flujo setea removalBilledAt en la unit vieja).
   removalUnitAmountCents  Int     @default(0) @map("removal_unit_amount_cents")
   netsuiteRemovalItemCode String? @map("netsuite_removal_item_code")
+  // v18: política de cuándo se emite el invoice del setup/baja.
+  //   "next_cycle" (default) → el cargo entra al próximo cycle invoice junto
+  //                            con la mensualidad. Backward compat.
+  //   "immediate"            → se emite invoice independiente al instalar/dar
+  //                            de baja la unit (similar a one_off immediate).
+  // Útil para que Numaris cobre la instalación física al instante (cash flow
+  // del costo de visita técnica) y la renta consolide al fin de mes.
+  setupBillingMode   String @default("next_cycle") @map("setup_billing_mode")
+  removalBillingMode String @default("next_cycle") @map("removal_billing_mode")
   // v7: cambio de precio programado. Cuando los tres campos están poblados y
   // el periodo a facturar empieza on-or-after `pendingEffectiveFrom`, el motor
   // usa los valores `pending*` en lugar de los de arriba. Aplica igual para

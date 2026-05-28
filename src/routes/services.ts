@@ -17,6 +17,10 @@ type ServicePayload = {
   setup_unit_amount_cents?: number;
   // v17: cargo de baja per-unit. Solo recurring. 0 (default) = sin cargo.
   removal_unit_amount_cents?: number;
+  // v18: cuándo se emite el cargo. 'next_cycle' (default) consolida en el cycle
+  // invoice; 'immediate' emite invoice independiente al crear/dar de baja la unit.
+  setup_billing_mode?: 'next_cycle' | 'immediate';
+  removal_billing_mode?: 'next_cycle' | 'immediate';
   prepaid_months_default?: number | null;
   // v9: códigos NetSuite por kind de fee que este service produce.
   // monthly mapea tanto a fees kind=monthly (recurring) como a
@@ -26,6 +30,14 @@ type ServicePayload = {
   netsuite_removal_item_code?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+function validateBillingMode(value: unknown, field: string): 'next_cycle' | 'immediate' {
+  if (value === undefined) return 'next_cycle';
+  if (value !== 'next_cycle' && value !== 'immediate') {
+    throw validation({ [field]: ['must_be_next_cycle_or_immediate'] });
+  }
+  return value;
+}
 
 function normalizeItemCode(v: string | null | undefined): string | null {
   if (v === undefined || v === null) return null;
@@ -77,6 +89,19 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       if (pricingModel === 'one_off' && removalAmount > 0) {
         throw validation({ removal_unit_amount_cents: ['only_applicable_to_recurring'] });
       }
+      const setupBillingMode = validateBillingMode(payload.setup_billing_mode, 'setup_billing_mode');
+      const removalBillingMode = validateBillingMode(payload.removal_billing_mode, 'removal_billing_mode');
+      // setup_billing_mode='immediate' requiere setup > 0 — sin amount no hay nada
+      // que cobrar. La validación nos protege de configurar el flujo "en vacío".
+      if (setupBillingMode === 'immediate' && setupAmount === 0) {
+        throw validation({ setup_billing_mode: ['requires_setup_unit_amount_cents_greater_than_zero'] });
+      }
+      if (removalBillingMode === 'immediate' && removalAmount === 0) {
+        throw validation({ removal_billing_mode: ['requires_removal_unit_amount_cents_greater_than_zero'] });
+      }
+      if (pricingModel === 'one_off' && (setupBillingMode === 'immediate' || removalBillingMode === 'immediate')) {
+        throw validation({ billing_mode: ['only_applicable_to_recurring'] });
+      }
       // prepaid_months_default solo aplica a one_off; en recurring debe ser null.
       const prepaidMonthsDefault = payload.prepaid_months_default ?? null;
       if (pricingModel === 'recurring' && prepaidMonthsDefault !== null) {
@@ -100,6 +125,8 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
           monthlyUnitAmountCents: monthlyAmount,
           setupUnitAmountCents: setupAmount,
           removalUnitAmountCents: removalAmount,
+          setupBillingMode,
+          removalBillingMode,
           prepaidMonthsDefault: prepaidMonthsDefault,
           netsuiteMonthlyItemCode: normalizeItemCode(payload.netsuite_monthly_item_code),
           netsuiteSetupItemCode: normalizeItemCode(payload.netsuite_setup_item_code),
@@ -183,6 +210,9 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
         description?: string | null;
         // v17: edición del cargo de baja post-creación (sin tocar otros precios).
         removal_unit_amount_cents?: number;
+        // v18: edición del modo de emisión post-creación.
+        setup_billing_mode?: 'next_cycle' | 'immediate';
+        removal_billing_mode?: 'next_cycle' | 'immediate';
         netsuite_monthly_item_code?: string | null;
         netsuite_setup_item_code?: string | null;
         netsuite_removal_item_code?: string | null;
@@ -213,6 +243,38 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       }
       if (payload.netsuite_removal_item_code !== undefined) {
         data.netsuiteRemovalItemCode = normalizeItemCode(payload.netsuite_removal_item_code);
+      }
+      if (payload.setup_billing_mode !== undefined) {
+        const mode = validateBillingMode(payload.setup_billing_mode, 'setup_billing_mode');
+        if (mode === 'immediate' && service.pricingModel === 'one_off') {
+          throw validation({ setup_billing_mode: ['only_applicable_to_recurring'] });
+        }
+        if (mode === 'immediate' && service.setupUnitAmountCents === 0
+            && (payload.removal_unit_amount_cents === undefined || payload.removal_unit_amount_cents === 0)) {
+          // El check usa setupUnitAmountCents actual; si el PATCH también cambia
+          // setup_unit_amount_cents en el mismo body habría que combinarlo, pero
+          // hoy PATCH no acepta setup amount (solo PUT /price), así que el chequeo
+          // queda sobre el valor en DB.
+          if (service.setupUnitAmountCents === 0) {
+            throw validation({ setup_billing_mode: ['requires_setup_unit_amount_cents_greater_than_zero'] });
+          }
+        }
+        data.setupBillingMode = mode;
+      }
+      if (payload.removal_billing_mode !== undefined) {
+        const mode = validateBillingMode(payload.removal_billing_mode, 'removal_billing_mode');
+        if (mode === 'immediate' && service.pricingModel === 'one_off') {
+          throw validation({ removal_billing_mode: ['only_applicable_to_recurring'] });
+        }
+        // Si el PATCH también incluye removal_unit_amount_cents, usa el nuevo;
+        // si no, el actual de la DB.
+        const removalAfter = payload.removal_unit_amount_cents !== undefined
+          ? payload.removal_unit_amount_cents
+          : service.removalUnitAmountCents;
+        if (mode === 'immediate' && removalAfter === 0) {
+          throw validation({ removal_billing_mode: ['requires_removal_unit_amount_cents_greater_than_zero'] });
+        }
+        data.removalBillingMode = mode;
       }
       if (payload.metadata !== undefined) {
         data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;

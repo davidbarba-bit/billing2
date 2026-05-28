@@ -204,6 +204,80 @@ export function computeCustomerInvoice(opts: ComputeOptions): ComputedInvoice {
 // Factura individual por un único ping (modo immediate).
 // Genera setup (si aplica) + mensualidades prepagadas para UNA unit.
 // ---------------------------------------------------------------------------
+// v18: setup inmediato — invoice independiente con UNA fee kind='setup' para
+// UNA unit. Se invoca al crear la unit (POST /api/v1/units) si el service
+// tiene setupBillingMode='immediate'. La fee respeta effectivePriceFor.
+export function computeSetupImmediateInvoice(opts: {
+  service: Service;
+  unit: Unit;
+  now?: Date;
+}): ComputedInvoice {
+  const { service: rawService, unit } = opts;
+  if (rawService.pricingModel !== 'recurring') {
+    throw new Error('computeSetupImmediateInvoice requires pricing_model=recurring');
+  }
+  const at = opts.now ?? new Date();
+  const service = withEffectivePrice(rawService, at);
+  if (service.setupUnitAmountCents <= 0) {
+    throw new Error('setup_unit_amount_cents must be > 0 for setup_immediate');
+  }
+  const fee: ComputedFee = {
+    kind: 'setup',
+    serviceId: service.id,
+    description: `${service.name} — setup × 1`,
+    units: '1.0000',
+    unitAmountCents: service.setupUnitAmountCents,
+    preciseUnitAmount: (service.setupUnitAmountCents / 100).toFixed(2),
+    amountCents: service.setupUnitAmountCents,
+    netsuiteItemCode: service.netsuiteSetupItemCode ?? null,
+    billedUnitsDetail: [{
+      external_id: unit.externalId, label: unit.label,
+      active_from: isoUtc(unit.activeFrom), active_to: null,
+      billed_fraction: '1.0000', amount_cents: service.setupUnitAmountCents,
+    }],
+    unitIds: [unit.id],
+  };
+  return finalize([fee]);
+}
+
+// v18: baja inmediata — invoice independiente con UNA fee kind='removal' para
+// UNA unit. Se invoca al setear active_to en la unit (PATCH /api/v1/units/:id)
+// si el service tiene removalBillingMode='immediate'.
+export function computeRemovalImmediateInvoice(opts: {
+  service: Service;
+  unit: Unit;
+  now?: Date;
+}): ComputedInvoice {
+  const { service: rawService, unit } = opts;
+  if (rawService.pricingModel !== 'recurring') {
+    throw new Error('computeRemovalImmediateInvoice requires pricing_model=recurring');
+  }
+  if (service_removalAmount(rawService) <= 0) {
+    throw new Error('removal_unit_amount_cents must be > 0 for removal_immediate');
+  }
+  const fee: ComputedFee = {
+    kind: 'removal',
+    serviceId: rawService.id,
+    description: `${rawService.name} — baja × 1`,
+    units: '1.0000',
+    unitAmountCents: rawService.removalUnitAmountCents,
+    preciseUnitAmount: (rawService.removalUnitAmountCents / 100).toFixed(2),
+    amountCents: rawService.removalUnitAmountCents,
+    netsuiteItemCode: rawService.netsuiteRemovalItemCode ?? null,
+    billedUnitsDetail: [{
+      external_id: unit.externalId, label: unit.label,
+      active_from: isoUtc(unit.activeFrom), active_to: unit.activeTo ? isoUtc(unit.activeTo) : null,
+      billed_fraction: '1.0000', amount_cents: rawService.removalUnitAmountCents,
+    }],
+    unitIds: [unit.id],
+  };
+  return finalize([fee]);
+}
+
+function service_removalAmount(s: Service): number {
+  return s.removalUnitAmountCents;
+}
+
 export function computeOneOffPingInvoice(opts: {
   service: Service;
   unit: Unit;

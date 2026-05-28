@@ -32,6 +32,9 @@ export function serializeService(service: ServiceWithLinks) {
       // v17: cargo de baja per-unit. No tiene mecanismo de pending (siempre
       // refleja el valor "vigente"); cambia con PATCH /api/v1/services/:code.
       removal_unit_amount_cents: service.removalUnitAmountCents,
+      // v18: modo de emisión por concepto.
+      setup_billing_mode: service.setupBillingMode,
+      removal_billing_mode: service.removalBillingMode,
       pending_price_change: pendingInFuture
         ? {
             monthly_unit_amount_cents: service.pendingMonthlyUnitAmountCents!,

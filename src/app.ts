@@ -108,7 +108,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // Domain routes.
   registerCustomerRoutes(app, prisma);
   registerServiceRoutes(app, prisma);
-  registerUnitRoutes(app, prisma);
+  registerUnitRoutes(app, prisma, { dispatcher, callbackBaseUrl });
   registerServiceAddOnRoutes(app, prisma);
   registerCustomerAddOnRoutes(app, prisma);
   registerEventRoutes(app, prisma, { dispatcher, callbackBaseUrl });
