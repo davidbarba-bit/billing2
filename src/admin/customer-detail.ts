@@ -735,6 +735,14 @@ export function renderNewCustomerForm(
     return `<option value="${o.value}" ${selected}>${escapeHtml(o.label)}</option>`;
   }).join("");
 
+  const cycleModeOptions = [
+    { value: "unified", label: "1 factura — renta + setup + baja en un solo documento" },
+    { value: "split_by_kind", label: "2 facturas — recurrentes (renta + add-ons) y únicos (setup + baja) separados" },
+  ].map((o) => {
+    const selected = (form.cycle_invoice_mode ?? "unified") === o.value ? "selected" : "";
+    return `<option value="${o.value}" ${selected}>${escapeHtml(o.label)}</option>`;
+  }).join("");
+
   const intro = `
     <div class="bg-indigo-50 border border-indigo-200 rounded p-4 mb-6 text-sm text-indigo-900">
       <div class="font-semibold mb-1">Crear cliente</div>
@@ -769,17 +777,9 @@ export function renderNewCustomerForm(
           <span class="text-xs text-gray-500">ISO 3166-1 alpha-2.</span>
         </label>
         <label class="block">
-          <span class="text-sm font-medium text-gray-700">Email</span>
-          <input type="email" name="email" value="${v("email")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium text-gray-700">RFC / Tax ID</span>
-          <input name="tax_identification_number" value="${v("tax_identification_number")}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <label class="block col-span-2">
           <span class="text-sm font-medium text-gray-700">Timezone (IANA)</span>
           <input name="timezone" value="${v("timezone")}" placeholder="${escapeHtml(orgTimezone)} (default de la organización)" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          <span class="text-xs text-gray-500">Determina cómo se interpreta el día de corte. Si lo dejas vacío usa la timezone de la organización.</span>
+          <span class="text-xs text-gray-500">Determina cómo se interpreta el día de corte.</span>
         </label>
       </div>
 
@@ -805,10 +805,25 @@ export function renderNewCustomerForm(
             <select name="billing_anchor_month" class="mt-1 block w-full rounded border-gray-300 text-sm">${anchorMonthOptions}</select>
             <span class="text-xs text-gray-500">Alinea el ciclo a un mes calendario específico. Ignorado para la frecuencia mensual.</span>
           </label>
-          <label class="block col-span-2">
-            <span class="text-sm font-medium text-gray-700">Cargos no recurrentes</span>
+        </div>
+      </div>
+
+      <div class="border-t pt-5">
+        <h3 class="text-sm font-semibold text-gray-700 mb-3">Estructura de facturación</h3>
+        <p class="text-xs text-gray-500 mb-3">
+          Decide cuándo se cobran los cargos no recurrentes (setup, baja, servicios one-off) y
+          cómo se agrupan junto con la renta al cierre del periodo.
+        </p>
+        <div class="grid grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-sm font-medium text-gray-700">Cuándo cobrar los no recurrentes</span>
             <select name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm">${triggerOptions}</select>
-            <span class="text-xs text-gray-500">Cómo se cobran los servicios one-off (instalación, etc.) cuando llega un evento.</span>
+            <span class="text-xs text-gray-500">Aplica a setup, baja y servicios one-off cuando llega un evento.</span>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium text-gray-700">Estructura de la factura del cierre</span>
+            <select name="cycle_invoice_mode" class="mt-1 block w-full rounded border-gray-300 text-sm">${cycleModeOptions}</select>
+            <span class="text-xs text-gray-500">Cómo se agrupan los conceptos en la factura al cerrar el periodo.</span>
           </label>
         </div>
       </div>

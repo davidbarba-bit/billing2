@@ -397,10 +397,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (anchorMonth) customerPayload.billing_anchor_month = anchorMonth;
     const trigger = get('nonrecurring_trigger');
     if (trigger) customerPayload.nonrecurring_trigger = trigger;
-    const email = get('email');
-    if (email) customerPayload.email = email;
-    const rfc = get('tax_identification_number');
-    if (rfc) customerPayload.tax_identification_number = rfc;
+    const cycleMode = get('cycle_invoice_mode');
+    if (cycleMode) customerPayload.cycle_invoice_mode = cycleMode;
     const tz = get('timezone');
     if (tz) customerPayload.timezone = tz;
     const country = get('country');
