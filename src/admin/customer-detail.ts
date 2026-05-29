@@ -113,18 +113,31 @@ export function computeCustomerMetrics(args: {
 
 // Header reusable para todos los tabs.
 function renderHeader(customer: CustomerWithRelations, metrics: DerivedMetrics): string {
+  // `customer.status` refleja el momento en el ciclo de vida de la
+  // suscripción, no el avance del onboarding operativo:
+  //   - pending    → subscription_at todavía en el futuro (un cron lo
+  //                  activa automáticamente al llegar la fecha).
+  //   - active     → suscripción en curso.
+  //   - terminated → baja definitiva.
   const stateBadge = (() => {
-    if (customer.status === 'pending') return badge('pendiente de onboarding', 'yellow');
+    if (customer.status === 'pending') return badge('programado', 'blue');
     if (customer.status === 'terminated') return badge('terminado', 'gray');
     return badge('activo', 'green');
   })();
+
+  const activeServiceCount = customer.services.filter((s) => s.status === 'active').length;
 
   const alerts: string[] = [];
   if (metrics.dispatchFailedCount > 0) {
     alerts.push(`<span class="text-red-700">${metrics.dispatchFailedCount} factura${metrics.dispatchFailedCount === 1 ? '' : 's'} con dispatch fallido</span>`);
   }
+  // Aviso real de onboarding: customer activo pero sin services activos.
+  // El status='pending' por sí solo no implica falta de onboarding.
+  if (customer.status === 'active' && activeServiceCount === 0) {
+    alerts.push(`<span class="text-amber-700">Sin plan activo — completar onboarding</span>`);
+  }
   if (customer.status === 'pending') {
-    alerts.push(`<span class="text-amber-700">Sin plan asignado — completar onboarding</span>`);
+    alerts.push(`<span class="text-blue-700">Inicia ${fmtDateOnly(customer.subscriptionAt)}</span>`);
   }
 
   const alertHtml = alerts.length > 0
@@ -170,8 +183,6 @@ function renderTabsNav(externalId: string, active: CustomerTab, counts: {
 // --- Tab: Resumen ---------------------------------------------------------
 
 function renderResumen(customer: CustomerWithRelations, metrics: DerivedMetrics): string {
-  const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-
   // Card de cifras clave del customer.
   const statsRow = `
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -197,20 +208,42 @@ function renderResumen(customer: CustomerWithRelations, metrics: DerivedMetrics)
     </div>
   `;
 
-  // Acciones rápidas.
+  // Acciones rápidas. Hay tres ramas según el estado real del customer:
+  //   - terminated   → ninguna acción posible.
+  //   - status=pending (subscription_at futuro) → puedes configurar plan,
+  //                    units, datos, pero no facturar todavía. Banner azul
+  //                    informativo, sin urgencia.
+  //   - activo SIN services activos → onboarding real incompleto. Banner
+  //                    amber con la guía.
+  //   - activo con plan → acciones de facturación normales.
+  const activeServiceCount = customer.services.filter((s) => s.status === 'active').length;
   const actions = (() => {
     if (customer.status === 'terminated') {
       return `<div class="text-sm text-gray-500 italic">Customer terminado — sin acciones disponibles.</div>`;
     }
     if (customer.status === 'pending') {
       return `
+        <div class="rounded border border-blue-300 bg-blue-50 p-4">
+          <div class="text-sm font-semibold text-blue-900">Suscripción programada para ${fmtDateOnly(customer.subscriptionAt)}</div>
+          <p class="text-sm text-blue-800 mt-1">
+            La suscripción aún no inicia. Se activa automáticamente cuando llegue la fecha
+            (un proceso periódico la levanta sin intervención manual).
+            Mientras tanto puedes configurar planes, unidades y datos fiscales.
+          </p>
+          <p class="text-xs text-blue-700 mt-2">
+            Las acciones de facturación (vista previa, emisión) se habilitarán cuando inicie.
+          </p>
+        </div>
+      `;
+    }
+    if (activeServiceCount === 0) {
+      return `
         <div class="rounded border border-amber-300 bg-amber-50 p-4">
-          <div class="text-sm font-semibold text-amber-900">Este cliente está pendiente de onboarding</div>
+          <div class="text-sm font-semibold text-amber-900">Onboarding incompleto: este cliente no tiene plan activo</div>
           <p class="text-sm text-amber-800 mt-1">
-            Fue creado por API pero todavía no tiene plan ni unidades. Para activarlo:
+            La suscripción ya inició pero no hay servicios activos. Sin plan no se puede facturar.
           </p>
           <ol class="text-sm text-amber-800 mt-2 list-decimal list-inside space-y-1">
-            <li>Verifica el calendario de facturación en la pestaña <strong>Plan & calendario</strong>.</li>
             <li>Crea al menos un servicio con unidades.</li>
             <li>Opcional: agrega add-ons o configura datos fiscales.</li>
           </ol>

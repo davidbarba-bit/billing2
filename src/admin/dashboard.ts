@@ -25,7 +25,9 @@ type Metrics = {
   mtdCents: number;
   mtdCurrency: string;
   customersActive: number;
-  customersPending: number;
+  // Customers con subscription_at en el futuro (status='pending'). Un
+  // cron los activa al llegar la fecha — NO requieren acción manual.
+  customersScheduled: number;
   customersTotal: number;
   cyclesThisMonthTotal: number;
   cyclesThisMonthClosed: number;
@@ -35,7 +37,9 @@ type Metrics = {
   invoicesThisMonthPending: number;
   attention: {
     dispatchFailed: number;
-    onboardingsPending: number;
+    // Customers ACTIVOS (suscripción ya inició) que aún no tienen un
+    // service activo — esos sí son onboardings incompletos reales.
+    onboardingsIncomplete: number;
     pendingPriceChanges: number;
     cnsPendingDispatch: number;
   };
@@ -198,12 +202,19 @@ async function computeAttention(prisma: PrismaClient, org: Organization): Promis
   const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-  const [dispatchFailed, onboardingsPending, pendingPriceChanges, cnsPendingDispatch] = await Promise.all([
+  // "Onboarding incompleto" = customer activo (subscription_at ya pasó)
+  // que no tiene ningún service activo. status='pending' no entra aquí
+  // — esos son customers con suscripción a futuro, no requieren acción.
+  const [dispatchFailed, onboardingsIncomplete, pendingPriceChanges, cnsPendingDispatch] = await Promise.all([
     prisma.invoice.count({
       where: { organizationId: org.id, externalDispatchStatus: 'failed' },
     }),
     prisma.customer.count({
-      where: { organizationId: org.id, status: 'pending' },
+      where: {
+        organizationId: org.id,
+        status: 'active',
+        services: { none: { status: 'active' } },
+      },
     }),
     prisma.service.count({
       where: {
@@ -220,14 +231,19 @@ async function computeAttention(prisma: PrismaClient, org: Organization): Promis
       },
     }),
   ]);
-  return { dispatchFailed, onboardingsPending, pendingPriceChanges, cnsPendingDispatch };
+  return {
+    dispatchFailed,
+    onboardingsIncomplete,
+    pendingPriceChanges,
+    cnsPendingDispatch,
+  };
 }
 
 export async function computeDashboardMetrics(
   prisma: PrismaClient,
   org: Organization,
 ): Promise<Metrics> {
-  const [mrr, mtd, activeCount, pendingCount, totalCount, cycleProgress, invoiceDispatch, attention] = await Promise.all([
+  const [mrr, mtd, activeCount, scheduledCount, totalCount, cycleProgress, invoiceDispatch, attention] = await Promise.all([
     computeMrr(prisma, org),
     computeMtd(prisma, org),
     prisma.customer.count({ where: { organizationId: org.id, status: 'active' } }),
@@ -250,7 +266,7 @@ export async function computeDashboardMetrics(
     mtdCents: mtd.cents,
     mtdCurrency: mtd.currency,
     customersActive: activeCount,
-    customersPending: pendingCount,
+    customersScheduled: scheduledCount,
     customersTotal: totalCount,
     cyclesThisMonthTotal: cycleProgress.total,
     cyclesThisMonthClosed: cycleProgress.closed,
@@ -291,12 +307,11 @@ export function renderDashboardBody(args: {
       ${metricCard({
         label: 'Clientes activos',
         value: String(m.customersActive),
-        hint: m.customersPending > 0
-          ? `${m.customersPending} pendiente${m.customersPending === 1 ? '' : 's'} de onboarding`
+        hint: m.customersScheduled > 0
+          ? `${m.customersScheduled} programado${m.customersScheduled === 1 ? '' : 's'} (inicia${m.customersScheduled === 1 ? '' : 'n'} próximamente)`
           : `${m.customersTotal} en total`,
         size: 'prominent',
         href: '/admin/customers',
-        tone: m.customersPending > 0 ? 'warning' : 'default',
       })}
     </div>
   `;
@@ -359,15 +374,15 @@ export function renderDashboardBody(args: {
       icon: '✗',
       tone: 'danger',
       text: `<strong>${m.attention.dispatchFailed}</strong> factura${m.attention.dispatchFailed === 1 ? '' : 's'} con dispatch fallido — NetSuite rechazó`,
-      href: '/admin/invoices?dispatch=failed',
+      href: '/admin/invoices',
     }));
   }
-  if (m.attention.onboardingsPending > 0) {
+  if (m.attention.onboardingsIncomplete > 0) {
     attentionItems.push(attentionItem({
       icon: '⏳',
       tone: 'warning',
-      text: `<strong>${m.attention.onboardingsPending}</strong> cliente${m.attention.onboardingsPending === 1 ? '' : 's'} pendiente${m.attention.onboardingsPending === 1 ? '' : 's'} de onboarding (creado por API, sin plan asignado)`,
-      href: '/admin/customers?status=pending',
+      text: `<strong>${m.attention.onboardingsIncomplete}</strong> cliente${m.attention.onboardingsIncomplete === 1 ? '' : 's'} activo${m.attention.onboardingsIncomplete === 1 ? '' : 's'} sin plan — onboarding incompleto`,
+      href: '/admin/customers',
     }));
   }
   if (m.attention.pendingPriceChanges > 0) {
