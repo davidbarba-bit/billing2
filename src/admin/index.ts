@@ -655,18 +655,23 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return Math.round(n * 100);
     };
 
+    const custExtId = body.customer_external_id;
+    const existingCount = await prisma.service.count({
+      where: { organizationId: org.id, customer: { externalId: custExtId } },
+    });
+    const seq = String(existingCount + 1).padStart(3, '0');
+    const generatedCode = `${custExtId}-${seq}`;
+
     const result = await app.inject({
       method: 'POST',
       url: '/api/v1/services',
       headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
       payload: {
         service: {
-          code: body.code,
-          customer_external_id: body.customer_external_id,
+          code: generatedCode,
+          customer_external_id: custExtId,
           name: body.name,
           description: body.description || undefined,
-          // currency se hereda del customer en el API (no la pasamos para
-          // forzar el default a través de payload.currency ?? customer.currency).
           pricing_model: body.pricing_model || 'recurring',
           monthly_unit_amount_cents: pesosToCents(body.monthly_unit_amount),
           setup_unit_amount_cents: pesosToCents(body.setup_unit_amount),
@@ -684,8 +689,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
       return reply.redirect('/admin/services/new');
     }
-    setFlash(reply, 'success', `Plan "${body.code}" creado.`);
-    reply.redirect(`/admin/services/${body.code}`);
+    setFlash(reply, 'success', `Plan "${generatedCode}" creado.`);
+    reply.redirect(`/admin/services/${generatedCode}`);
   });
 
   app.get('/admin/services/:code', async (request, reply) => {

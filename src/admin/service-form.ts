@@ -84,10 +84,9 @@ export function renderServiceNewForm(args: {
     </div>`;
   })();
 
-  // Sección "Identificación" — cliente, código, nombre, descripción.
   const identificationSection = formSection({
     title: 'Identificación',
-    description: 'Datos básicos del plan. El código es inmutable; el resto se puede editar después.',
+    description: 'Datos básicos del plan. El código se genera automáticamente a partir del cliente.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
         ${formField({
@@ -98,14 +97,9 @@ export function renderServiceNewForm(args: {
           input: `<select required name="customer_external_id" id="customer-select" class="${INPUT_CLASS}">${customerOptions}</select>`,
         })}
         ${formField({
-          label: 'Código',
-          required: true,
-          hint: 'Identificador único del plan dentro de la organización. Inmutable.',
-          input: `<input required name="code" value="${v('code')}" placeholder="combustible-foo" class="${INPUT_CLASS_MONO}">`,
-        })}
-        ${formField({
           label: 'Nombre comercial',
           required: true,
+          span: 2,
           hint: 'Aparece en facturas y reportes.',
           input: `<input required name="name" value="${v('name')}" placeholder="Combustible · sensor de tanque" class="${INPUT_CLASS}">`,
         })}
