@@ -423,3 +423,115 @@ export function unlessTech(content: string): string {
   if (isTechMode()) return '';
   return content;
 }
+
+// --- Form helpers (v21 refresh) ------------------------------------------
+
+// Clase compartida para inputs de texto/número/select — paleta refinada
+// (slate en vez de gray), ring de focus más sutil, padding generoso.
+export const INPUT_CLASS =
+  'block w-full rounded-md border-slate-300 bg-white py-2 px-3 text-sm text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20';
+export const INPUT_CLASS_MONO = INPUT_CLASS + ' font-mono';
+
+// Bloque visual para una sección del form. Título + descripción opcional +
+// body. Pensado para agrupar 3-6 campos relacionados.
+export function formSection(opts: {
+  title: string;
+  description?: string;
+  body: string;
+}): string {
+  return `<section class="border-t border-slate-200 first:border-t-0 pt-8 first:pt-0 pb-2 -mb-2">
+    <div class="mb-5">
+      <h3 class="text-base font-semibold text-slate-900">${escapeHtml(opts.title)}</h3>
+      ${opts.description ? `<p class="text-sm text-slate-500 mt-1">${opts.description}</p>` : ''}
+    </div>
+    <div>${opts.body}</div>
+  </section>`;
+}
+
+// Campo de form con label, input arbitrario y hint. `input` debe ser HTML
+// crudo (un <input>, <select>, etc.) — usar INPUT_CLASS para consistencia.
+export function formField(opts: {
+  label: string;
+  required?: boolean;
+  hint?: string;
+  input: string;
+  span?: 1 | 2;
+}): string {
+  const reqMark = opts.required ? ' <span class="text-red-600" aria-hidden="true">*</span>' : '';
+  const hint = opts.hint ? `<p class="mt-1.5 text-xs text-slate-500">${opts.hint}</p>` : '';
+  const colSpan = opts.span === 2 ? 'sm:col-span-2' : '';
+  return `<label class="block ${colSpan}">
+    <span class="block text-sm font-medium text-slate-700 mb-1.5">${escapeHtml(opts.label)}${reqMark}</span>
+    ${opts.input}
+    ${hint}
+  </label>`;
+}
+
+// Input de monto en pesos (con prefijo de currency). El valor se maneja en
+// PESOS con 2 decimales; el handler convierte a cents al persistir.
+export function moneyInput(opts: {
+  name: string;
+  currency: string;
+  valueCents?: number | null;
+  required?: boolean;
+  min?: number;
+  placeholder?: string;
+}): string {
+  const valuePesos = opts.valueCents != null ? (opts.valueCents / 100).toFixed(2) : '';
+  const required = opts.required ? 'required' : '';
+  const min = opts.min !== undefined ? `min="${opts.min}"` : 'min="0"';
+  const placeholder = opts.placeholder ? `placeholder="${escapeHtml(opts.placeholder)}"` : 'placeholder="0.00"';
+  return `<div class="relative">
+    <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-slate-400">${escapeHtml(opts.currency)}</span>
+    <input ${required} type="number" step="0.01" ${min} name="${escapeHtml(opts.name)}" value="${escapeHtml(valuePesos)}" ${placeholder} class="${INPUT_CLASS} pl-12 font-mono">
+  </div>`;
+}
+
+// Botones primario / secundario refinados (sombra sutil, hover suave).
+export function primaryButton(label: string, opts?: { type?: 'submit' | 'button' }): string {
+  return `<button type="${opts?.type ?? 'submit'}" class="inline-flex items-center justify-center rounded-md bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">${escapeHtml(label)}</button>`;
+}
+
+export function secondaryLink(href: string, label: string): string {
+  return `<a href="${href}" class="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">${escapeHtml(label)}</a>`;
+}
+
+// Card "premium" — paleta refinada, bordes suaves, padding generoso.
+// Coexiste con `card()` (estilo viejo) hasta migrar todas las páginas.
+export function panel(opts: {
+  title?: string;
+  description?: string;
+  body: string;
+  actions?: string;
+}): string {
+  const header = opts.title
+    ? `<div class="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">${escapeHtml(opts.title)}</h2>
+          ${opts.description ? `<p class="text-xs text-slate-500 mt-0.5">${opts.description}</p>` : ''}
+        </div>
+        ${opts.actions ? `<div class="flex items-center gap-2 shrink-0">${opts.actions}</div>` : ''}
+      </div>`
+    : '';
+  return `<div class="bg-white rounded-lg border border-slate-200 shadow-sm mb-6">
+    ${header}
+    <div class="px-6 py-5">${opts.body}</div>
+  </div>`;
+}
+
+// Cabecera de página con título grande, opcional eyebrow y acciones.
+export function pageTitle(opts: {
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  actions?: string;
+}): string {
+  return `<header class="mb-8 flex items-start justify-between gap-6">
+    <div>
+      ${opts.eyebrow ? `<div class="text-xs font-semibold uppercase tracking-wide text-indigo-600 mb-1">${escapeHtml(opts.eyebrow)}</div>` : ''}
+      <h1 class="text-2xl font-semibold text-slate-900 tracking-tight">${escapeHtml(opts.title)}</h1>
+      ${opts.description ? `<p class="text-sm text-slate-500 mt-1.5 max-w-2xl">${opts.description}</p>` : ''}
+    </div>
+    ${opts.actions ? `<div class="flex items-center gap-2 shrink-0">${opts.actions}</div>` : ''}
+  </header>`;
+}

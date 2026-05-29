@@ -49,6 +49,7 @@ import {
 } from './views.js';
 import { computeDashboardMetrics, renderDashboardBody } from './dashboard.js';
 import { isCustomerTab, renderCustomerDetail, renderNewCustomerForm, type CustomerTab } from './customer-detail.js';
+import { renderServiceNewForm } from './service-form.js';
 
 type Deps = {
   config: AppConfig;
@@ -580,91 +581,18 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
     const q = request.query as { customer?: string };
-    const customers = await prisma.customer.findMany({ where: { organizationId: org.id }, orderBy: { externalId: 'asc' } });
+    const customers = await prisma.customer.findMany({
+      where: { organizationId: org.id, status: { not: 'terminated' } },
+      orderBy: { name: 'asc' },
+      select: { externalId: true, name: true, currency: true },
+    });
     const flash = readFlash(request, reply);
-    const customerOptions = customers.map((c) =>
-      `<option value="${escapeHtml(c.externalId)}" ${q.customer === c.externalId ? 'selected' : ''}>${escapeHtml(c.externalId)} · ${escapeHtml(c.name)}</option>`,
-    ).join('');
-    const form = `
-      <form method="post" action="/admin/services" class="space-y-4 max-w-3xl">
-        <div class="grid grid-cols-2 gap-3">
-          <label class="block"><span class="text-sm text-gray-700">Customer</span>
-            <select required name="customer_external_id" class="mt-1 block w-full rounded border-gray-300">${customerOptions}</select>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Currency</span>
-            <input name="currency" value="MXN" class="mt-1 block w-full rounded border-gray-300 font-mono">
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Code</span>
-            <input required name="code" placeholder="combustible-foo" class="mt-1 block w-full rounded border-gray-300 font-mono">
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Nombre</span>
-            <input required name="name" class="mt-1 block w-full rounded border-gray-300">
-          </label>
-          <label class="block col-span-2"><span class="text-sm text-gray-700">Pricing model</span>
-            <select required name="pricing_model" class="mt-1 block w-full rounded border-gray-300">
-              <option value="recurring" selected>recurring — renta por unidad cada periodo del customer (+ setup opcional)</option>
-              <option value="one_off">one_off — cargo único por unidad cuando aparece, no genera renta</option>
-            </select>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Monto por unidad (cents)</span>
-            <input required type="number" name="monthly_unit_amount_cents" value="45000" min="0" class="mt-1 block w-full rounded border-gray-300">
-            <span class="text-xs text-gray-500">recurring: cobro por periodo. one_off: cobro único.</span>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Setup por unidad (cents)</span>
-            <input type="number" name="setup_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
-            <span class="text-xs text-gray-500">Cargo único por unit al primer ping. Aplica a recurring y one_off.</span>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Baja por unidad (cents)</span>
-            <input type="number" name="removal_unit_amount_cents" value="0" min="0" class="mt-1 block w-full rounded border-gray-300">
-            <span class="text-xs text-gray-500">v17: cargo único al dar de baja la unit (active_to). Solo recurring. Migración de plan NO lo dispara.</span>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Setup — modo de emisión</span>
-            <select name="setup_billing_mode" class="mt-1 block w-full rounded border-gray-300">
-              <option value="next_cycle" selected>next_cycle — consolida con la renta al fin del periodo</option>
-              <option value="immediate">immediate — invoice independiente al instalar la unit</option>
-            </select>
-            <span class="text-xs text-gray-500">v18: con 'immediate', POST /units genera una invoice al instante con el cargo de setup. La renta sigue su curso normal en el cycle invoice.</span>
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Baja — modo de emisión</span>
-            <select name="removal_billing_mode" class="mt-1 block w-full rounded border-gray-300">
-              <option value="next_cycle" selected>next_cycle — consolida con la renta del periodo donde cae la baja</option>
-              <option value="immediate">immediate — invoice independiente al dar de baja</option>
-            </select>
-            <span class="text-xs text-gray-500">v18: análogo al setup, pero al PATCH unit con active_to.</span>
-          </label>
-          <label class="block col-span-2"><span class="text-sm text-gray-700">Meses prepagados por defecto (solo one_off)</span>
-            <input type="number" name="prepaid_months_default" min="1" placeholder="48" class="mt-1 block w-full rounded border-gray-300">
-            <span class="text-xs text-gray-500">Cuántos meses paga el cliente por adelantado por cada unit nueva. Override por unit en POST /events. Dejar vacío si es recurring.</span>
-          </label>
-        </div>
-        <div class="border-t pt-3 mt-3">
-          <h3 class="text-sm font-semibold text-gray-700 mb-2">Códigos de producto NetSuite</h3>
-          <p class="text-xs text-gray-500 mb-3">Códigos del catálogo de NetSuite a los que se mapean las líneas de la factura. El código <strong>mensual</strong> también se usa para mensualidades prepagadas (services one_off). Si quedan vacíos, las invoices se emiten con item_code=null y NetSuite probablemente las rechace.</p>
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">Item code mensual</span>
-              <input name="netsuite_monthly_item_code" placeholder="SUB-MONTHLY" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-              <span class="text-xs text-gray-500">Recurring: cada periodo. One_off: las N mensualidades prepagadas.</span>
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Item code setup</span>
-              <input name="netsuite_setup_item_code" placeholder="SUB-SETUP" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-              <span class="text-xs text-gray-500">Cargo único per-unit (si setup &gt; 0).</span>
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Item code baja</span>
-              <input name="netsuite_removal_item_code" placeholder="SUB-BAJA" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-              <span class="text-xs text-gray-500">Cargo único per-unit al dar de baja (si baja &gt; 0).</span>
-            </label>
-          </div>
-        </div>
-        <p class="text-xs text-gray-500">El ciclo de facturación lo define el customer. <strong>Los impuestos los calcula NetSuite</strong> según la configuración fiscal del cliente; Numaris Billing solo envía montos netos.</p>
-        <label class="block"><span class="text-sm text-gray-700">Descripción</span>
-          <input name="description" class="mt-1 block w-full rounded border-gray-300">
-        </label>
-        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear service</button>
-      </form>
-    `;
     reply.type('text/html').send(layout({
-      title: 'Nuevo service', active: '/admin/services', orgSlug: org.slug, flash,
-      body: pageHeader('Nuevo service', btn('/admin/services', '← back')) + card('Crear', form),
+      title: 'Nuevo plan', active: '/admin/services', orgSlug: org.slug, flash,
+      body: renderServiceNewForm({
+        customers,
+        selectedCustomerExternalId: q.customer,
+      }),
     }));
   });
 
@@ -672,6 +600,17 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
     const body = request.body as Record<string, string>;
+
+    // El form rediseñado captura montos en pesos (decimales). El motor
+    // persiste y procesa en centavos enteros — convertimos aquí.
+    // Math.round es seguro contra el clásico 45.50 * 100 = 4549.99...
+    const pesosToCents = (raw: string | undefined): number => {
+      if (!raw || raw.trim() === '') return 0;
+      const n = Number(raw);
+      if (Number.isNaN(n) || n < 0) return 0;
+      return Math.round(n * 100);
+    };
+
     const result = await app.inject({
       method: 'POST',
       url: '/api/v1/services',
@@ -681,12 +620,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           code: body.code,
           customer_external_id: body.customer_external_id,
           name: body.name,
-          description: (body.description as string) || undefined,
-          currency: body.currency || 'MXN',
+          description: body.description || undefined,
+          // currency se hereda del customer en el API (no la pasamos para
+          // forzar el default a través de payload.currency ?? customer.currency).
           pricing_model: body.pricing_model || 'recurring',
-          monthly_unit_amount_cents: Number(body.monthly_unit_amount_cents ?? 0),
-          setup_unit_amount_cents: Number(body.setup_unit_amount_cents ?? 0),
-          removal_unit_amount_cents: Number(body.removal_unit_amount_cents ?? 0),
+          monthly_unit_amount_cents: pesosToCents(body.monthly_unit_amount),
+          setup_unit_amount_cents: pesosToCents(body.setup_unit_amount),
+          removal_unit_amount_cents: pesosToCents(body.removal_unit_amount),
           setup_billing_mode: body.setup_billing_mode || 'next_cycle',
           removal_billing_mode: body.removal_billing_mode || 'next_cycle',
           prepaid_months_default: body.prepaid_months_default ? Number(body.prepaid_months_default) : undefined,
@@ -700,7 +640,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
       return reply.redirect('/admin/services/new');
     }
-    setFlash(reply, 'success', `Service "${body.code}" creado`);
+    setFlash(reply, 'success', `Plan "${body.code}" creado.`);
     reply.redirect(`/admin/services/${body.code}`);
   });
 
