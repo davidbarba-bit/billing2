@@ -590,7 +590,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             { label: 'Cliente', render: (s) => `<span class="ink-soft">${escapeHtml(s.customer.name)}</span>` },
             { label: 'Status', render: (s) => statusBadge(s.status) },
             { label: 'Modelo', render: (s) => s.pricingModel === 'one_off'
-              ? '<span class="pill pill-info">Pago único</span>'
+              ? '<span class="pill pill-info">Prepago</span>'
               : '<span class="pill pill-success">Recurrente</span>' },
             { label: 'Renta /u', render: (s) => renderMoney(s.monthlyUnitAmountCents, s.currency) },
             { label: 'Setup /u', render: (s) => renderMoney(s.setupUnitAmountCents, s.currency) },
@@ -844,7 +844,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         rows: preview.fees,
         empty: 'No hay fees — el ciclo no generaría invoice',
         columns: [
-          { label: 'Kind', render: (f) => badge(f.kind, f.kind === 'monthly' ? 'blue' : f.kind === 'setup' ? 'yellow' : f.kind === 'one_off' ? 'green' : 'gray') },
+          { label: 'Kind', render: (f) => badge(f.kind === 'one_off' ? 'prepago' : f.kind, f.kind === 'monthly' ? 'blue' : f.kind === 'setup' ? 'yellow' : f.kind === 'one_off' ? 'green' : 'gray') },
           { label: 'Descripción', render: (f) => escapeHtml(f.description) },
           { label: 'NS item', render: (f) => f.netsuite_item_code
             ? `<code class="text-xs">${escapeHtml(f.netsuite_item_code)}</code>`
@@ -1089,7 +1089,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           <div class="flex items-center gap-2 mt-3">
             ${statusBadge(unit.activeTo === null ? 'active' : 'terminated')}
             ${unit.service.pricingModel === 'one_off'
-              ? (unit.oneoffBilledAt ? '<span class="pill pill-success">One-off facturado</span>' : '<span class="pill pill-warn">One-off pendiente</span>')
+              ? (unit.oneoffBilledAt ? '<span class="pill pill-success">Prepago facturado</span>' : '<span class="pill pill-warn">Prepago pendiente</span>')
               : unit.service.setupUnitAmountCents === 0
                 ? ''
                 : (unit.setupBilledAt ? '<span class="pill pill-success">Setup facturado</span>' : '<span class="pill pill-warn">Setup pendiente</span>')}
@@ -1633,7 +1633,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           rows: invoice.fees,
           columns: [
             { label: 'Concepto', render: (f) => {
-              const kindLabels: Record<string, string> = { monthly: 'Renta mensual', setup: 'Setup', removal: 'Baja', service_addon: 'Add-on de plan', customer_addon: 'Add-on de cliente', one_off: 'One-off' };
+              const kindLabels: Record<string, string> = { monthly: 'Renta mensual', setup: 'Setup', removal: 'Baja', service_addon: 'Add-on de plan', customer_addon: 'Add-on de cliente', one_off: 'Prepago' };
               return `<div class="font-medium ink">${escapeHtml(kindLabels[f.kind] ?? f.kind)}</div><div class="text-xs ink-faint mt-0.5">${escapeHtml(f.description ?? '')}</div>`;
             } },
             { label: 'Unidades', render: (f) => `<span class="font-mono-pro num text-sm">${escapeHtml(f.units)}</span>` },
@@ -1900,7 +1900,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           rows: cn.items,
           columns: [
             { label: 'Concepto', render: (it) => {
-              const kindLabels: Record<string, string> = { monthly: 'Renta mensual', setup: 'Setup', removal: 'Baja', service_addon: 'Add-on de plan', customer_addon: 'Add-on de cliente', one_off: 'One-off' };
+              const kindLabels: Record<string, string> = { monthly: 'Renta mensual', setup: 'Setup', removal: 'Baja', service_addon: 'Add-on de plan', customer_addon: 'Add-on de cliente', one_off: 'Prepago' };
               return `<div class="font-medium ink">${escapeHtml(kindLabels[it.fee.kind] ?? it.fee.kind)}</div><div class="text-xs ink-faint mt-0.5">${escapeHtml(it.fee.description ?? '')}</div>`;
             } },
             { label: 'Monto acreditado', render: (it) => `<span class="font-mono-pro num">${(it.amountCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> <span class="text-[10px] uppercase ink-faint">${escapeHtml(it.amountCurrency)}</span>`, className: 'text-right' },

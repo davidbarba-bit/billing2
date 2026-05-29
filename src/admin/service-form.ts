@@ -71,7 +71,7 @@ export function renderServiceNewForm(args: {
     };
     return `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       ${card('recurring', 'Recurrente', 'Renta mensual por unidad activa. Opcionalmente setup al instalar y baja al desinstalar.')}
-      ${card('one_off', 'Pago único (one-off)', 'Cobro único por unidad al recibir el primer evento. Incluye setup opcional + N mensualidades prepagadas.')}
+      ${card('one_off', 'Prepago', 'Setup opcional + N mensualidades pagadas por adelantado al recibir el primer evento.')}
     </div>`;
   })();
 
@@ -127,7 +127,7 @@ export function renderServiceNewForm(args: {
         ${formField({
           label: 'Renta mensual por unidad',
           required: true,
-          hint: 'En servicios recurrentes se cobra cada periodo. En one-off se multiplica por los meses prepagados.',
+          hint: 'En servicios recurrentes se cobra cada periodo. En prepago se multiplica por los meses pagados por adelantado.',
           input: moneyInputInline({ name: 'monthly_unit_amount', currency, value: form.monthly_unit_amount, required: true, placeholder: '0.00' }),
         })}
         ${formField({
@@ -137,7 +137,7 @@ export function renderServiceNewForm(args: {
         })}
         ${formField({
           label: 'Baja por unidad',
-          hint: 'Cargo único cuando la unidad termina. Solo aplica a recurrentes — en one-off ya se cobró todo por adelantado.',
+          hint: 'Cargo único cuando la unidad termina. Solo aplica a recurrentes — en prepago ya se cobró todo por adelantado.',
           input: moneyInputInline({ name: 'removal_unit_amount', currency, value: form.removal_unit_amount ?? '0' }),
         })}
       </div>
@@ -145,7 +145,7 @@ export function renderServiceNewForm(args: {
   });
 
   // Sección "Emisión" — cuándo facturar setup/baja (recurring) o meses
-  // prepagados (one_off). Los dos casos son mutuamente excluyentes; en una
+  // prepagados (prepago). Los dos casos son mutuamente excluyentes; en una
   // implementación más sofisticada esto se ocultaría dinámicamente.
   const setupModeOptions = [
     { value: 'next_cycle', label: 'Al cierre del periodo (consolidado con la renta)' },
@@ -157,7 +157,7 @@ export function renderServiceNewForm(args: {
   ];
   const emissionSection = formSection({
     title: 'Emisión de cargos no recurrentes',
-    description: 'Cuándo emitir factura para setup, baja (recurrentes) y mensualidades prepagadas (one-off).',
+    description: 'Cuándo emitir factura para setup, baja (recurrentes) y mensualidades prepagadas.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
         ${formField({
@@ -173,7 +173,7 @@ export function renderServiceNewForm(args: {
         ${formField({
           label: 'Meses prepagados por defecto',
           span: 2,
-          hint: 'Cuántos meses cobra el cliente por adelantado al instalar cada unidad. Solo aplica a one-off. Se puede sobrescribir por unidad. Dejar vacío si el plan es recurrente.',
+          hint: 'Cuántos meses cobra el cliente por adelantado al instalar cada unidad. Solo aplica a prepago. Se puede sobrescribir por unidad. Dejar vacío si el plan es recurrente.',
           input: `<input type="number" name="prepaid_months_default" min="1" value="${v('prepaid_months_default')}" placeholder="48" class="${INPUT_CLASS_MONO} max-w-xs">`,
         })}
       </div>
@@ -190,7 +190,7 @@ export function renderServiceNewForm(args: {
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-5">
         ${formField({
           label: 'Item code · mensual',
-          hint: 'Recurring: cada periodo. One-off: las N mensualidades prepagadas.',
+          hint: 'Recurrente: cada periodo. Prepago: las N mensualidades pagadas por adelantado.',
           input: `<input name="netsuite_monthly_item_code" value="${v('netsuite_monthly_item_code')}" placeholder="SUB-MONTHLY" class="${INPUT_CLASS_MONO}">`,
         })}
         ${formField({

@@ -70,7 +70,7 @@ function computeEffectivePricing(service: ServiceWithRelations): EffectivePricin
 
 function pricingModelPill(model: string): string {
   return model === 'one_off'
-    ? `<span class="pill pill-info">Pago único</span>`
+    ? `<span class="pill pill-info">Prepago</span>`
     : `<span class="pill pill-success">Recurrente</span>`;
 }
 
@@ -113,7 +113,7 @@ function renderResumen(service: ServiceWithRelations): string {
   const pricing = computeEffectivePricing(service);
   const isOneOff = service.pricingModel === 'one_off';
 
-  // 3 cifras grandes: renta mensual, setup, baja (o meses prepagados si one_off).
+  // 3 cifras grandes: renta mensual, setup, baja (o meses prepagados si prepago).
   const moneyDisplay = (cents: number): string =>
     `<div class="flex items-baseline gap-1.5">
       <span class="font-mono-pro text-[10px] uppercase tracking-wider ink-faint">${escapeHtml(service.currency)}</span>
@@ -250,7 +250,7 @@ function renderUnidades(service: ServiceWithRelations): string {
                   : (service.prepaidMonthsDefault !== null
                     ? `<span class="font-mono-pro ink-faint">${service.prepaidMonthsDefault}m <span class="text-[10px]">default</span></span>`
                     : '<span style="color: var(--danger);">obligatorio</span>') },
-                { label: 'One-off', render: (u: Unit) => u.oneoffBilledAt
+                { label: 'Prepago', render: (u: Unit) => u.oneoffBilledAt
                   ? `<span class="pill pill-success">facturado</span>`
                   : `<span class="pill pill-warn">pendiente</span>` },
               ]
@@ -326,7 +326,7 @@ function renderMigrateUnitForm(service: ServiceWithRelations): string {
         ${isOneOff ? `
           <label class="flex items-start gap-2 cursor-pointer">
             <input type="checkbox" name="one_off_already_billed" value="1" class="mt-0.5">
-            <span class="text-sm ink-soft">El paquete one-off ya se facturó en el sistema legacy (setup + N mensualidades). La unidad no se cobrará al primer evento ni al cierre.</span>
+            <span class="text-sm ink-soft">El paquete prepago ya se facturó en el sistema legacy (setup + N mensualidades). La unidad no se cobrará al primer evento ni al cierre.</span>
           </label>
         ` : `
           <label class="flex items-start gap-2 cursor-pointer">

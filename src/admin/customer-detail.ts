@@ -325,7 +325,7 @@ function renderPlan(customer: CustomerWithRelations): string {
       ${customer.billingPeriodMonths > 1 ? `
       <div><span class="text-gray-500">Mes ancla:</span> <strong>${customer.billingAnchorMonth ? monthNames[customer.billingAnchorMonth - 1] : '(según subscription_at)'}</strong></div>
       ` : ''}
-      <div><span class="text-gray-500">Cobro de servicios one-off:</span>
+      <div><span class="text-gray-500">Cobro de servicios prepago:</span>
         <strong>${customer.nonrecurringTrigger === 'immediate' ? 'inmediato (factura individual al primer evento)' : 'al próximo cierre del periodo'}</strong>
       </div>
       <div class="col-span-2"><span class="text-gray-500">Modo de factura:</span>
@@ -345,7 +345,7 @@ function renderPlan(customer: CustomerWithRelations): string {
     rowHref: (s) => `/admin/services/${s.code}`,
     columns: [
       { label: 'Nombre', render: (s) => escapeHtml(s.name) },
-      { label: 'Tipo', render: (s) => s.pricingModel === 'one_off' ? badge('one-off', 'blue') : badge('recurrente', 'green') },
+      { label: 'Tipo', render: (s) => s.pricingModel === 'one_off' ? badge('prepago', 'blue') : badge('recurrente', 'green') },
       { label: 'Status', render: (s) => statusBadge(s.status) },
       { label: 'Renta /unidad', render: (s) => `${fmtMoney(s.monthlyUnitAmountCents, s.currency)} /u` },
       { label: 'Setup /unidad', render: (s) => s.setupUnitAmountCents > 0 ? `${fmtMoney(s.setupUnitAmountCents, s.currency)} /u` : '<span class="text-gray-400">—</span>' },
@@ -443,12 +443,12 @@ function renderScheduleEditForm(customer: CustomerWithRelations): string {
 
   const facturacionSection = formSection({
     title: 'Estructura de facturación',
-    description: 'Cuándo se facturan los servicios one-off y cómo se agrupan los conceptos al cerrar el periodo.',
+    description: 'Cuándo se facturan los servicios prepago y cómo se agrupan los conceptos al cerrar el periodo.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5"${disabledClass(disabledSoft)}>
         ${formField({
-          label: 'Cuándo facturar los servicios one-off',
-          hint: 'Aplica al bloque one-off completo (setup + N mensualidades prepagadas) cuando llega el primer evento.',
+          label: 'Cuándo facturar los servicios prepago',
+          hint: 'Aplica al paquete prepago completo (setup + N mensualidades) cuando llega el primer evento.',
           input: `<select ${disabledSoft} name="nonrecurring_trigger" class="${INPUT_CLASS}">${triggerOptions}</select>`,
         })}
         ${formField({
@@ -868,12 +868,12 @@ export function renderNewCustomerForm(
 
   const billingSection = formSection({
     title: 'Estructura de facturación',
-    description: 'Cuándo se factura el bloque one-off y cómo se agrupan los conceptos al cerrar el periodo. El setup y la baja de servicios recurrentes se configuran a nivel del servicio.',
+    description: 'Cuándo se factura el paquete prepago y cómo se agrupan los conceptos al cerrar el periodo. El setup y la baja de servicios recurrentes se configuran a nivel del servicio.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
         ${formField({
-          label: 'Cuándo facturar los servicios one-off',
-          hint: 'Aplica al bloque one-off completo (setup + N mensualidades prepagadas) cuando llega el primer evento.',
+          label: 'Cuándo facturar los servicios prepago',
+          hint: 'Aplica al paquete prepago completo (setup + N mensualidades) cuando llega el primer evento.',
           input: `<select name="nonrecurring_trigger" class="${INPUT_CLASS}">${triggerOptions}</select>`,
         })}
         ${formField({
