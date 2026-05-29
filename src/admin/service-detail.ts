@@ -590,7 +590,7 @@ function renderPrecio(service: ServiceWithRelations): string {
 
   const scheduleForm = `
     <form method="post" action="/admin/services/${escapeHtml(service.code)}/price" class="space-y-5">
-      <p class="text-sm ink-soft">El nuevo precio aplicará a clientes cuyo periodo de facturación empiece on-or-after la fecha indicada. Los clientes que ya están en un ciclo mantienen el precio vigente hasta el siguiente cierre.</p>
+      <p class="text-sm ink-soft">El nuevo precio aplicará a las unidades de este plan cuyo periodo de facturación empiece en o después de la fecha indicada. Las unidades que ya están en un ciclo mantienen el precio vigente hasta el siguiente cierre.</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
         ${formField({
           label: 'Nuevo monto mensual /unidad (cents)',
