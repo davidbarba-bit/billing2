@@ -371,9 +371,6 @@ function renderScheduleEditForm(customer: CustomerWithRelations): string {
   const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
   const blocked = nonVoidedInvoices > 0;
   const terminated = customer.status === 'terminated';
-  // Pre-populamos el datetime-local en la tz del admin (la que ve en
-  // su sidebar), no en UTC. El POST handler reconvierte usando la
-  // misma tz para que el round-trip sea consistente.
   const displayTz = adminContextStorage.getStore()?.displayTz ?? 'UTC';
   const dtLocal = (d: Date | null | undefined): string => {
     if (!d) return '';
@@ -400,40 +397,70 @@ function renderScheduleEditForm(customer: CustomerWithRelations): string {
     }))
     .join('');
 
-  const banner = terminated
-    ? `<div class="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900 mb-3">Customer <code>terminated</code> — schedule no editable.</div>`
-    : blocked
-    ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>${nonVoidedInvoices} invoice${nonVoidedInvoices === 1 ? '' : 's'} no-voided bloque${nonVoidedInvoices === 1 ? 'a' : 'an'} cambios a <code>subscription_at</code>, <code>anchor_day</code>, <code>period_months</code> y <code>anchor_month</code>.</strong> Voidálas primero. El campo <code>nonrecurring_trigger</code> sí se puede editar.</div>`
-    : '';
   const disabledHard = blocked || terminated ? 'disabled' : '';
   const disabledSoft = terminated ? 'disabled' : '';
+  const disabledClass = (flag: string) => flag ? ' style="opacity: 0.5; pointer-events: none;"' : '';
+
+  const banner = terminated
+    ? `<div class="rounded p-4 mb-5 text-sm" style="background: var(--danger-soft); border: 1px solid var(--danger-soft); color: var(--danger);">Cliente terminado — el calendario no se puede editar.</div>`
+    : blocked
+    ? `<div class="rounded p-4 mb-5 text-sm" style="background: var(--warn-soft); border: 1px solid var(--warn-soft); color: var(--warn);"><strong>${nonVoidedInvoices} factura${nonVoidedInvoices === 1 ? '' : 's'} no anulada${nonVoidedInvoices === 1 ? '' : 's'} bloquea${nonVoidedInvoices === 1 ? '' : 'n'} cambios a suscripción, día de corte, frecuencia y mes ancla.</strong> Anúlalas primero. El trigger no-recurrente y el modo de factura sí se pueden editar.</div>`
+    : '';
+
+  const cicloSection = formSection({
+    title: 'Ciclo',
+    description: 'Inicio de suscripción, frecuencia y día de corte del periodo.',
+    body: `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5"${disabledClass(disabledHard)}>
+        ${formField({
+          label: 'Inicio de suscripción',
+          hint: `Se interpreta en tu zona <code class="font-mono-pro">${escapeHtml(displayTz)}</code>.`,
+          input: `<input ${disabledHard} type="datetime-local" name="subscription_at" value="${escapeHtml(dtLocal(customer.subscriptionAt))}" class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Día de corte (1–28)',
+          hint: 'Día del mes en que cierra el periodo.',
+          input: `<input ${disabledHard} type="number" name="billing_anchor_day" min="1" max="28" value="${customer.billingAnchorDay}" class="${INPUT_CLASS_MONO} max-w-xs">`,
+        })}
+        ${formField({
+          label: 'Frecuencia',
+          input: `<select ${disabledHard} name="billing_period_months" class="${INPUT_CLASS}">${periodOptions}</select>`,
+        })}
+        ${formField({
+          label: 'Mes ancla',
+          hint: 'Solo aplica si la frecuencia es trimestral / semestral / anual. Define en qué mes calendario inicia un ciclo.',
+          input: `<select ${disabledHard} name="billing_anchor_month" class="${INPUT_CLASS}">${anchorMonthOptions}</select>`,
+        })}
+      </div>
+    `,
+  });
+
+  const facturacionSection = formSection({
+    title: 'Estructura de facturación',
+    description: 'Cuándo se facturan los servicios one-off y cómo se agrupan los conceptos al cerrar el periodo.',
+    body: `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5"${disabledClass(disabledSoft)}>
+        ${formField({
+          label: 'Cuándo facturar los servicios one-off',
+          hint: 'Aplica al bloque one-off completo (setup + N mensualidades prepagadas) cuando llega el primer evento.',
+          input: `<select ${disabledSoft} name="nonrecurring_trigger" class="${INPUT_CLASS}">${triggerOptions}</select>`,
+        })}
+        ${formField({
+          label: 'Estructura de la factura del cierre',
+          hint: 'Cómo se agrupan los conceptos (renta, setup, baja) en la factura al cerrar el periodo.',
+          input: `<select ${disabledSoft} name="cycle_invoice_mode" class="${INPUT_CLASS}">${cycleModeOptions}</select>`,
+        })}
+      </div>
+    `,
+  });
 
   return `
     ${banner}
-    <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/billing-schedule" class="space-y-3 max-w-3xl"
+    <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/billing-schedule" class="space-y-0"
       onsubmit="return confirm('Esto recalculará el ciclo actual y guardará el cambio en el historial. ¿Continuar?')">
-      <div class="grid grid-cols-2 gap-3">
-        <label class="block"><span class="text-sm text-gray-700">Inicio de suscripción <span class="text-xs text-gray-500">(zona <code>${escapeHtml(displayTz)}</code>)</span></span>
-          <input ${disabledHard} type="datetime-local" name="subscription_at" value="${escapeHtml(dtLocal(customer.subscriptionAt))}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Anchor day (1–28)</span>
-          <input ${disabledHard} type="number" name="billing_anchor_day" min="1" max="28" value="${customer.billingAnchorDay}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Period months</span>
-          <select ${disabledHard} name="billing_period_months" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${periodOptions}</select>
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Anchor month <span class="text-xs text-gray-500">(solo trimestral/semestral/anual)</span></span>
-          <select ${disabledHard} name="billing_anchor_month" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${anchorMonthOptions}</select>
-          <span class="text-xs text-gray-500">Define en qué mes calendario inicia un ciclo.</span>
-        </label>
-        <label class="block col-span-2"><span class="text-sm text-gray-700">Trigger no-recurrente</span>
-          <select ${disabledSoft} name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${triggerOptions}</select>
-        </label>
-        <label class="block col-span-2"><span class="text-sm text-gray-700">Modo cycle invoice</span>
-          <select ${disabledSoft} name="cycle_invoice_mode" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${cycleModeOptions}</select>
-        </label>
-      </div>
-      ${terminated ? '' : `<button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Actualizar calendario</button>`}
+      ${cicloSection}
+      ${facturacionSection}
+      ${terminated ? '' : `<div class="flex items-center gap-3 pt-6 mt-2" style="border-top: 1px solid var(--rule);">${primaryButton('Actualizar calendario')}</div>`}
     </form>
   `;
 }
