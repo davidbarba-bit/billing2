@@ -92,14 +92,16 @@ export function fmtRelative(d: Date | string | null | undefined): string {
 }
 
 export function badge(text: string, tone: 'green' | 'yellow' | 'red' | 'gray' | 'blue' = 'gray'): string {
-  const tones: Record<string, string> = {
-    green: 'bg-green-100 text-green-800 border-green-300',
-    yellow: 'bg-yellow-100 text-yellow-800 border-yellow-300',
-    red: 'bg-red-100 text-red-800 border-red-300',
-    gray: 'bg-gray-100 text-gray-800 border-gray-300',
-    blue: 'bg-blue-100 text-blue-800 border-blue-300',
+  // Mapeo a los pills institucionales — los tonos heredados (green/yellow/red/
+  // gray/blue) siguen funcionando para callsites no migrados.
+  const pillClass: Record<string, string> = {
+    green:  'pill-success',
+    yellow: 'pill-warn',
+    red:    'pill-danger',
+    gray:   'pill-mute',
+    blue:   'pill-info',
   };
-  return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${tones[tone]}">${escapeHtml(text)}</span>`;
+  return `<span class="pill ${pillClass[tone]}">${escapeHtml(text)}</span>`;
 }
 
 export function statusBadge(status: string): string {
@@ -137,7 +139,7 @@ function renderNav(active?: string): string {
       return `<a href="${item.href}"${targetAttr} class="${linkClass} relative block pl-4 pr-3 py-1.5 rounded-sm text-[13px] font-normal">${indicator}${escapeHtml(item.label)}</a>`;
     }).join('');
     const heading = section.heading
-      ? `<div class="px-4 pt-5 pb-1.5 text-[10px] uppercase tracking-[0.12em] font-medium" style="color: #6E6759;">${escapeHtml(section.heading)}</div>`
+      ? `<div class="px-4 pt-5 pb-1.5 text-[10px] uppercase tracking-[0.12em] font-medium" style="color: var(--sidebar-mute);">${escapeHtml(section.heading)}</div>`
       : '';
     return `<div class="space-y-px">${heading}${links}</div>`;
   }).join('<div class="my-1.5"></div>');
@@ -153,8 +155,8 @@ function renderTechToggle(currentUrl: string): string {
       <button type="submit" class="tech-toggle w-full flex items-center justify-between px-3 py-2 rounded-sm text-[11px]">
         <span class="uppercase tracking-wider">Modo técnico</span>
         <span class="inline-flex items-center gap-1.5">
-          <span class="relative inline-block w-7 h-3.5 rounded-full transition-colors" style="background: ${on ? 'var(--accent)' : '#3F4A40'};">
-            <span class="absolute top-0.5 w-2.5 h-2.5 rounded-full transition-all" style="background: #FBFAF7; ${on ? 'right: 2px;' : 'left: 2px;'}"></span>
+          <span class="relative inline-block w-7 h-3.5 rounded-full transition-colors" style="background: ${on ? 'var(--accent)' : 'var(--sidebar-rule)'};">
+            <span class="absolute top-0.5 w-2.5 h-2.5 rounded-full transition-all" style="background: #FAFAFA; ${on ? 'right: 2px;' : 'left: 2px;'}"></span>
           </span>
         </span>
       </button>
@@ -195,26 +197,38 @@ export function layout(options: {
 <link rel="preconnect" href="https://fonts.bunny.net" crossorigin>
 <link rel="stylesheet" href="https://fonts.bunny.net/css?family=fraunces:400,500,600,700|ibm-plex-sans:400,500,600|ibm-plex-mono:400,500&display=swap">
 <style>
-  /* ----- design tokens: 'quiet precision' ----- */
+  /* ----- design tokens: 'quiet precision' · paleta institucional Numaris -----
+     · #013668  Azul oscuro principal (corporativo)  → sidebar, hover de acento
+     · #3274BA  Azul medio (acento)                  → CTAs, links, indicadores
+     · #F2F2F2  Gris claro institucional             → superficies suaves
+     Grises neutros se usan como apoyo según los lineamientos.
+     Warning / danger se mantienen en tonos terracota/ámbar muy mutados para
+     comunicar severidad sin invadir la identidad corporativa. */
   :root {
-    --paper:        #FBFAF7;
-    --paper-soft:   #F4F1EA;
-    --ink:          #1A1714;
-    --ink-soft:     #4A463F;
-    --ink-faint:    #8A857B;
-    --rule:         #E5E1D8;
-    --rule-soft:    #EFEBE2;
-    --accent:       #0F3D2E;
-    --accent-hover: #1A5B47;
-    --accent-soft:  #E4ECE7;
-    --warn:         #B8731A;
-    --warn-soft:    #FAF1E0;
-    --danger:       #A8351F;
-    --danger-soft:  #F6E5E2;
-    --info:         #2C5282;
-    --info-soft:    #E3EAF2;
-    --sidebar:      #1A1F1B;
-    --sidebar-soft: #283129;
+    --paper:         #FAFAFA;
+    --paper-soft:    #F2F2F2;
+    --ink:           #0F1419;
+    --ink-soft:      #3A4452;
+    --ink-faint:     #7A8390;
+    --rule:          #DCDFE3;
+    --rule-soft:     #E8EAED;
+    --accent:        #3274BA;
+    --accent-hover:  #013668;
+    --accent-deep:   #013668;
+    --accent-soft:   #E2EBF4;
+    --accent-tint:   #F1F6FB;
+    --warn:          #8B5A1C;
+    --warn-soft:     #F3EDE3;
+    --danger:        #8B2D1E;
+    --danger-soft:   #F2E3E0;
+    --info:          #013668;
+    --info-soft:     #E2EBF4;
+    --sidebar:       #013668;
+    --sidebar-soft:  #0A4378;
+    --sidebar-rule:  #0F4A82;
+    --sidebar-ink:   #FAFAFA;
+    --sidebar-faint: #8FA8C4;
+    --sidebar-mute:  #5E7FA3;
   }
   html, body { background: var(--paper); }
   body {
@@ -224,14 +238,15 @@ export function layout(options: {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
-  /* subtle grain — gives the paper feel without being distracting */
+  /* Grano neutro extremadamente sutil — añade tactilidad sin invadir la
+     paleta corporativa. Cool gray noise en lugar de warm sepia. */
   body::before {
     content: '';
     position: fixed; inset: 0;
     pointer-events: none;
     z-index: 0;
-    opacity: 0.4;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    opacity: 0.28;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.06 0 0 0 0 0.08 0 0 0 0 0.10 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   body > * { position: relative; z-index: 1; }
   .font-display { font-family: 'Fraunces', Georgia, serif; font-feature-settings: 'ss01'; letter-spacing: -0.01em; }
@@ -258,7 +273,7 @@ export function layout(options: {
 
   /* primary button — refined, no gratuitous shadows */
   .btn-primary {
-    background: var(--accent); color: #FBFAF7;
+    background: var(--accent); color: #FAFAFA;
     padding: 0.625rem 1.25rem;
     border-radius: 4px;
     font-weight: 500;
@@ -312,20 +327,33 @@ export function layout(options: {
     padding-right: 2.25rem;
   }
 
-  /* badges editorial — pills sin bordes pesados */
+  /* Pills institucionales — la jerarquía de severidad usa la paleta
+     corporativa cuando es posible (success → accent azul), y solo recurre
+     a tonos terracota/ámbar para warn/danger donde la semántica lo exige. */
   .pill {
     display: inline-flex; align-items: center;
     padding: 0.125rem 0.5rem;
     border-radius: 999px;
     font-size: 0.6875rem;
     font-weight: 500;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
-  .pill-success { background: var(--accent-soft); color: var(--accent); }
+  /* Success = pill con relleno azul medio (estado "vivo / confirmado").
+     Info = pill outline con tinte muy claro (estado "en proceso / informativo"
+     como dispatched). Esto distingue confirmado vs en-curso sin salirse de
+     la paleta. */
+  .pill-success {
+    background: var(--accent);
+    color: #FAFAFA;
+  }
+  .pill-info {
+    background: var(--accent-tint);
+    color: var(--accent-deep);
+    box-shadow: inset 0 0 0 1px var(--accent-soft);
+  }
   .pill-warn    { background: var(--warn-soft);   color: var(--warn); }
   .pill-danger  { background: var(--danger-soft); color: var(--danger); }
-  .pill-info    { background: var(--info-soft);   color: var(--info); }
   .pill-mute    { background: var(--paper-soft);  color: var(--ink-soft); }
 
   /* page entrance — discreto, sin bouncy springs */
@@ -348,52 +376,83 @@ export function layout(options: {
 
   /* sidebar interactives */
   .nav-link {
-    color: #B6AB97;
+    color: var(--sidebar-faint);
     transition: color 160ms ease, background 160ms ease;
   }
-  .nav-link:hover { color: #FBFAF7; }
+  .nav-link:hover { color: #FAFAFA; }
   .nav-link-active {
-    color: #FBFAF7;
-    background: #283129;
+    color: #FAFAFA;
+    background: var(--sidebar-soft);
   }
-  .nav-link-active:hover { color: #FBFAF7; }
+  .nav-link-active:hover { color: #FAFAFA; }
 
   .tech-toggle {
-    color: #8A8678;
-    border: 1px solid #2F3A30;
+    color: var(--sidebar-mute);
+    border: 1px solid var(--sidebar-rule);
     transition: color 160ms ease, border-color 160ms ease;
   }
-  .tech-toggle:hover { color: #E9E5DC; border-color: #3F4A40; }
+  .tech-toggle:hover { color: var(--sidebar-ink); border-color: var(--sidebar-rule); }
 
   .user-link {
-    color: #8A8678;
+    color: var(--sidebar-mute);
     transition: color 160ms ease, background 160ms ease;
   }
-  .user-link:hover { color: #E9E5DC; background: #283129; }
+  .user-link:hover { color: var(--sidebar-ink); background: var(--sidebar-soft); }
 
   pre.json { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
 
-  /* override de utilidades tailwind clave que aparecen en el código viejo
-     para que las páginas no migradas hereden la nueva paleta automáticamente */
+  /* Overrides de utilidades tailwind para que las páginas no migradas
+     hereden la paleta institucional Numaris. No tocamos clases de layout;
+     solo de color. Cuando una página se migre a los nuevos helpers
+     (panel, pageTitle, formField, pills) deja de depender de estos. */
+
+  /* Indigo (acento primario heredado) → Azul medio institucional */
+  .bg-indigo-50  { background-color: var(--accent-tint) !important; }
+  .bg-indigo-100 { background-color: var(--accent-soft) !important; }
+  .bg-indigo-500 { background-color: var(--accent) !important; }
   .bg-indigo-600, .hover\\:bg-indigo-700:hover { background-color: var(--accent) !important; }
   .bg-indigo-700 { background-color: var(--accent-hover) !important; }
-  .text-indigo-600, .text-indigo-700 { color: var(--accent) !important; }
-  .border-indigo-600, .border-indigo-500 { border-color: var(--accent) !important; }
+  .text-indigo-600, .text-indigo-700, .text-indigo-900 { color: var(--accent-deep) !important; }
+  .border-indigo-200, .border-indigo-300, .border-indigo-500, .border-indigo-600 { border-color: var(--accent) !important; }
   .ring-indigo-500 { --tw-ring-color: var(--accent) !important; }
   .focus\\:ring-indigo-500:focus { --tw-ring-color: var(--accent) !important; }
   .focus\\:border-indigo-500:focus { border-color: var(--accent) !important; }
+
+  /* Green (success heredado) → Azul medio institucional (success = accent) */
+  .bg-green-50  { background-color: var(--accent-tint) !important; }
+  .bg-green-500 { background-color: var(--accent) !important; }
+  .text-green-600, .text-green-700, .text-green-900 { color: var(--accent-deep) !important; }
+  .border-green-300 { border-color: var(--accent) !important; }
+
+  /* Blue (info heredado) → Azul oscuro institucional */
+  .bg-blue-50 { background-color: var(--accent-tint) !important; }
+  .text-blue-700, .text-blue-800, .text-blue-900 { color: var(--accent-deep) !important; }
+  .border-blue-300 { border-color: var(--accent) !important; }
+
+  /* Amber/yellow (warn) — quedan terracota/ámbar mutados */
+  .bg-amber-50 { background-color: var(--warn-soft) !important; }
+  .bg-amber-600, .bg-amber-700 { background-color: var(--warn) !important; }
+  .text-amber-700, .text-amber-800, .text-amber-900, .text-yellow-700 { color: var(--warn) !important; }
+  .border-amber-200, .border-amber-300 { border-color: var(--warn) !important; }
+
+  /* Red (danger) — quedan rojo brick mutado */
+  .bg-red-50 { background-color: var(--danger-soft) !important; }
+  .bg-red-100 { background-color: var(--danger-soft) !important; }
+  .bg-red-500, .bg-red-600, .bg-red-700 { background-color: var(--danger) !important; }
+  .text-red-600, .text-red-700, .text-red-900 { color: var(--danger) !important; }
+  .border-red-200, .border-red-300 { border-color: var(--danger) !important; }
 </style>
 </head>
 <body class="min-h-screen">
 <div class="flex">
-  <aside class="w-64 min-h-screen p-5 sticky top-0 flex flex-col" style="background: var(--sidebar); color: #E9E5DC;">
+  <aside class="w-64 min-h-screen p-5 sticky top-0 flex flex-col" style="background: var(--sidebar); color: var(--sidebar-ink);">
     <div class="mb-8">
-      <div class="font-display text-[1.35rem] leading-tight font-medium" style="color: #FBFAF7;">Numaris</div>
-      <div class="font-display text-[1.35rem] leading-tight italic font-normal" style="color: #B6AB97; margin-top: -2px;">Billing</div>
+      <div class="font-display text-[1.35rem] leading-tight font-medium" style="color: #FAFAFA;">Numaris</div>
+      <div class="font-display text-[1.35rem] leading-tight italic font-normal" style="color: var(--sidebar-faint); margin-top: -2px;">Billing</div>
       <div class="mt-3 flex items-center gap-2">
-        <span class="text-[10px] uppercase tracking-wider font-medium" style="color: #6E6759;">${escapeHtml(options.orgSlug)}</span>
+        <span class="text-[10px] uppercase tracking-wider font-medium" style="color: var(--sidebar-mute);">${escapeHtml(options.orgSlug)}</span>
       </div>
-      <a href="/admin/settings" class="text-xs mt-2 inline-flex items-center gap-1 transition-colors" style="color: #6E6759;" onmouseover="this.style.color='#E9E5DC'" onmouseout="this.style.color='#6E6759'">
+      <a href="/admin/settings" class="text-xs mt-2 inline-flex items-center gap-1 transition-colors" style="color: var(--sidebar-mute);" onmouseover="this.style.color='var(--sidebar-ink)'" onmouseout="this.style.color='var(--sidebar-mute)'">
         <span class="font-mono-pro text-[10px]">${escapeHtml(currentTz())}</span> ✎
       </a>
     </div>
@@ -402,14 +461,14 @@ export function layout(options: {
     ${(() => {
       const u = options.user ?? getCurrentAdminUser();
       return u ? `
-    <div class="mt-4 pt-4" style="border-top: 1px solid #2F3A30;">
+    <div class="mt-4 pt-4" style="border-top: 1px solid var(--sidebar-rule);">
       <div class="flex items-center gap-2.5 mb-2.5">
         ${u.picture
           ? `<img src="${escapeHtml(u.picture)}" referrerpolicy="no-referrer" class="w-8 h-8 rounded-full" alt="">`
-          : `<div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium" style="background: var(--accent); color: #FBFAF7;">${escapeHtml(u.email.charAt(0).toUpperCase())}</div>`}
+          : `<div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium" style="background: var(--accent); color: #FAFAFA;">${escapeHtml(u.email.charAt(0).toUpperCase())}</div>`}
         <div class="min-w-0 flex-1">
-          <div class="text-xs font-medium truncate" style="color: #E9E5DC;">${escapeHtml(u.name)}</div>
-          <div class="text-[11px] truncate" style="color: #8A8678;">${escapeHtml(u.email)}</div>
+          <div class="text-xs font-medium truncate" style="color: var(--sidebar-ink);">${escapeHtml(u.name)}</div>
+          <div class="text-[11px] truncate" style="color: var(--sidebar-mute);">${escapeHtml(u.email)}</div>
         </div>
       </div>
       <form method="post" action="/admin/auth/logout">
