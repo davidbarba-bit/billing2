@@ -406,6 +406,64 @@ export function layout(options: {
 
   pre.json { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; }
 
+  /* Modal nativo (<dialog>) — estilo editorial. Usa ::backdrop para
+     oscurecer la página y bordes/sombras sutiles para sentir liviano. */
+  dialog.modal {
+    width: min(720px, calc(100vw - 2rem));
+    max-height: calc(100vh - 4rem);
+    padding: 0;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: #FFFFFF;
+    box-shadow: 0 24px 48px -16px rgba(15, 20, 25, 0.25), 0 4px 12px rgba(15, 20, 25, 0.06);
+    overflow: hidden;
+  }
+  dialog.modal::backdrop {
+    background: rgba(15, 20, 25, 0.42);
+    backdrop-filter: blur(2px);
+  }
+  dialog.modal[open] { animation: modalIn 200ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+  @keyframes modalIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  dialog.modal .modal-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1rem;
+    padding: 1.25rem 1.5rem 1rem;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  dialog.modal .modal-title {
+    font-family: 'Raleway', sans-serif;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  dialog.modal .modal-desc {
+    font-size: 0.8125rem;
+    color: var(--ink-soft);
+    margin-top: 0.25rem;
+    line-height: 1.45;
+  }
+  dialog.modal .modal-close {
+    flex-shrink: 0;
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 4px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--ink-faint);
+    cursor: pointer;
+    transition: color 140ms, background 140ms, border-color 140ms;
+  }
+  dialog.modal .modal-close:hover { color: var(--ink); background: var(--paper-soft); border-color: var(--rule); }
+  dialog.modal .modal-body {
+    padding: 1.25rem 1.5rem 1.5rem;
+    overflow-y: auto;
+    max-height: calc(100vh - 12rem);
+  }
+
   /* Overrides de utilidades tailwind para que las páginas no migradas
      hereden la paleta institucional Numaris. No tocamos clases de layout;
      solo de color. Cuando una página se migre a los nuevos helpers
@@ -488,6 +546,7 @@ export function layout(options: {
     ${options.body}
   </main>
 </div>
+<script>${MODAL_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -793,3 +852,65 @@ export function pageTitle(opts: {
     ${opts.actions ? `<div class="flex items-center gap-2 shrink-0 pb-1">${opts.actions}</div>` : ''}
   </header>`;
 }
+
+// Modal nativo (<dialog>) + botón disparador. El botón usa `data-modal-open="<id>"`
+// y el dialog se identifica por `id`. Un script ligero conecta los handlers.
+// Se cierra con ESC, click en backdrop o botón de cerrar.
+export function modal(opts: {
+  id: string;
+  title: string;
+  description?: string;
+  body: string;
+}): string {
+  return `
+    <dialog id="${escapeHtml(opts.id)}" class="modal" aria-labelledby="${escapeHtml(opts.id)}-title">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title" id="${escapeHtml(opts.id)}-title">${escapeHtml(opts.title)}</div>
+          ${opts.description ? `<div class="modal-desc">${opts.description}</div>` : ''}
+        </div>
+        <button type="button" class="modal-close" aria-label="Cerrar" data-modal-close="${escapeHtml(opts.id)}">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">${opts.body}</div>
+    </dialog>
+  `;
+}
+
+// Botón estilizado como acción secundaria que abre un modal por id.
+export function modalTrigger(opts: { modalId: string; label: string; icon?: string }): string {
+  const icon = opts.icon ?? '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8z"/></svg>';
+  return `<button type="button" data-modal-open="${escapeHtml(opts.modalId)}" class="inline-flex items-center gap-1.5 text-sm font-medium rounded px-4 py-2 transition-colors" style="color: var(--accent-deep); border: 1px solid var(--rule); background: #FFFFFF;" onmouseover="this.style.borderColor='var(--accent)'; this.style.background='var(--accent-tint)';" onmouseout="this.style.borderColor='var(--rule)'; this.style.background='#FFFFFF';">
+    ${icon}
+    ${escapeHtml(opts.label)}
+  </button>`;
+}
+
+// Script global que cablea los modals — se inyecta una sola vez en el layout.
+export const MODAL_SCRIPT = `
+  document.addEventListener('click', (e) => {
+    const opener = e.target.closest('[data-modal-open]');
+    if (opener) {
+      const id = opener.getAttribute('data-modal-open');
+      const dlg = document.getElementById(id);
+      if (dlg && typeof dlg.showModal === 'function') dlg.showModal();
+      return;
+    }
+    const closer = e.target.closest('[data-modal-close]');
+    if (closer) {
+      const id = closer.getAttribute('data-modal-close');
+      const dlg = document.getElementById(id);
+      if (dlg && typeof dlg.close === 'function') dlg.close();
+      return;
+    }
+    // Click en el backdrop (fuera del contenido) cierra el modal.
+    const openDlg = e.target;
+    if (openDlg && openDlg.tagName === 'DIALOG' && openDlg.open) {
+      const rect = openDlg.getBoundingClientRect();
+      const inside = e.clientX >= rect.left && e.clientX <= rect.right
+        && e.clientY >= rect.top && e.clientY <= rect.bottom;
+      if (!inside) openDlg.close();
+    }
+  });
+`;
