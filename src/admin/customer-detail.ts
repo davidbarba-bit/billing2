@@ -315,8 +315,8 @@ function renderPlan(customer: CustomerWithRelations): string {
       ${customer.billingPeriodMonths > 1 ? `
       <div><span class="text-gray-500">Mes ancla:</span> <strong>${customer.billingAnchorMonth ? monthNames[customer.billingAnchorMonth - 1] : '(según subscription_at)'}</strong></div>
       ` : ''}
-      <div><span class="text-gray-500">Cobro no-recurrente:</span>
-        <strong>${customer.nonrecurringTrigger === 'immediate' ? 'inmediato (factura individual)' : 'al próximo cierre'}</strong>
+      <div><span class="text-gray-500">Cobro de servicios one-off:</span>
+        <strong>${customer.nonrecurringTrigger === 'immediate' ? 'inmediato (factura individual al primer evento)' : 'al próximo cierre del periodo'}</strong>
       </div>
       <div class="col-span-2"><span class="text-gray-500">Modo de factura:</span>
         <strong>${customer.cycleInvoiceMode === 'split_by_kind' ? 'split — recurrentes y únicos en facturas separadas' : 'unificada — todo en una factura'}</strong>
@@ -811,19 +811,20 @@ export function renderNewCustomerForm(
       <div class="border-t pt-5">
         <h3 class="text-sm font-semibold text-gray-700 mb-3">Estructura de facturación</h3>
         <p class="text-xs text-gray-500 mb-3">
-          Decide cuándo se cobran los cargos no recurrentes (setup, baja, servicios one-off) y
-          cómo se estructuran los conceptos en la factura del cierre.
+          Decide cuándo se factura un servicio one-off al recibir su primer evento, y cómo se
+          agrupan los conceptos en la factura del cierre.
+          <span class="text-gray-400">El setup y la baja de servicios recurrentes se configuran a nivel del servicio, no del cliente.</span>
         </p>
         <div class="grid grid-cols-2 gap-4">
           <label class="block">
-            <span class="text-sm font-medium text-gray-700">Cuándo cobrar los no recurrentes</span>
+            <span class="text-sm font-medium text-gray-700">Cuándo facturar los servicios one-off</span>
             <select name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm">${triggerOptions}</select>
-            <span class="text-xs text-gray-500">Aplica a setup, baja y servicios one-off cuando llega un evento.</span>
+            <span class="text-xs text-gray-500">Solo aplica a servicios <code>one_off</code> (venta única con prepago). Setup y baja de servicios recurrentes tienen su propio control por servicio.</span>
           </label>
           <label class="block">
             <span class="text-sm font-medium text-gray-700">Estructura de la factura del cierre</span>
             <select name="cycle_invoice_mode" class="mt-1 block w-full rounded border-gray-300 text-sm">${cycleModeOptions}</select>
-            <span class="text-xs text-gray-500">Cómo se agrupan los conceptos en la factura al cerrar el periodo.</span>
+            <span class="text-xs text-gray-500">Cómo se agrupan los conceptos (renta, setup, baja) en la factura al cerrar el periodo.</span>
           </label>
         </div>
       </div>
