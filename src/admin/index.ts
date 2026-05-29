@@ -1065,56 +1065,93 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
-    const dt = (d: Date | null | undefined): string => {
+    const displayTz = adminContextStorage.getStore()?.displayTz ?? 'UTC';
+    const dtLocal = (d: Date | null | undefined): string => {
       if (!d) return '';
-      const yyyy = d.getUTCFullYear();
-      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const dd = String(d.getUTCDate()).padStart(2, '0');
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mi = String(d.getUTCMinutes()).padStart(2, '0');
-      return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+      return DateTime.fromJSDate(d, { zone: 'utc' }).setZone(displayTz).toFormat("yyyy-LL-dd'T'HH:mm");
     };
     const flash = readFlash(request, reply);
     const meta = (unit.metadata as Record<string, unknown> | null) ?? {};
     const migratedTo = meta.migrated_to as { service_code?: string; at?: string } | undefined;
     const migratedFrom = meta.migrated_from as { service_code?: string; at?: string } | undefined;
-    const info = kv([
-      ['Service', `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(unit.service.code)}">${escapeHtml(unit.service.code)}</a>`],
-      ['External ID', `<code>${escapeHtml(unit.externalId)}</code>`],
-      ['Active from', fmtDate(unit.activeFrom)],
-      ['Billing starts at', unit.billingStartsAt ? `<span class="text-amber-700">${escapeHtml(fmtDate(unit.billingStartsAt))}</span>` : '<span class="text-gray-400">— (usa active_from)</span>'],
-      ['Active to', fmtDate(unit.activeTo)],
-      // Mostramos solo el gate relevante al pricing_model. Para recurring sin
-      // setup, indicamos "n/a" para no confundir con el gate de one_off.
-      ...(unit.service.pricingModel === 'one_off'
-        ? [['One-off facturada', unit.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')] as [string, string]]
-        : unit.service.setupUnitAmountCents === 0
-          ? [['Setup', '<span class="text-gray-400 text-xs">n/a (service sin setup)</span>'] as [string, string]]
-          : [['Setup billed', unit.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')] as [string, string]]),
-      ...(migratedFrom ? [['Migrada desde', `${escapeHtml(migratedFrom.service_code ?? '?')} (${escapeHtml(migratedFrom.at ? fmtDate(new Date(migratedFrom.at)) : '?')})`] as [string, string]] : []),
-      ...(migratedTo ? [['Migrada hacia', `<span class="text-amber-700">${escapeHtml(migratedTo.service_code ?? '?')} (${escapeHtml(migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?')})</span>`] as [string, string]] : []),
-    ]);
-    const form = `
-      <form method="post" action="/admin/units/${unit.id}/edit" class="space-y-3 max-w-2xl">
-        <p class="text-xs text-gray-500">Campos editables. <code>billing_starts_at</code> vacío = limpia override y usa <code>active_from</code>.</p>
-        <label class="block"><span class="text-sm text-gray-700">Label</span>
-          <input name="label" value="${escapeHtml(unit.label ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Billing starts at (UTC)</span>
-          <input type="datetime-local" name="billing_starts_at" value="${escapeHtml(dt(unit.billingStartsAt))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <div class="flex gap-2">
-          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar</button>
-          <a href="/admin/services/${escapeHtml(unit.service.code)}" class="px-4 py-2 bg-white border rounded text-sm text-gray-700">Cancelar</a>
+    const techMode = adminContextStorage.getStore()?.techMode ?? false;
+
+    const header = `
+      <div class="flex items-start justify-between gap-6 mb-2">
+        <div>
+          <div class="text-[11px] uppercase tracking-[0.14em] mb-2 ink-faint">
+            Unidad · plan <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/services/${escapeHtml(unit.service.code)}">${escapeHtml(unit.service.name)}</a>
+          </div>
+          <h1 class="font-display text-[2rem] leading-tight font-medium ink tracking-tight">
+            <code class="font-mono-pro text-[1.6rem]">${escapeHtml(unit.externalId)}</code>
+          </h1>
+          ${unit.label ? `<div class="text-base ink-soft mt-2">${escapeHtml(unit.label)}</div>` : ''}
+          <div class="flex items-center gap-2 mt-3">
+            ${statusBadge(unit.activeTo === null ? 'active' : 'terminated')}
+            ${unit.service.pricingModel === 'one_off'
+              ? (unit.oneoffBilledAt ? '<span class="pill pill-success">One-off facturado</span>' : '<span class="pill pill-warn">One-off pendiente</span>')
+              : unit.service.setupUnitAmountCents === 0
+                ? ''
+                : (unit.setupBilledAt ? '<span class="pill pill-success">Setup facturado</span>' : '<span class="pill pill-warn">Setup pendiente</span>')}
+          </div>
+        </div>
+        <div class="shrink-0">${secondaryLink(`/admin/services/${unit.service.code}`, '← Plan')}</div>
+      </div>
+    `;
+
+    const datesRow = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-px surface-card mb-8" style="border-radius: 6px; overflow: hidden;">
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Activa desde</div>
+          <div class="font-mono-pro text-sm ink mt-1">${fmtDate(unit.activeFrom)}</div>
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Empieza a facturarse</div>
+          ${unit.billingStartsAt
+            ? `<div class="font-mono-pro text-sm mt-1" style="color: var(--warn);" title="override de fecha de facturación (migración)">${fmtDate(unit.billingStartsAt)}</div>`
+            : `<div class="text-sm ink-faint italic mt-1">desde activa</div>`}
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Activa hasta</div>
+          ${unit.activeTo
+            ? `<div class="font-mono-pro text-sm ink mt-1">${fmtDate(unit.activeTo)}</div>`
+            : `<div class="text-sm ink-faint italic mt-1">activa actualmente</div>`}
+        </div>
+      </div>
+    `;
+
+    const migrationHistory = (migratedFrom || migratedTo) ? `
+      <div class="rounded p-4 mb-6" style="background: var(--info-soft); border: 1px solid var(--info-soft);">
+        <div class="text-[10px] uppercase tracking-[0.14em] font-medium mb-2" style="color: var(--accent-deep);">Historial de migración</div>
+        ${migratedFrom ? `<div class="text-sm ink-soft">Migrada desde <a class="font-mono-pro hover:underline" style="color: var(--accent-deep);" href="/admin/services/${escapeHtml(migratedFrom.service_code ?? '')}">${escapeHtml(migratedFrom.service_code ?? '?')}</a> el ${migratedFrom.at ? fmtDate(new Date(migratedFrom.at)) : '?'}.</div>` : ''}
+        ${migratedTo ? `<div class="text-sm ink-soft mt-1">Migrada hacia <a class="font-mono-pro hover:underline" style="color: var(--accent-deep);" href="/admin/services/${escapeHtml(migratedTo.service_code ?? '')}">${escapeHtml(migratedTo.service_code ?? '?')}</a> el ${migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?'}.</div>` : ''}
+      </div>
+    ` : '';
+
+    const editForm = `
+      <form method="post" action="/admin/units/${unit.id}/edit" class="space-y-5">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+          ${formField({
+            label: 'Etiqueta',
+            input: `<input name="label" value="${escapeHtml(unit.label ?? '')}" class="${INPUT_CLASS}">`,
+            hint: 'Texto humano descriptivo (opcional).',
+          })}
+          ${formField({
+            label: 'Empieza a facturarse (override)',
+            input: `<input type="datetime-local" name="billing_starts_at" value="${escapeHtml(dtLocal(unit.billingStartsAt))}" class="${INPUT_CLASS}">`,
+            hint: `Se interpreta en tu zona <code class="font-mono-pro">${escapeHtml(displayTz)}</code>. Vacío = usa la fecha de 'activa desde'.`,
+          })}
+        </div>
+        <div class="flex items-center gap-3 pt-2">
+          ${primaryButton('Guardar cambios')}
+          ${secondaryLink(`/admin/services/${unit.service.code}`, 'Cancelar')}
         </div>
       </form>
     `;
 
-    // Migración: solo si la unit está activa y no ha sido migrada antes.
     const canMigrate = unit.activeTo === null && !migratedTo;
     let migrateBlock = '';
     if (canMigrate) {
-      // Candidate services: mismo customer, mismo pricing_model, distinto al actual, activos.
       const candidates = await prisma.service.findMany({
         where: {
           customerId: unit.service.customerId,
@@ -1125,52 +1162,81 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         orderBy: { code: 'asc' },
       });
       if (candidates.length === 0) {
-        migrateBlock = '<p class="text-sm text-gray-500">No hay otros services activos del mismo customer y pricing model (<code>' + escapeHtml(unit.service.pricingModel) + '</code>) a los que migrar.</p>';
+        migrateBlock = `<div class="text-sm ink-soft">No hay otros planes activos del mismo cliente con el mismo modelo (<code class="font-mono-pro">${escapeHtml(unit.service.pricingModel)}</code>) a los que migrar esta unidad.</div>`;
       } else {
-        // Default migration_at sugerido: mañana 00:00 UTC.
         const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        const defaultAt = `${tomorrow.getUTCFullYear()}-${String(tomorrow.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrow.getUTCDate()).padStart(2, '0')}T00:00`;
-        const opts = candidates.map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.code)} — ${escapeHtml(s.name)} (${fmtMoney(s.monthlyUnitAmountCents, s.currency)}/u/mes)</option>`).join('');
+        const yyyy = tomorrow.getUTCFullYear();
+        const mm = String(tomorrow.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(tomorrow.getUTCDate()).padStart(2, '0');
+        const defaultAt = `${yyyy}-${mm}-${dd}T00:00`;
+        const opts = candidates.map((s) => `<option value="${escapeHtml(s.code)}">${escapeHtml(s.name)} — ${escapeHtml(s.code)} (${fmtMoney(s.monthlyUnitAmountCents, s.currency)}/u/mes)</option>`).join('');
         migrateBlock = `
-          <form method="post" action="/admin/units/${unit.id}/migrate" class="space-y-3 max-w-2xl"
-            onsubmit="return confirm('La unit ${escapeHtml(unit.externalId)} se cerrará en el plan actual y se creará en el nuevo plan a la fecha indicada. ¿Continuar?')">
-            <p class="text-xs text-gray-500">Migra esta unit a otro plan del mismo customer. Política: solo a futuro, mismo pricing model, sin cobrar setup del plan nuevo (a menos que marques la casilla).</p>
-            <label class="block"><span class="text-sm text-gray-700">Plan destino</span>
-              <select required name="to_service_code" class="mt-1 block w-full rounded border-gray-300 text-sm">
-                <option value="">— elegir —</option>
-                ${opts}
-              </select>
+          <form method="post" action="/admin/units/${unit.id}/migrate" class="space-y-5"
+            onsubmit="return confirm('La unidad ${escapeHtml(unit.externalId)} se cerrará en el plan actual y se creará en el plan elegido a la fecha indicada. ¿Continuar?')">
+            <p class="text-sm ink-soft">
+              Migra esta unidad a otro plan del mismo cliente. Solo a futuro, con el mismo modelo de cobro,
+              y sin cobrar setup del plan nuevo (a menos que marques la casilla).
+            </p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+              ${formField({
+                label: 'Plan destino',
+                required: true,
+                input: `<select required name="to_service_code" class="${INPUT_CLASS}"><option value="">— elegir plan —</option>${opts}</select>`,
+              })}
+              ${formField({
+                label: 'Fecha de migración',
+                required: true,
+                hint: `Se interpreta en tu zona <code class="font-mono-pro">${escapeHtml(displayTz)}</code>. Debe ser futura.`,
+                input: `<input required type="datetime-local" name="migration_at" value="${defaultAt}" class="${INPUT_CLASS}">`,
+              })}
+              ${formField({
+                label: 'Nueva etiqueta',
+                span: 2,
+                input: `<input name="new_label" placeholder="${escapeHtml(unit.label ?? '')}" class="${INPUT_CLASS}">`,
+                hint: 'Opcional. Si la dejas vacía la unidad conserva la etiqueta actual.',
+              })}
+            </div>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" name="charge_new_setup" value="1" class="mt-0.5">
+              <span class="text-sm ink-soft">Cobrar setup del plan nuevo al migrar (default: no se cobra porque es transferencia, no instalación).</span>
             </label>
-            <label class="block"><span class="text-sm text-gray-700">Migration at (UTC, debe ser futuro)</span>
-              <input required type="datetime-local" name="migration_at" value="${defaultAt}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Nuevo label (opcional)</span>
-              <input name="new_label" placeholder="${escapeHtml(unit.label ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="inline-flex items-center text-sm">
-              <input type="checkbox" name="charge_new_setup" value="1" class="rounded border-gray-300">
-              <span class="ml-2 text-gray-700">Cobrar setup del plan nuevo (default: no)</span>
-            </label>
-            <div class="flex gap-2">
-              <button type="submit" class="px-4 py-2 bg-amber-600 text-white rounded text-sm hover:bg-amber-700">Migrar de plan</button>
+            <div class="pt-2">
+              <button type="submit" class="inline-flex items-center justify-center rounded text-sm font-medium px-5 py-2 transition-colors" style="background: var(--warn); color: #FAFAFA;">Migrar de plan</button>
             </div>
           </form>
         `;
       }
     } else if (migratedTo) {
-      migrateBlock = `<p class="text-sm text-amber-700">Esta unit ya fue migrada hacia <code>${escapeHtml(migratedTo.service_code ?? '?')}</code> el ${escapeHtml(migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?')}.</p>`;
+      migrateBlock = `<div class="text-sm ink-soft">Esta unidad ya fue migrada hacia <a class="font-mono-pro hover:underline" style="color: var(--accent-deep);" href="/admin/services/${escapeHtml(migratedTo.service_code ?? '')}">${escapeHtml(migratedTo.service_code ?? '?')}</a> el ${migratedTo.at ? fmtDate(new Date(migratedTo.at)) : '?'}. No se puede migrar de nuevo.</div>`;
     } else {
-      migrateBlock = '<p class="text-sm text-gray-500">La unit está terminada — no puede migrarse.</p>';
+      migrateBlock = '<div class="text-sm ink-soft">La unidad está terminada — no se puede migrar.</div>';
     }
 
+    const techBlock = techMode ? panel({
+      title: 'Datos técnicos',
+      body: `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">UUID interno</div>
+          <code class="font-mono-pro text-xs ink">${escapeHtml(unit.id)}</code>
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Pricing model del plan</div>
+          <code class="font-mono-pro text-xs ink">${escapeHtml(unit.service.pricingModel)}</code>
+        </div>
+      </div>`,
+    }) : '';
+
     reply.type('text/html').send(layout({
-      title: `Unit · ${unit.externalId}`, active: '/admin/units', orgSlug: org.slug, flash,
-      body: pageHeader(`Editar unit: ${unit.externalId}`, btn(`/admin/services/${unit.service.code}`, '← back'))
-        + card('Info', info)
-        + card('Editar', form)
-        + card('Migrar a otro plan', migrateBlock),
+      title: `Unidad ${unit.externalId}`, active: '/admin/units', orgSlug: org.slug, flash,
+      body: header
+        + datesRow
+        + migrationHistory
+        + panel({ title: 'Editar', body: editForm })
+        + panel({ title: 'Migrar a otro plan', description: 'Transfiere esta unidad a otro plan del mismo cliente.', body: migrateBlock, toned: true })
+        + techBlock,
     }));
   });
+
 
   app.post('/admin/units/:id/edit', async (request, reply) => {
     const org = await getOrg(prisma);
@@ -1311,43 +1377,72 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (q.status === 'active') where.activeTo = null;
     if (q.status === 'terminated') where.activeTo = { not: null };
     const units = await prisma.unit.findMany({
-      where, orderBy: [{ activeFrom: 'desc' }],
-      include: { service: true },
+      where, orderBy: [{ activeTo: 'asc' }, { activeFrom: 'desc' }],
+      include: { service: { include: { customer: { select: { name: true, externalId: true } } } } },
     });
     const flash = readFlash(request, reply);
+
+    const totalActive = units.filter((u) => u.activeTo === null).length;
+    const totalTerm = units.length - totalActive;
+
+    const filterPill = (label: string, target: string, isActive: boolean): string => {
+      const style = isActive
+        ? `style="background: var(--accent); color: #FAFAFA;"`
+        : `style="background: var(--paper-soft); color: var(--ink-soft);"`;
+      return `<a href="${target}" class="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded transition-colors" ${style}>${escapeHtml(label)}</a>`;
+    };
+
+    const filters = `
+      <div class="flex items-center gap-2 mb-6">
+        <span class="text-[11px] uppercase tracking-wider ink-faint mr-1">Filtrar:</span>
+        ${filterPill('Todas', '/admin/units', !q.status)}
+        ${filterPill('Activas', '/admin/units?status=active', q.status === 'active')}
+        ${filterPill('Terminadas', '/admin/units?status=terminated', q.status === 'terminated')}
+      </div>
+    `;
+
+    const header = `
+      <header class="mb-8">
+        <div class="max-w-3xl">
+          <div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">Operaciones</div>
+          <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">Unidades</h1>
+          <p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">
+            ${totalActive} activa${totalActive === 1 ? '' : 's'}${totalTerm > 0 ? ` · ${totalTerm} terminada${totalTerm === 1 ? '' : 's'}` : ''}.
+            Cada unidad representa un dispositivo o servicio individual y vive dentro de un plan.
+          </p>
+        </div>
+      </header>
+    `;
+
+    const tableBody = table({
+      rows: units,
+      empty: q.status ? `Sin unidades ${q.status === 'active' ? 'activas' : 'terminadas'}.` : 'Sin unidades.',
+      rowHref: (u) => `/admin/units/${u.id}/edit`,
+      columns: [
+        { label: 'Identificador', render: (u) => `<code class="font-mono-pro text-xs ink">${escapeHtml(u.externalId)}</code>${u.label ? `<div class="text-xs ink-faint mt-0.5">${escapeHtml(u.label)}</div>` : ''}` },
+        { label: 'Plan · Cliente', render: (u) => `<div class="font-medium ink">${escapeHtml(u.service.name)}</div><div class="text-xs ink-faint mt-0.5">${escapeHtml(u.service.customer.name)}</div>` },
+        { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
+        { label: 'Activa desde', render: (u) => `<span class="text-xs ink-soft">${fmtDateOnly(u.activeFrom)}</span>` },
+        { label: 'Facturación', render: (u) => u.billingStartsAt
+          ? `<span class="text-xs" style="color: var(--warn);" title="override de fecha de facturación (migración)">${fmtDateOnly(u.billingStartsAt)}</span>`
+          : '<span class="text-xs ink-faint">desde activa</span>' },
+        { label: 'Activa hasta', render: (u) => u.activeTo ? `<span class="text-xs ink-soft">${fmtDateOnly(u.activeTo)}</span>` : '<span class="ink-faint">—</span>' },
+        { label: 'Cobro inicial', render: (u) => {
+          const isOneOff = u.service.pricingModel === 'one_off';
+          const billedAt = isOneOff ? u.oneoffBilledAt : u.setupBilledAt;
+          if (!isOneOff && u.service.setupUnitAmountCents === 0) {
+            return '<span class="ink-faint text-xs">sin setup</span>';
+          }
+          return billedAt
+            ? '<span class="pill pill-success">facturado</span>'
+            : '<span class="pill pill-warn">pendiente</span>';
+        } },
+      ],
+    });
+
     reply.type('text/html').send(layout({
-      title: 'Units', active: '/admin/units', orgSlug: org.slug, flash,
-      body: pageHeader('Units') + table({
-        rows: units,
-        empty: 'Sin units',
-        columns: [
-          { label: 'External ID', render: (u) => `<code>${escapeHtml(u.externalId)}</code>` },
-          { label: 'Label', render: (u) => escapeHtml(u.label ?? '—') },
-          { label: 'Service', render: (u) => `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(u.service.code)}">${escapeHtml(u.service.code)}</a>` },
-          { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
-          { label: 'Active from', render: (u) => fmtDate(u.activeFrom) },
-          { label: 'Billing starts', render: (u) => u.billingStartsAt ? `<span class="text-amber-700">${escapeHtml(fmtDate(u.billingStartsAt))}</span>` : '<span class="text-gray-400">—</span>' },
-          { label: 'Active to', render: (u) => fmtDate(u.activeTo) },
-          // Gate de facturación inicial: para recurring miramos setupBilledAt,
-          // para one_off miramos oneoffBilledAt. Son campos distintos y el
-          // motor solo marca el que corresponde al pricing_model del service.
-          { label: 'Facturada', render: (u) => {
-            const isOneOff = u.service.pricingModel === 'one_off';
-            const billedAt = isOneOff ? u.oneoffBilledAt : u.setupBilledAt;
-            // Para recurring sin setup_unit_amount_cents, setupBilledAt
-            // siempre será null pero "facturada" no aplica como concepto;
-            // mostramos "n/a" en gris.
-            if (!isOneOff && u.service.setupUnitAmountCents === 0) {
-              return '<span class="text-gray-400 text-xs">n/a (sin setup)</span>';
-            }
-            const label = isOneOff ? 'one_off' : 'setup';
-            return billedAt
-              ? badge(`${label}: billed`, 'green')
-              : badge(`${label}: pendiente`, 'yellow');
-          } },
-          { label: '', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
-        ],
-      }),
+      title: 'Unidades', active: '/admin/units', orgSlug: org.slug, flash,
+      body: header + filters + tableBody,
     }));
   });
 
@@ -1363,21 +1458,40 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const svc = await prisma.service.findUnique({ where: { organizationId_code: { organizationId: org.id, code: q.service } } });
       if (svc) where.serviceId = svc.id;
     }
-    const events = await prisma.eventLog.findMany({ where, orderBy: { timestamp: 'desc' }, take: 200, include: { service: true } });
+    const events = await prisma.eventLog.findMany({ where, orderBy: { timestamp: 'desc' }, take: 200, include: { service: { select: { code: true, name: true } } } });
     const flash = readFlash(request, reply);
+
+    const header = `
+      <header class="mb-8">
+        <div class="max-w-3xl">
+          <div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">Operaciones</div>
+          <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">Eventos</h1>
+          <p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">
+            Bitácora append-only de los ${events.length === 200 ? 'últimos 200' : events.length} eventos recibidos vía <code class="font-mono-pro text-[13px]">POST /events</code>${q.service ? ` para el plan <code class="font-mono-pro text-[13px]">${escapeHtml(q.service)}</code>` : ''}.
+            Cada evento marca el alta o baja de una unidad y puede disparar facturación.
+          </p>
+        </div>
+      </header>
+    `;
+
+    const tableBody = table({
+      rows: events,
+      empty: 'Sin eventos registrados.',
+      columns: [
+        { label: 'Cuándo', render: (e) => `<span class="text-xs ink-soft font-mono-pro">${fmtDate(e.timestamp)}</span>` },
+        { label: 'Operación', render: (e) => e.operationType === 'remove'
+          ? '<span class="pill pill-danger">Baja</span>'
+          : '<span class="pill pill-success">Alta</span>' },
+        { label: 'Unidad', render: (e) => `<code class="font-mono-pro text-xs ink">${escapeHtml(e.unitExternalId)}</code>${e.unitLabel ? `<div class="text-xs ink-faint mt-0.5">${escapeHtml(e.unitLabel)}</div>` : ''}` },
+        { label: 'Plan', render: (e) => `<a class="ink hover:underline" style="color: var(--accent-deep);" href="/admin/services/${escapeHtml(e.service.code)}">${escapeHtml(e.service.name)}</a>` },
+        { label: 'Tipo', render: (e) => e.kind ? `<span class="text-xs ink-soft font-mono-pro">${escapeHtml(e.kind)}</span>` : '<span class="ink-faint">—</span>' },
+        { label: 'Transaction ID', render: (e) => `<code class="font-mono-pro text-[10px] ink-faint">${escapeHtml(e.transactionId.slice(0, 16))}…</code>` },
+      ],
+    });
+
     reply.type('text/html').send(layout({
-      title: 'Events', active: '/admin/events', orgSlug: org.slug, flash,
-      body: pageHeader('Events (últimos 200)') + table({
-        rows: events,
-        empty: 'Sin eventos',
-        columns: [
-          { label: 'Transaction ID', render: (e) => `<code class="text-xs">${escapeHtml(e.transactionId)}</code>` },
-          { label: 'Service', render: (e) => `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(e.service.code)}">${escapeHtml(e.service.code)}</a>` },
-          { label: 'Operation', render: (e) => `${badge(e.operationType, e.operationType === 'remove' ? 'red' : 'green')} ${escapeHtml(e.unitExternalId)}${e.unitLabel ? ` <span class="text-gray-500 text-xs">(${escapeHtml(e.unitLabel)})</span>` : ''}` },
-          { label: 'Kind', render: (e) => e.kind ? badge(e.kind, 'gray') : '—' },
-          { label: 'Timestamp', render: (e) => fmtDate(e.timestamp) },
-        ],
-      }),
+      title: 'Eventos', active: '/admin/events', orgSlug: org.slug, flash,
+      body: header + tableBody,
     }));
   });
 
@@ -1886,34 +2000,60 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const optionsHtml = commonTz.map((tz) =>
       `<option value="${escapeHtml(tz)}" ${tz === currentCookie ? 'selected' : ''}>${escapeHtml(tz)}</option>`,
     ).join('');
+
+    const tzStatus = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-px surface-card mb-6" style="border-radius: 6px; overflow: hidden;">
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Efectiva ahora</div>
+          <code class="font-mono-pro text-sm ink">${escapeHtml(effective)}</code>
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Tu preferencia</div>
+          ${currentCookie
+            ? `<code class="font-mono-pro text-sm ink">${escapeHtml(currentCookie)}</code>`
+            : `<div class="text-sm ink-faint italic">— sin preferencia (usa la de la org)</div>`}
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Zona de la organización</div>
+          <code class="font-mono-pro text-sm ink">${escapeHtml(org.timezone)}</code>
+        </div>
+      </div>
+    `;
+
     const form = `
-      <form method="post" action="/admin/settings" class="space-y-4 max-w-2xl">
-        <label class="block">
-          <span class="text-sm text-gray-700">Display timezone (IANA)</span>
-          <select name="display_tz" class="mt-1 block w-full rounded border-gray-300">
-            <option value="">— usar tz de la org (${escapeHtml(org.timezone)})</option>
-            ${optionsHtml}
-          </select>
-        </label>
-        <label class="block">
-          <span class="text-sm text-gray-700">O zona custom</span>
-          <input name="display_tz_custom" placeholder="ej. America/Tijuana" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Guardar preferencia</button>
+      <form method="post" action="/admin/settings" class="space-y-5">
+        <p class="text-sm ink-soft">
+          Cambia cómo se muestran las fechas y horas en este admin. Solo afecta tu sesión —
+          la API y las facturas siguen guardando todo en UTC. Las demás personas pueden
+          configurar su propia zona.
+        </p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+          ${formField({
+            label: 'Zona común',
+            input: `<select name="display_tz" class="${INPUT_CLASS}"><option value="">— usar la de la org (${escapeHtml(org.timezone)})</option>${optionsHtml}</select>`,
+          })}
+          ${formField({
+            label: 'O zona custom (IANA)',
+            input: `<input name="display_tz_custom" placeholder="ej. America/Tijuana" class="${INPUT_CLASS_MONO}">`,
+            hint: 'Cualquier nombre de zona IANA válido. La custom tiene prioridad sobre la común.',
+          })}
+        </div>
+        ${primaryButton('Guardar preferencia')}
       </form>
     `;
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
-      title: 'Settings', active: '/admin/settings', orgSlug: org.slug, flash,
-      body: pageHeader('Settings') + card('Display timezone', `
-        <p class="text-sm text-gray-600 mb-3">Las fechas mostradas en el admin se renderizan en esta zona. Las respuestas de la API siguen en UTC.</p>
-        ${kv([
-          ['Efectiva', `<code>${escapeHtml(effective)}</code>`],
-          ['Cookie actual', currentCookie ? `<code>${escapeHtml(currentCookie)}</code>` : '<span class="text-gray-400">(sin set)</span>'],
-          ['Org timezone', `<code>${escapeHtml(org.timezone)}</code>`],
-        ])}
-        <div class="mt-4">${form}</div>
-      `),
+      title: 'Ajustes', active: '/admin/settings', orgSlug: org.slug, flash,
+      body: pageTitle({
+        eyebrow: 'Sistema',
+        title: 'Ajustes',
+        description: 'Preferencias personales del admin. No afectan a otros usuarios ni a los datos.',
+      }) + panel({
+        title: 'Zona horaria de visualización',
+        description: 'Las fechas se renderizan en esta zona en todo el admin. Los datos siguen guardados en UTC.',
+        body: tzStatus + form,
+      }),
     }));
   });
 
