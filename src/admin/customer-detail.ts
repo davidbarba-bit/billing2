@@ -811,15 +811,15 @@ export function renderNewCustomerForm(
       <div class="border-t pt-5">
         <h3 class="text-sm font-semibold text-gray-700 mb-3">Estructura de facturación</h3>
         <p class="text-xs text-gray-500 mb-3">
-          Decide cuándo se factura un servicio one-off al recibir su primer evento, y cómo se
-          agrupan los conceptos en la factura del cierre.
-          <span class="text-gray-400">El setup y la baja de servicios recurrentes se configuran a nivel del servicio, no del cliente.</span>
+          Decide cuándo se factura el bloque one-off (setup + mensualidades prepagadas) al recibir
+          el primer evento de la unit, y cómo se estructuran los conceptos en la factura del cierre.
+          <span class="text-gray-400">El setup y la baja de servicios <em>recurrentes</em> se configuran a nivel del servicio.</span>
         </p>
         <div class="grid grid-cols-2 gap-4">
           <label class="block">
             <span class="text-sm font-medium text-gray-700">Cuándo facturar los servicios one-off</span>
             <select name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm">${triggerOptions}</select>
-            <span class="text-xs text-gray-500">Solo aplica a servicios <code>one_off</code> (venta única con prepago). Setup y baja de servicios recurrentes tienen su propio control por servicio.</span>
+            <span class="text-xs text-gray-500">Aplica al bloque one-off completo (setup + N mensualidades prepagadas) cuando llega el primer evento.</span>
           </label>
           <label class="block">
             <span class="text-sm font-medium text-gray-700">Estructura de la factura del cierre</span>

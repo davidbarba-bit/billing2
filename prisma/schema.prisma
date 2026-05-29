@@ -146,8 +146,16 @@ model Service {
   // v4: pricing_model decide cómo se cobra.
   //   "recurring" → renta per_unit (monthlyUnitAmountCents) cada periodo del customer
   //                 + setup opcional (setupUnitAmountCents) una vez por unit.
-  //   "one_off"   → cargo único per_unit (monthlyUnitAmountCents) cuando la unit aparece.
-  //                 setupUnitAmountCents debe ser 0 (no aplica en one_off).
+  //                 + baja opcional (removalUnitAmountCents) una vez al terminar.
+  //                 Setup y baja tienen control independiente de "cuándo facturar"
+  //                 a nivel Service (setupBillingMode / removalBillingMode).
+  //   "one_off"   → bloque cobrado al primer evento de cada unit:
+  //                   · setup opcional (setupUnitAmountCents) — sí aplica.
+  //                   · N mensualidades prepagadas (N × monthlyUnitAmountCents)
+  //                     donde N = unit.prepaidMonths ?? service.prepaidMonthsDefault.
+  //                 El "cuándo" del bloque entero lo decide
+  //                 Customer.nonrecurringTrigger (next_cycle vs immediate).
+  //                 removalUnitAmountCents NO aplica (no hay baja en one_off).
   pricingModel           String    @default("recurring") @map("pricing_model")
   monthlyUnitAmountCents Int       @default(0) @map("monthly_unit_amount_cents")
   setupUnitAmountCents   Int       @default(0) @map("setup_unit_amount_cents")
