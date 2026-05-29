@@ -17,6 +17,8 @@ import {
   fmtMoney,
   formField,
   formSection,
+  modal,
+  modalTrigger,
   pageTitle,
   panel,
   postButton,
@@ -187,25 +189,40 @@ function renderResumen(service: ServiceWithRelations): string {
       : `<div class="rounded p-4 text-sm mb-4" style="background: var(--accent-tint); color: var(--accent-deep);">
           Todos los códigos requeridos para este plan están configurados.
         </div>`;
-    const form = `
-      <form method="post" action="/admin/services/${escapeHtml(service.code)}/netsuite-codes" class="mt-2">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-4">
-          ${formField({
-            label: 'Item code mensual',
-            input: `<input name="netsuite_monthly_item_code" value="${escapeHtml(service.netsuiteMonthlyItemCode ?? '')}" placeholder="SUB-MONTHLY" class="${INPUT_CLASS_MONO}">`,
-            hint: isOneOff ? 'Se usa para las N mensualidades prepagadas.' : 'Se usa cada periodo.',
-          })}
-          ${formField({
-            label: 'Item code setup',
-            input: `<input name="netsuite_setup_item_code" value="${escapeHtml(service.netsuiteSetupItemCode ?? '')}" placeholder="SUB-SETUP" class="${INPUT_CLASS_MONO}">`,
-            hint: 'Aplica si hay monto de setup mayor a 0.',
-          })}
-        </div>
-        ${primaryButton('Guardar códigos')}
-      </form>
-    `;
-    return banner + codesRow + `<details class="mt-5"><summary class="cursor-pointer text-sm font-medium" style="color: var(--accent-deep);">Editar códigos</summary>${form}</details>`;
+    const editTrigger = `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-netsuite-codes', label: 'Editar códigos' })}</div>`;
+    return banner + codesRow + editTrigger;
   })();
+
+  const netsuiteCodesForm = `
+    <form method="post" action="/admin/services/${escapeHtml(service.code)}/netsuite-codes" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+        ${formField({
+          label: 'Item code mensual',
+          input: `<input name="netsuite_monthly_item_code" value="${escapeHtml(service.netsuiteMonthlyItemCode ?? '')}" placeholder="SUB-MONTHLY" class="${INPUT_CLASS_MONO}">`,
+          hint: isOneOff ? 'Se usa para las N mensualidades prepagadas.' : 'Se usa cada periodo.',
+        })}
+        ${formField({
+          label: 'Item code setup',
+          input: `<input name="netsuite_setup_item_code" value="${escapeHtml(service.netsuiteSetupItemCode ?? '')}" placeholder="SUB-SETUP" class="${INPUT_CLASS_MONO}">`,
+          hint: 'Aplica si hay monto de setup mayor a 0.',
+        })}
+        ${!isOneOff ? formField({
+          label: 'Item code baja',
+          input: `<input name="netsuite_removal_item_code" value="${escapeHtml(service.netsuiteRemovalItemCode ?? '')}" placeholder="SUB-BAJA" class="${INPUT_CLASS_MONO}">`,
+          hint: 'Aplica si hay monto de baja mayor a 0.',
+        }) : ''}
+      </div>
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton('Guardar códigos')}
+      </div>
+    </form>
+  `;
+  const netsuiteCodesModal = modal({
+    id: 'modal-netsuite-codes',
+    title: 'Editar códigos de producto NetSuite',
+    description: 'Estos códigos se envían como item_code en cada línea de factura. NetSuite rechaza líneas sin código válido.',
+    body: netsuiteCodesForm,
+  });
 
   // Acciones del plan — terminate + link a invoices del cliente.
   const terminateForm = service.status !== 'terminated'
@@ -222,7 +239,8 @@ function renderResumen(service: ServiceWithRelations): string {
     + panel({
       title: 'Acciones',
       body: `<div class="flex items-center gap-4">${terminateForm}<span>${invoicesLink}</span></div>`,
-    });
+    })
+    + netsuiteCodesModal;
 }
 
 // --- Tab: Unidades -------------------------------------------------------
