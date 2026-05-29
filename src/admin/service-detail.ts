@@ -486,23 +486,23 @@ function renderAddons(service: ServiceWithRelations): string {
       });
 
   const addonForm = `
-    <form method="post" action="/admin/services/${escapeHtml(service.code)}/add-ons" class="space-y-5">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
-        ${formField({
-          label: 'Código',
-          required: true,
-          input: `<input required name="code" placeholder="historial-12m" class="${INPUT_CLASS_MONO}">`,
-        })}
+    <form method="post" action="/admin/services/${escapeHtml(service.code)}/add-ons" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
         ${formField({
           label: 'Nombre',
           required: true,
+          span: 2,
+          hint: 'El código se genera automáticamente.',
           input: `<input required name="name" placeholder="Historial 6 → 12 meses" class="${INPUT_CLASS}">`,
         })}
         ${formField({
-          label: 'Monto por unidad (cents)',
+          label: 'Monto por unidad',
           required: true,
-          input: `<input required type="number" name="amount_cents" min="0" value="5000" class="${INPUT_CLASS_MONO}">`,
-          hint: 'Se cobra mensualmente sobre cada unidad activa del plan.',
+          hint: `Se cobra mensualmente sobre cada unidad activa. En ${escapeHtml(service.currency)}.`,
+          input: `<div class="relative">
+            <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(service.currency)}</span>
+            <input required type="number" step="0.01" min="0" name="amount" placeholder="0.00" class="${INPUT_CLASS_MONO} pl-14 text-right">
+          </div>`,
         })}
         ${formField({
           label: 'Item code NetSuite',
@@ -514,19 +514,30 @@ function renderAddons(service: ServiceWithRelations): string {
           input: `<input name="description" class="${INPUT_CLASS}">`,
         })}
       </div>
-      ${primaryButton('Crear add-on')}
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton('Crear add-on')}
+      </div>
     </form>
   `;
+
+  const addonModal = service.status !== 'terminated'
+    ? modal({
+        id: 'modal-new-addon',
+        title: 'Nuevo add-on per-unit',
+        description: 'Cargo adicional mensual que se cobra sobre cada unidad activa del plan.',
+        body: addonForm,
+      })
+    : '';
+
+  const addButton = service.status !== 'terminated'
+    ? `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-new-addon', label: 'Agregar add-on' })}</div>`
+    : '';
 
   return panel({
     title: `Add-ons per-unit · ${service.addOns.length}`,
     description: 'Cargos adicionales que se cobran sobre cada unidad activa del plan. Si necesitas un cargo flat independiente, agrégalo a nivel del cliente.',
-    body: addonsTable,
-  }) + panel({
-    title: 'Agregar add-on',
-    body: addonForm,
-    toned: true,
-  });
+    body: addonsTable + addButton,
+  }) + addonModal;
 }
 
 // --- Tab: Precio ---------------------------------------------------------

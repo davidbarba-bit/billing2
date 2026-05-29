@@ -730,23 +730,31 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const { code: svcCode } = request.params as { code: string };
     const body = request.body as Record<string, string>;
+    const service = await prisma.service.findFirst({
+      where: { organizationId: org.id, code: svcCode },
+      include: { addOns: true },
+    });
+    if (!service) { setFlash(reply, 'error', 'Plan no encontrado'); return reply.redirect('/admin/services'); }
+    const seq = String(service.addOns.length + 1).padStart(2, '0');
+    const generatedCode = `${svcCode}-addon-${seq}`;
+    const amountCents = Math.round(Number(body.amount || 0) * 100);
     const result = await app.inject({
       method: 'POST',
       url: `/api/v1/services/${encodeURIComponent(svcCode)}/add-ons`,
       headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
       payload: {
         service_add_on: {
-          code: body.code,
+          code: generatedCode,
           name: body.name,
           description: (body.description as string) || undefined,
-          amount_cents: Number(body.amount_cents),
+          amount_cents: amountCents,
           netsuite_item_code: body.netsuite_item_code || null,
         },
       },
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
-    else setFlash(reply, 'success', `Add-on "${body.code}" creado`);
-    reply.redirect(`/admin/services/${svcCode}`);
+    else setFlash(reply, 'success', `Add-on "${body.name}" creado`);
+    reply.redirect(`/admin/services/${svcCode}?tab=addons`);
   });
 
   app.post('/admin/service-add-ons/:id/terminate', async (request, reply) => {
