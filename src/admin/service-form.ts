@@ -47,57 +47,38 @@ export function renderServiceNewForm(args: {
 
   // Modelo de cobro como radio cards editoriales — la decisión cambia
   // qué campos aplican (setup/baja vs prepaid_months), conviene visualizarlo.
+  // El estado activo se maneja con CSS :has() para que el cambio sea
+  // instantáneo sin JS frágil.
   const pricingModelField = (() => {
     const current = form.pricing_model ?? 'recurring';
     const card = (value: 'recurring' | 'one_off', title: string, description: string): string => {
-      const isActive = current === value;
-      const surfaceStyle = isActive
-        ? 'background: var(--accent-soft); border-color: var(--accent);'
-        : 'background: #FFFFFF; border-color: var(--rule);';
-      const radio = isActive
-        ? '<span class="inline-flex w-4 h-4 rounded-full items-center justify-center" style="border: 1.5px solid var(--accent);"><span class="w-1.5 h-1.5 rounded-full" style="background: var(--accent);"></span></span>'
-        : '<span class="inline-block w-4 h-4 rounded-full" style="border: 1.5px solid var(--rule);"></span>';
-      const titleColor = isActive ? 'color: var(--accent);' : '';
-      return `<label class="relative cursor-pointer p-5 transition-all" style="${surfaceStyle} border-style: solid; border-width: 1px; border-radius: 4px;">
-        <input type="radio" name="pricing_model" value="${value}" ${isActive ? 'checked' : ''} class="sr-only">
+      return `<label class="pricing-card relative cursor-pointer p-5 transition-all" style="border-style: solid; border-width: 1px; border-radius: 4px;">
+        <input type="radio" name="pricing_model" value="${value}" ${current === value ? 'checked' : ''} class="sr-only">
         <div class="flex items-start gap-3">
-          ${radio}
+          <span class="pricing-card-dot inline-flex w-4 h-4 rounded-full items-center justify-center">
+            <span class="pricing-card-dot-inner w-1.5 h-1.5 rounded-full"></span>
+          </span>
           <div class="flex-1">
-            <div class="font-display text-[15px] font-medium leading-tight" style="${titleColor}">${escapeHtml(title)}</div>
+            <div class="pricing-card-title font-display text-[15px] font-medium leading-tight">${escapeHtml(title)}</div>
             <div class="text-[13px] ink-soft mt-1.5 leading-relaxed">${escapeHtml(description)}</div>
           </div>
         </div>
       </label>`;
     };
-    return `<div id="pricing-model-cards" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    return `<style>
+      .pricing-card { background: #FFFFFF; border-color: var(--rule); }
+      .pricing-card-dot { border: 1.5px solid var(--rule); }
+      .pricing-card-dot-inner { background: transparent; }
+      .pricing-card:has(input[type="radio"]:checked) { background: var(--accent-soft); border-color: var(--accent); }
+      .pricing-card:has(input[type="radio"]:checked) .pricing-card-dot { border-color: var(--accent); }
+      .pricing-card:has(input[type="radio"]:checked) .pricing-card-dot-inner { background: var(--accent); }
+      .pricing-card:has(input[type="radio"]:checked) .pricing-card-title { color: var(--accent); }
+      .pricing-card:hover:not(:has(input[type="radio"]:checked)) { border-color: var(--ink-faint); }
+    </style>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       ${card('recurring', 'Recurrente', 'Renta mensual por unidad activa. Opcionalmente setup al instalar y baja al desinstalar.')}
       ${card('one_off', 'Prepago', 'Setup opcional + N mensualidades pagadas por adelantado al recibir el primer evento.')}
-    </div>
-    <script>
-      (function(){
-        var container = document.getElementById('pricing-model-cards');
-        if (!container) return;
-        container.addEventListener('change', function(e) {
-          var labels = container.querySelectorAll('label');
-          labels.forEach(function(label) {
-            var radio = label.querySelector('input[type="radio"]');
-            var dot = label.querySelector('.flex > span:first-child');
-            var title = label.querySelector('.font-display');
-            if (radio.checked) {
-              label.style.background = 'var(--accent-soft)';
-              label.style.borderColor = 'var(--accent)';
-              if (title) title.style.color = 'var(--accent)';
-              if (dot) dot.outerHTML = '<span class="inline-flex w-4 h-4 rounded-full items-center justify-center" style="border: 1.5px solid var(--accent);"><span class="w-1.5 h-1.5 rounded-full" style="background: var(--accent);"></span></span>';
-            } else {
-              label.style.background = '#FFFFFF';
-              label.style.borderColor = 'var(--rule)';
-              if (title) title.style.color = '';
-              if (dot) dot.outerHTML = '<span class="inline-block w-4 h-4 rounded-full" style="border: 1.5px solid var(--rule);"></span>';
-            }
-          });
-        });
-      })();
-    </script>`;
+    </div>`;
   })();
 
   // Sección "Identificación" — cliente, código, nombre, descripción.
