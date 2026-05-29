@@ -46,6 +46,8 @@ import {
   statusBadge,
   table,
 } from './views.js';
+import { computeDashboardMetrics, renderDashboardBody } from './dashboard.js';
+import { isCustomerTab, renderCustomerDetail, type CustomerTab } from './customer-detail.js';
 
 type Deps = {
   config: AppConfig;
@@ -194,7 +196,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const cookies = (request as unknown as { cookies?: Record<string, string | undefined> }).cookies ?? {};
     let tz = cookies.admin_display_tz;
     if (!tz || !isValidIanaTimezone(tz)) tz = cachedOrgTz;
-    adminContextStorage.enterWith({ displayTz: tz, user: null });
+    const techMode = cookies.admin_tech_mode === 'on';
+    adminContextStorage.enterWith({
+      displayTz: tz,
+      user: null,
+      techMode,
+      currentUrl: request.url,
+    });
     done();
   });
 
@@ -232,37 +240,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
-    const [customers, activeServices, activeUnits, events, invoices, invCalc, invDispatched, invConfirmed, creditNotes] = await Promise.all([
-      prisma.customer.count({ where: { organizationId: org.id } }),
-      prisma.service.count({ where: { organizationId: org.id, status: 'active' } }),
-      prisma.unit.count({ where: { service: { organizationId: org.id }, activeTo: null } }),
-      prisma.eventLog.count({ where: { organizationId: org.id } }),
-      prisma.invoice.count({ where: { organizationId: org.id } }),
-      prisma.invoice.count({ where: { organizationId: org.id, status: 'calculated' } }),
-      prisma.invoice.count({ where: { organizationId: org.id, externalDispatchStatus: 'dispatched' } }),
-      prisma.invoice.count({ where: { organizationId: org.id, externalDispatchStatus: 'confirmed' } }),
-      prisma.creditNote.count({ where: { organizationId: org.id } }),
-    ]);
-
-    const counts = `
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        ${counter('Customers', customers, '/admin/customers')}
-        ${counter('Services', activeServices, '/admin/services')}
-        ${counter('Units', activeUnits, '/admin/units')}
-        ${counter('Events', events, '/admin/events')}
-        ${counter('Invoices', invoices, '/admin/invoices')}
-        ${counter('Credit notes', creditNotes, '/admin/credit-notes')}
-        ${counter('Dispatch confirmed', invConfirmed)}
-      </div>
-      <div class="grid grid-cols-3 gap-4 mb-6">
-        ${counter('Invoices calculated', invCalc)}
-        ${counter('Invoices dispatched', invDispatched)}
-        ${counter('Invoices confirmed', invConfirmed)}
-      </div>
-    `;
-
-    const seedAction = postButton('/admin/seed', 'Seed Numaris (3 unidades)', 'primary');
     const flash = readFlash(request, reply);
+
+    const metrics = await computeDashboardMetrics(prisma, org);
+
+    // Acciones de operación — sólo visibles en modo técnico ya que son
+    // herramientas de devs/seed/reset, no de uso operativo diario.
+    const seedAction = postButton('/admin/seed', 'Seed Numaris (demo)', 'primary');
     const resetForm = `
       <details class="mt-2">
         <summary class="cursor-pointer text-sm text-red-700 font-medium">Hard reset (borrar TODA la data de esta org)</summary>
@@ -276,20 +260,29 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         </form>
       </details>
     `;
+    const techBlock = adminContextStorage.getStore()?.techMode
+      ? card('Herramientas técnicas', `
+        <div class="space-y-3 text-sm">
+          <div>${seedAction}</div>
+          ${kv([
+            ['ID', `<code>${escapeHtml(org.id)}</code>`],
+            ['API key', `<code>${escapeHtml(org.apiKey)}</code>`],
+          ])}
+          ${resetForm}
+        </div>
+      `)
+      : '';
 
     reply.type('text/html').send(layout({
       title: 'Dashboard',
       active: '/admin',
       orgSlug: org.slug,
       flash,
-      body: pageHeader('Dashboard', seedAction) + counts + card('Organización', kv([
-        ['ID', `<code>${escapeHtml(org.id)}</code>`],
-        ['Slug', escapeHtml(org.slug)],
-        ['Timezone', escapeHtml(org.timezone)],
-        ['API key', `<code>${escapeHtml(org.apiKey)}</code>`],
-        ['NetSuite callback secret', org.netsuiteCallbackSecret ? '<span class="text-green-700">configurado</span>' : '<span class="text-yellow-700">no configurado</span>'],
-        ['NetSuite dispatch flag', deps.config.featureNetsuiteDispatchEnabled ? badge('on', 'green') : badge('off', 'yellow')],
-      ])) + card('Zona peligrosa', resetForm),
+      body: renderDashboardBody({
+        metrics,
+        org,
+        dispatchFlagOn: deps.config.featureNetsuiteDispatchEnabled,
+      }) + techBlock,
     }));
   });
 
@@ -343,15 +336,24 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     }));
   });
 
+
   app.get('/admin/customers/:externalId', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
     const { externalId } = request.params as { externalId: string };
+    const query = request.query as { tab?: string };
+    const tab: CustomerTab = isCustomerTab(query.tab) ? query.tab : 'resumen';
+
     const customer = await prisma.customer.findUnique({
       where: { organizationId_externalId: { organizationId: org.id, externalId } },
       include: {
         organization: true,
-        services: { orderBy: { createdAt: 'desc' } },
+        services: {
+          orderBy: { createdAt: 'desc' },
+          include: {
+            units: { orderBy: [{ activeTo: 'asc' }, { activeFrom: 'desc' }] },
+          },
+        },
         addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }] },
         invoices: { orderBy: { createdAt: 'desc' } },
         creditNotes: { orderBy: { createdAt: 'desc' } },
@@ -365,283 +367,30 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return;
     }
 
-    const info = kv([
-      ['External ID', `<code>${escapeHtml(customer.externalId)}</code>`],
-      ['Slug', escapeHtml(customer.slug)],
-      ['Nombre', escapeHtml(customer.name)],
-      ['Currency', escapeHtml(customer.currency)],
-      ['Country', escapeHtml(customer.country ?? '—')],
-      ['Timezone', escapeHtml(customer.timezone ?? '—')],
-      ['Tax ID', escapeHtml(customer.taxIdentificationNumber ?? '—')],
-      ['Status', statusBadge(customer.status)],
-      ['Intervalo', badge(`${customer.billingPeriodMonths}M`, 'blue')],
-      ['Día de cierre', `día ${customer.billingAnchorDay} del mes`],
-      ['No-recurrente', badge(customer.nonrecurringTrigger, customer.nonrecurringTrigger === 'immediate' ? 'green' : 'gray')],
-      ['Subscription at', fmtDate(customer.subscriptionAt)],
-      ['Started at', fmtDate(customer.startedAt)],
-      ['Period start', fmtDate(customer.currentBillingPeriodStartedAt)],
-      ['Period end', fmtDate(customer.currentBillingPeriodEndingAt)],
-      ['Creado', fmtDate(customer.createdAt)],
-      ['Actualizado', fmtDate(customer.updatedAt)],
-    ]);
-
-    const customerAddOnsBlock = table({
-      rows: customer.addOns,
-      empty: 'Sin customer add-ons',
-      columns: [
-        { label: 'Code', render: (a) => `<code>${escapeHtml(a.code)}</code>` },
-        { label: 'Nombre', render: (a) => escapeHtml(a.name) },
-        { label: 'Amount /mes', render: (a) => `${fmtMoney(a.amountCents, customer.currency)} flat/mes` },
-        { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
-        { label: 'Active from', render: (a) => fmtDate(a.activeFrom) },
-        { label: 'Active to', render: (a) => fmtDate(a.activeTo) },
-        { label: 'Acciones', render: (a) => a.activeTo === null
-          ? postButton(`/admin/customer-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
-          : '<span class="text-gray-400">terminated</span>' },
-      ],
-    });
-
-    const customerAddOnForm = `
-      <details>
-        <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar customer add-on (flat)</summary>
-        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/add-ons" class="mt-3 space-y-3 max-w-2xl">
-          <p class="text-xs text-gray-500">Cargos flat independientes de unidades o services (ej. "10 reglas de evento +$1000/mes").</p>
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">Code</span>
-              <input required name="code" placeholder="reglas-10" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Nombre</span>
-              <input required name="name" placeholder="Reglas de evento 5→10" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Amount flat (cents) /mes</span>
-              <input required type="number" name="amount_cents" min="0" value="100000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">NetSuite item code</span>
-              <input name="netsuite_item_code" placeholder="ADDON-FLAT" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
-              <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-          </div>
-          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear customer add-on</button>
-        </form>
-      </details>
-    `;
-
-    const invoiceForm = `
-      <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/invoice" class="inline">
-        <button type="submit" class="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Calcular factura del periodo</button>
-      </form>
-      <a href="/admin/customers/${escapeHtml(customer.externalId)}/preview" class="ml-2 px-3 py-1.5 rounded bg-white text-gray-700 border text-sm font-medium hover:bg-gray-50 inline-flex items-center">Vista previa (dry-run)</a>
-    `;
-
-    const servicesBlock = table({
-      rows: customer.services,
-      empty: 'Sin services',
-      rowHref: (s) => `/admin/services/${s.code}`,
-      columns: [
-        { label: 'Nombre', render: (s) => escapeHtml(s.name) },
-        { label: 'Status', render: (s) => statusBadge(s.status) },
-        { label: 'Mensual', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) + '/u' },
-        { label: 'Setup', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) + '/u' },
-      ],
-    });
-
-    const invoicesBlock = table({
-      rows: customer.invoices,
-      empty: 'Sin invoices',
-      rowHref: (i) => `/admin/invoices/${i.id}`,
-      columns: [
-        { label: '#', render: (i) => String(i.sequentialId) },
-        { label: 'Folio', render: (i) => i.number ? `<code>${escapeHtml(i.number)}</code>` : '<span class="text-gray-400">—</span>' },
-        { label: 'Status', render: (i) => statusBadge(i.status) },
-        { label: 'Dispatch', render: (i) => statusBadge(i.externalDispatchStatus) },
-        { label: 'Total', render: (i) => fmtMoney(i.feesAmountCents, i.currency) },
-        { label: 'Emitida', render: (i) => fmtDateOnly(i.issuingDate) },
-      ],
-    });
-
-    const cnsBlock = table({
-      rows: customer.creditNotes,
-      empty: 'Sin credit notes',
-      rowHref: (cn) => `/admin/credit-notes/${cn.id}`,
-      columns: [
-        { label: 'Folio', render: (cn) => cn.number ? `<code>${escapeHtml(cn.number)}</code>` : '—' },
-        { label: 'Status', render: (cn) => statusBadge(cn.status) },
-        { label: 'Total', render: (cn) => fmtMoney(cn.totalAmountCents, cn.currency) },
-        { label: 'Razón', render: (cn) => escapeHtml(cn.reason) },
-      ],
-    });
-
-    // v11: card "Calendario de facturación" con edición inline.
-    // El gate de "no invoices no-voided" se aplica en el API; aquí solo
-    // mostramos el aviso para que el admin sepa por qué está deshabilitado.
-    const scheduleBlock = (() => {
-      const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
-      const blocked = nonVoidedInvoices > 0;
-      const terminated = customer.status === 'terminated';
-      const dtLocal = (d: Date | null | undefined): string => {
-        if (!d) return '';
-        const yyyy = d.getUTCFullYear();
-        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(d.getUTCDate()).padStart(2, '0');
-        const hh = String(d.getUTCHours()).padStart(2, '0');
-        const mi = String(d.getUTCMinutes()).padStart(2, '0');
-        return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
-      };
-      const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-      const summary = kv([
-        ['Subscription at', fmtDate(customer.subscriptionAt)],
-        ['Anchor day', String(customer.billingAnchorDay)],
-        ['Period months', String(customer.billingPeriodMonths)],
-        ['Anchor month', customer.billingAnchorMonth
-          ? `${customer.billingAnchorMonth} (${monthNames[customer.billingAnchorMonth - 1]})`
-          : '<span class="text-gray-400">— (anclado a subscription_at)</span>'],
-        ['Trigger no-recurrente', badge(customer.nonrecurringTrigger, customer.nonrecurringTrigger === 'immediate' ? 'green' : 'gray')],
-        ['Modo cycle invoice', badge(customer.cycleInvoiceMode, customer.cycleInvoiceMode === 'split_by_kind' ? 'green' : 'gray')
-          + (customer.cycleInvoiceMode === 'split_by_kind'
-            ? ' <span class="text-xs text-gray-500 ml-2">recurrentes + únicos en facturas separadas</span>'
-            : ' <span class="text-xs text-gray-500 ml-2">todo en una factura</span>')],
-        ['Periodo vigente', `${fmtDate(customer.currentBillingPeriodStartedAt)} → ${fmtDate(customer.currentBillingPeriodEndingAt)}`],
-      ]);
-      const periodOptions = [1, 3, 6, 12].map((n) =>
-        `<option value="${n}" ${n === customer.billingPeriodMonths ? 'selected' : ''}>${n} mes${n === 1 ? '' : 'es'}</option>`).join('');
-      const triggerOptions = [
-        `<option value="next_cycle" ${customer.nonrecurringTrigger === 'next_cycle' ? 'selected' : ''}>next_cycle (cobrar en próximo cierre)</option>`,
-        `<option value="immediate" ${customer.nonrecurringTrigger === 'immediate' ? 'selected' : ''}>immediate (factura individual al ping)</option>`,
-      ].join('');
-      const cycleModeOptions = [
-        `<option value="unified" ${customer.cycleInvoiceMode === 'unified' ? 'selected' : ''}>unified — 1 factura con todos los conceptos</option>`,
-        `<option value="split_by_kind" ${customer.cycleInvoiceMode === 'split_by_kind' ? 'selected' : ''}>split_by_kind — 2 facturas: recurrentes + únicos</option>`,
-      ].join('');
-      // v15: anchor_month options. Solo aplica si period_months > 1.
-      const anchorMonthOptions = ['<option value="">— (anclado a subscription_at)</option>']
-        .concat(monthNames.map((name, i) => {
-          const n = i + 1;
-          return `<option value="${n}" ${n === customer.billingAnchorMonth ? 'selected' : ''}>${n} — ${name}</option>`;
-        }))
-        .join('');
-      const banner = terminated
-        ? `<div class="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900 mb-3">Customer <code>terminated</code> — schedule no editable.</div>`
-        : blocked
-        ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>${nonVoidedInvoices} invoice${nonVoidedInvoices === 1 ? '' : 's'} no-voided bloque${nonVoidedInvoices === 1 ? 'a' : 'an'} cambios a <code>subscription_at</code>, <code>anchor_day</code>, <code>period_months</code> y <code>anchor_month</code>.</strong> Voidálas primero. El campo <code>nonrecurring_trigger</code> sí se puede editar.</div>`
-        : '';
-      const disabledHard = blocked || terminated ? 'disabled' : '';
-      const disabledSoft = terminated ? 'disabled' : '';
-      const form = `
-        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/billing-schedule" class="space-y-3 max-w-3xl"
-          onsubmit="return confirm('Esto recalculará el ciclo actual y guardará el cambio en el historial. ¿Continuar?')">
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">Subscription at (UTC)</span>
-              <input ${disabledHard} type="datetime-local" name="subscription_at" value="${escapeHtml(dtLocal(customer.subscriptionAt))}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Anchor day (1–28)</span>
-              <input ${disabledHard} type="number" name="billing_anchor_day" min="1" max="28" value="${customer.billingAnchorDay}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Period months</span>
-              <select ${disabledHard} name="billing_period_months" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${periodOptions}</select>
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Anchor month <span class="text-xs text-gray-500">(solo trimestral/semestral/anual)</span></span>
-              <select ${disabledHard} name="billing_anchor_month" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">${anchorMonthOptions}</select>
-              <span class="text-xs text-gray-500">Define en qué mes calendario inicia un ciclo. Ej. trimestral con Jul → cycles Jul-Sep, Oct-Dic, Ene-Mar, Abr-Jun.</span>
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Trigger no-recurrente</span>
-              <select ${disabledSoft} name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${triggerOptions}</select>
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Modo cycle invoice</span>
-              <select ${disabledSoft} name="cycle_invoice_mode" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledSoft ? 'bg-gray-100' : ''}">${cycleModeOptions}</select>
-              <span class="text-xs text-gray-500">v19: 'split_by_kind' emite hasta 2 facturas al cierre — una con renta (monthly, addons, mensualidades prepagadas) y otra con instalaciones/bajas (setup, removal).</span>
-            </label>
-          </div>
-          ${terminated ? '' : `<button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Actualizar calendario</button>`}
-        </form>
-      `;
-      return summary + '<div class="mt-4 pt-4 border-t">' + banner + form + '</div>';
-    })();
-
-    // v12: card "Datos del cliente" — edición de soft fields.
-    // currency tiene gate por invoices (mismo aviso que el de schedule, pero
-    // independiente — currency es soft "tirando a hard").
-    const softBlock = (() => {
-      const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
-      const currencyBlocked = nonVoidedInvoices > 0;
-      const terminated = customer.status === 'terminated';
-      if (terminated) {
-        return `<div class="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900">Customer <code>terminated</code> — datos no editables.</div>`;
-      }
-      const currencyHint = currencyBlocked
-        ? `<span class="text-xs text-amber-700">Bloqueada: hay invoices emitidas en <code>${escapeHtml(customer.currency)}</code>.</span>`
-        : '<span class="text-xs text-gray-500">Puede cambiarse mientras no haya invoices no-voided.</span>';
-      return `
-        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/edit" class="space-y-3">
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">Nombre</span>
-              <input required name="name" value="${escapeHtml(customer.name)}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Tax ID (RFC)</span>
-              <input name="tax_identification_number" value="${escapeHtml(customer.taxIdentificationNumber ?? '')}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Email</span>
-              <input type="email" name="email" value="${escapeHtml(customer.email ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Teléfono</span>
-              <input name="phone" value="${escapeHtml(customer.phone ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Dirección línea 1</span>
-              <input name="address_line1" value="${escapeHtml(customer.addressLine1 ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Dirección línea 2</span>
-              <input name="address_line2" value="${escapeHtml(customer.addressLine2 ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Ciudad</span>
-              <input name="city" value="${escapeHtml(customer.city ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Estado</span>
-              <input name="state" value="${escapeHtml(customer.state ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">CP</span>
-              <input name="zipcode" value="${escapeHtml(customer.zipcode ?? '')}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">País (ISO 2 letras)</span>
-              <input name="country" value="${escapeHtml(customer.country ?? '')}" maxlength="2" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Timezone (IANA)</span>
-              <input name="timezone" value="${escapeHtml(customer.timezone ?? '')}" placeholder="America/Mexico_City" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Currency</span>
-              <input ${currencyBlocked ? 'readonly' : ''} name="currency" value="${escapeHtml(customer.currency)}" maxlength="3" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase ${currencyBlocked ? 'bg-gray-100' : ''}">
-              ${currencyHint}
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">NetSuite internal ID <span class="text-gray-400">(cache)</span></span>
-              <input name="netsuite_internal_id" value="${escapeHtml(customer.netsuiteInternalId ?? '')}" placeholder="ej. 614" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-              <span class="text-xs text-gray-500">Si NetSuite ya creó el customer y conoces su internal id, ponlo aquí para que el dispatch lo use directo. Si queda vacío, el dispatch envía <code>eid:${escapeHtml(customer.externalId)}</code> (NetSuite resolverá por externalId).</span>
-            </label>
-            <div class="block col-span-2 bg-indigo-50 border border-indigo-200 rounded p-3 text-sm">
-              <div class="text-xs text-indigo-700 uppercase font-semibold">Entity handle al dispatch</div>
-              <code class="font-mono text-indigo-900">${escapeHtml(customer.netsuiteInternalId ? customer.netsuiteInternalId : `eid:${customer.externalId}`)}</code>
-              <div class="text-xs text-indigo-700 mt-1">${customer.netsuiteInternalId ? 'Internal id directo (faster path).' : 'Fallback por external id — NetSuite hará lookup.'}</div>
-            </div>
-          </div>
-          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar datos</button>
-        </form>
-      `;
-    })();
+    // Eventos del customer — los cargamos sólo si el tab activo es 'eventos'
+    // para no penalizar el resto de pestañas. Si la lista del customer
+    // crece, agregamos paginación aquí.
+    const events = tab === 'eventos'
+      ? await prisma.eventLog.findMany({
+          where: {
+            organizationId: org.id,
+            service: { customerId: customer.id },
+          },
+          orderBy: { timestamp: 'desc' },
+          take: 200,
+        })
+      : [];
 
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
-      title: `Customer · ${customer.externalId}`, active: '/admin/customers', orgSlug: org.slug, flash,
-      body: pageHeader(customer.name, btn('/admin/customers', '← back'))
-        + card('Identidad', info)
-        + card('Datos del cliente', softBlock)
-        + card('Calendario de facturación', scheduleBlock)
-        + card('Acciones', invoiceForm)
-        + card(`Services (${customer.services.length})`, servicesBlock,
-          btn(`/admin/services/new?customer=${customer.externalId}`, '+ Nuevo service', 'primary'))
-        + card(`Customer add-ons flat (${customer.addOns.length})`, customerAddOnsBlock + '<div class="mt-4">' + customerAddOnForm + '</div>')
-        + card(`Invoices (${customer.invoices.length})`, invoicesBlock)
-        + card(`Credit notes (${customer.creditNotes.length})`, cnsBlock),
+      title: `${customer.name} · Cliente`,
+      active: '/admin/customers',
+      orgSlug: org.slug,
+      flash,
+      body: renderCustomerDetail({ customer, events, tab, org }),
     }));
   });
+
 
   // ------------------------------------------------------------------
   // Services.
@@ -2086,5 +1835,25 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     });
     setFlash(reply, 'success', `Timezone actualizada a ${candidate}.`);
     reply.redirect('/admin/settings');
+  });
+
+  // v20: toggle del modo técnico — esconde/muestra IDs, raw JSON,
+  // idempotency keys y demás plomería. Cookie de 1 año por sesión del
+  // navegador. El form en la sidebar manda `next` y `return_to`.
+  app.post('/admin/settings/tech-mode', async (request, reply) => {
+    const body = (request.body ?? {}) as { next?: string; return_to?: string };
+    const next = body.next === 'on' ? 'on' : 'off';
+    if (next === 'on') {
+      reply.setCookie('admin_tech_mode', 'on', {
+        path: '/', httpOnly: false, sameSite: 'lax', maxAge: 60 * 60 * 24 * 365,
+      });
+    } else {
+      reply.clearCookie('admin_tech_mode', { path: '/' });
+    }
+    // Validar return_to para evitar open redirect — sólo permitimos URLs
+    // relativas que empiecen con /admin.
+    const returnTo = body.return_to;
+    const safeReturn = returnTo && returnTo.startsWith('/admin') ? returnTo : '/admin';
+    reply.redirect(safeReturn);
   });
 }
