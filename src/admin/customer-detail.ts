@@ -351,8 +351,18 @@ function renderPlan(customer: CustomerWithRelations): string {
     ],
   });
 
-  return card('Calendario de facturación', scheduleSummary)
-    + card('Editar calendario', scheduleEdit)
+  const scheduleBlock = `
+    ${scheduleSummary}
+    <details class="mt-5 pt-5 border-t" style="border-color: var(--rule-soft);">
+      <summary class="list-none cursor-pointer inline-flex items-center gap-1.5 text-sm font-medium rounded px-4 py-2 transition-colors" style="color: var(--accent-deep); border: 1px solid var(--rule); background: #FFFFFF;" onmouseover="this.style.borderColor='var(--accent)'; this.style.background='var(--accent-tint)';" onmouseout="this.style.borderColor='var(--rule)'; this.style.background='#FFFFFF';">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8z"/></svg>
+        Editar calendario de facturación
+      </summary>
+      <div class="mt-5">${scheduleEdit}</div>
+    </details>
+  `;
+
+  return card('Calendario de facturación', scheduleBlock)
     + card(`Planes (${services.length})`, servicesTable,
         btn(`/admin/services/new?customer=${customer.externalId}`, '+ Nuevo plan', 'primary'));
 }
