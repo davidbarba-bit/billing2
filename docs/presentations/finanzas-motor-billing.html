@@ -68,6 +68,7 @@
     <li>Add-ons y cargos extra</li>
     <li>Cambios de precio programados</li>
     <li>Migraciones (entre planes y desde sistema legacy)</li>
+    <li><strong>Estructura de facturas: cuándo y cuántas</strong></li>
     <li>Vista previa antes de facturar</li>
     <li>Integración con NetSuite y CFDI</li>
     <li>Estados de una factura</li>
@@ -269,6 +270,71 @@
     </tbody>
   </table>
   <p class="small">Sin huecos ni doble cobro. Por default <strong>no</strong> se cobra setup del plan nuevo.</p>
+</section>
+
+<!-- 11b: Estructura · timing del setup (v18) -->
+<section>
+  <h2>¿Cuándo se factura el setup?</h2>
+  <p>Por default el setup va en la <strong>factura del cierre</strong> del cliente, junto con la renta. Para servicios donde la instalación se cobra aparte, se puede emitir <strong>factura individual al instalar la unidad</strong>.</p>
+  <table>
+    <thead><tr><th>Modo</th><th>Cuándo emite</th><th>Qué contiene</th></tr></thead>
+    <tbody>
+      <tr><td><code>next_cycle</code> <span class="muted">(default)</span></td><td>Cierre del ciclo del cliente</td><td>Setup + renta + add-ons en 1 factura</td></tr>
+      <tr><td><code>immediate</code></td><td>Al instante en que se da de alta la unidad</td><td>1 factura solo con el setup de esa unidad</td></tr>
+    </tbody>
+  </table>
+  <p>El mismo control aplica a <strong>bajas</strong> (cargo de cancelación): puede ir en la factura del cierre o emitirse al momento de cancelar la unidad.</p>
+  <div class="box box-primary">
+    <p style="margin: 0;"><strong>Útil para:</strong> contratos donde la instalación se factura por separado (proyectos, OEM, obra). Cada servicio elige su modo al crearse.</p>
+  </div>
+</section>
+
+<!-- 11c: Estructura · unificada vs partida (v19) -->
+<section>
+  <h2>Factura del cierre: 1 documento o 2</h2>
+  <p>Al cierre del ciclo, todos los conceptos del cliente (renta, add-ons, mensualidades prepagadas pendientes, setups e instalaciones pendientes, bajas) se consolidan. Hay dos modos:</p>
+  <div class="grid-2">
+    <div class="box box-primary">
+      <h3>Unificada <span class="muted">(default)</span></h3>
+      <p>1 sola factura con todo mezclado:</p>
+      <ul>
+        <li>Renta mensual</li>
+        <li>Add-ons (por unidad y flat)</li>
+        <li>Mensualidades prepagadas</li>
+        <li>Setup pendiente</li>
+        <li>Bajas (removals)</li>
+      </ul>
+      <p class="small">Un solo CFDI. Comportamiento histórico.</p>
+    </div>
+    <div class="box box-green">
+      <h3>Partida (split por naturaleza)</h3>
+      <p>Hasta 2 facturas separadas por naturaleza contable:</p>
+      <ul>
+        <li><strong>A · Recurrentes:</strong> renta + add-ons + mensualidades prepagadas</li>
+        <li><strong>B · Únicos:</strong> setup + bajas</li>
+      </ul>
+      <p class="small">Dos CFDIs separados con folios distintos.</p>
+    </div>
+  </div>
+  <p class="small muted">Útil cuando contabilidad necesita separar la renta recurrente (ingreso predecible) de los movimientos puntuales (instalaciones, bajas) por centro de costo o tratamiento fiscal distinto. Se configura por cliente.</p>
+</section>
+
+<!-- 11d: Matriz combinada para servicios one_off -->
+<section>
+  <h2>Servicios one-off: 4 combinaciones</h2>
+  <p>Un servicio one-off (setup + N mensualidades prepagadas) cruza dos decisiones independientes: <strong>cuándo</strong> se factura y en <strong>cuántos</strong> documentos.</p>
+  <table>
+    <thead><tr><th>Cuándo</th><th>Estructura</th><th>Resultado</th></tr></thead>
+    <tbody>
+      <tr><td>Al instalar la unidad</td><td>Unificada</td><td><strong>1 factura</strong> con setup + N mensualidades</td></tr>
+      <tr><td>Al instalar la unidad</td><td>Partida</td><td><strong>2 facturas:</strong> A con N mensualidades · B con setup</td></tr>
+      <tr><td>Al cierre del ciclo</td><td>Unificada</td><td><strong>1 factura</strong> con renta + setup + mensualidades + bajas</td></tr>
+      <tr><td>Al cierre del ciclo</td><td>Partida</td><td><strong>2 facturas:</strong> renta + mensualidades · setup + bajas</td></tr>
+    </tbody>
+  </table>
+  <div class="box box-amber">
+    <p style="margin: 0;"><strong>Coherencia garantizada:</strong> el mismo cliente recibe el mismo tipo de documentos contables sin importar si los conceptos se cobraron al instante o al cierre.</p>
+  </div>
 </section>
 
 <!-- 12: Migración legacy intro -->
