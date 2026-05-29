@@ -195,7 +195,7 @@ export function layout(options: {
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
 <link rel="preconnect" href="https://fonts.bunny.net" crossorigin>
-<link rel="stylesheet" href="https://fonts.bunny.net/css?family=fraunces:400,500,600,700|ibm-plex-sans:400,500,600|ibm-plex-mono:400,500&display=swap">
+<link rel="stylesheet" href="https://fonts.bunny.net/css?family=raleway:400,500,600,700|montserrat:400,500,600,700|ibm-plex-mono:400,500&display=swap">
 <style>
   /* ----- design tokens: 'quiet precision' · paleta institucional Numaris -----
      · #013668  Azul oscuro principal (corporativo)  → sidebar, hover de acento
@@ -232,7 +232,7 @@ export function layout(options: {
   }
   html, body { background: var(--paper); }
   body {
-    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
     color: var(--ink);
     font-feature-settings: 'ss01';
     -webkit-font-smoothing: antialiased;
@@ -249,7 +249,7 @@ export function layout(options: {
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.06 0 0 0 0 0.08 0 0 0 0 0.10 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   body > * { position: relative; z-index: 1; }
-  .font-display { font-family: 'Fraunces', Georgia, serif; font-feature-settings: 'ss01'; letter-spacing: -0.01em; }
+  .font-display { font-family: 'Raleway', system-ui, sans-serif; letter-spacing: -0.01em; }
   .font-mono-pro { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
   .num { font-variant-numeric: tabular-nums; }
 
@@ -307,7 +307,7 @@ export function layout(options: {
     padding: 0.625rem 0.875rem;
     font-size: 0.875rem;
     color: var(--ink);
-    font-family: 'IBM Plex Sans', sans-serif;
+    font-family: 'Montserrat', sans-serif;
     transition: border-color 160ms ease, box-shadow 160ms ease;
   }
   .field::placeholder { color: var(--ink-faint); }
@@ -404,7 +404,7 @@ export function layout(options: {
   }
   .user-link:hover { color: var(--sidebar-ink); background: var(--sidebar-soft); }
 
-  pre.json { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  pre.json { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; }
 
   /* Overrides de utilidades tailwind para que las páginas no migradas
      hereden la paleta institucional Numaris. No tocamos clases de layout;

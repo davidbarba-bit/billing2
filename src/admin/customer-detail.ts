@@ -16,6 +16,8 @@ import type {
 import { DateTime } from 'luxon';
 import { adminContextStorage } from './context.js';
 import {
+  INPUT_CLASS,
+  INPUT_CLASS_MONO,
   badge,
   btn,
   card,
@@ -24,9 +26,15 @@ import {
   fmtDateOnly,
   fmtMoney,
   fmtRelative,
+  formField,
+  formSection,
   kv,
   pageHeader,
+  pageTitle,
+  panel,
   postButton,
+  primaryButton,
+  secondaryLink,
   statusBadge,
   table,
   tabs,
@@ -711,131 +719,150 @@ export function renderNewCustomerForm(
   opts: { displayTz: string; orgTimezone: string },
 ): string {
   const { displayTz, orgTimezone } = opts;
-  const v = (k: string): string => escapeHtml(form[k] ?? "");
-  const periodMonths = form.billing_period_months ?? "1";
-  const periodOptions = [
-    { value: "1", label: "1 mes — mensual" },
-    { value: "3", label: "3 meses — trimestral" },
-    { value: "6", label: "6 meses — semestral" },
-    { value: "12", label: "12 meses — anual" },
-  ].map((o) => `<option value="${o.value}" ${o.value === periodMonths ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("");
+  const v = (k: string): string => escapeHtml(form[k] ?? '');
 
-  const monthNames = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-  const anchorMonthOptions = ["<option value=\"\">— (anclado al mes de inicio)</option>"]
+  const periodMonths = form.billing_period_months ?? '1';
+  const periodOptions = [
+    { value: '1', label: '1 mes — mensual' },
+    { value: '3', label: '3 meses — trimestral' },
+    { value: '6', label: '6 meses — semestral' },
+    { value: '12', label: '12 meses — anual' },
+  ].map((o) => `<option value="${o.value}" ${o.value === periodMonths ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('');
+
+  const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+  const anchorMonthOptions = ['<option value="">— (anclado al mes de inicio)</option>']
     .concat(monthNames.map((name, i) => {
       const n = i + 1;
-      const selected = String(n) === form.billing_anchor_month ? "selected" : "";
+      const selected = String(n) === form.billing_anchor_month ? 'selected' : '';
       return `<option value="${n}" ${selected}>${n} — ${name}</option>`;
     }))
-    .join("");
+    .join('');
 
   const triggerOptions = [
-    { value: "next_cycle", label: "Al próximo cierre (acumular y cobrar al cerrar el periodo)" },
-    { value: "immediate", label: "Inmediato (factura individual al recibir el evento)" },
+    { value: 'next_cycle', label: 'Al próximo cierre (acumular y cobrar al cerrar el periodo)' },
+    { value: 'immediate', label: 'Inmediato (factura individual al recibir el evento)' },
   ].map((o) => {
-    const selected = (form.nonrecurring_trigger ?? "next_cycle") === o.value ? "selected" : "";
+    const selected = (form.nonrecurring_trigger ?? 'next_cycle') === o.value ? 'selected' : '';
     return `<option value="${o.value}" ${selected}>${escapeHtml(o.label)}</option>`;
-  }).join("");
+  }).join('');
 
   const cycleModeOptions = [
-    { value: "unified", label: "1 factura — renta + setup + baja en un solo documento" },
-    { value: "split_by_kind", label: "2 facturas — recurrentes (renta + add-ons) y únicos (setup + baja) separados" },
+    { value: 'unified', label: '1 factura — renta + setup + baja en un solo documento' },
+    { value: 'split_by_kind', label: '2 facturas — recurrentes (renta + add-ons) y únicos (setup + baja) separados' },
   ].map((o) => {
-    const selected = (form.cycle_invoice_mode ?? "unified") === o.value ? "selected" : "";
+    const selected = (form.cycle_invoice_mode ?? 'unified') === o.value ? 'selected' : '';
     return `<option value="${o.value}" ${selected}>${escapeHtml(o.label)}</option>`;
-  }).join("");
+  }).join('');
 
-  const intro = `
-    <div class="bg-indigo-50 border border-indigo-200 rounded p-4 mb-6 text-sm text-indigo-900">
-      <div class="font-semibold mb-1">Crear cliente</div>
-      <p>En operación normal los clientes llegan por API desde Numaris. Este form es para casos
-      manuales, demos o pruebas. Solo nombre, identificador y moneda son obligatorios; el resto
-      tiene defaults razonables y puedes editarlos después en el detalle del cliente.</p>
+  const identificationSection = formSection({
+    title: 'Identificación',
+    description: 'Datos básicos del cliente. El identificador externo es inmutable; el resto se puede editar después.',
+    body: `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+        ${formField({
+          label: 'Identificador externo',
+          required: true,
+          span: 2,
+          hint: 'ID estable para mapear con sistemas externos (Numaris, NetSuite). Único por organización; no se puede cambiar.',
+          input: `<input required name="external_id" value="${v('external_id')}" placeholder="ej. transportes-marva o cust-001" class="${INPUT_CLASS_MONO}">`,
+        })}
+        ${formField({
+          label: 'Nombre comercial',
+          required: true,
+          span: 2,
+          input: `<input required name="name" value="${v('name')}" placeholder="Transportes MARVA S.A. de C.V." class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Moneda',
+          required: true,
+          hint: 'ISO 4217 — MXN, USD, EUR, etc.',
+          input: `<input required name="currency" value="${escapeHtml(form.currency ?? 'MXN')}" maxlength="3" class="${INPUT_CLASS_MONO} uppercase">`,
+        })}
+        ${formField({
+          label: 'País',
+          hint: 'ISO 3166-1 alpha-2.',
+          input: `<input name="country" value="${v('country')}" maxlength="2" placeholder="MX" class="${INPUT_CLASS_MONO} uppercase">`,
+        })}
+        ${formField({
+          label: 'Timezone (IANA)',
+          span: 2,
+          hint: 'Determina cómo se interpreta el día de corte.',
+          input: `<input name="timezone" value="${v('timezone')}" placeholder="${escapeHtml(orgTimezone)} (default de la organización)" class="${INPUT_CLASS_MONO}">`,
+        })}
+      </div>
+    `,
+  });
+
+  const calendarSection = formSection({
+    title: 'Calendario de facturación',
+    description: 'Define cuándo arranca la suscripción, la frecuencia y el día de corte.',
+    body: `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+        ${formField({
+          label: 'Inicio de suscripción',
+          span: 2,
+          hint: `Se interpreta en tu zona <code class="font-mono-pro">${escapeHtml(displayTz)}</code>. Si lo dejas vacío usa el momento del alta. Si es futuro, el cliente queda <em>programado</em> hasta que llegue la fecha.`,
+          input: `<input type="datetime-local" name="subscription_at" value="${v('subscription_at')}" class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Frecuencia',
+          input: `<select name="billing_period_months" class="${INPUT_CLASS}">${periodOptions}</select>`,
+        })}
+        ${formField({
+          label: 'Día de corte (1–28)',
+          hint: 'Día del mes en que cierra el periodo.',
+          input: `<input type="number" name="billing_anchor_day" min="1" max="28" value="${escapeHtml(form.billing_anchor_day ?? '1')}" class="${INPUT_CLASS_MONO} max-w-xs">`,
+        })}
+        ${formField({
+          label: 'Mes ancla',
+          span: 2,
+          hint: 'Solo aplica si la frecuencia es trimestral / semestral / anual. Alinea el ciclo a un mes calendario específico.',
+          input: `<select name="billing_anchor_month" class="${INPUT_CLASS}">${anchorMonthOptions}</select>`,
+        })}
+      </div>
+    `,
+  });
+
+  const billingSection = formSection({
+    title: 'Estructura de facturación',
+    description: 'Cuándo se factura el bloque one-off y cómo se agrupan los conceptos al cerrar el periodo. El setup y la baja de servicios recurrentes se configuran a nivel del servicio.',
+    body: `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+        ${formField({
+          label: 'Cuándo facturar los servicios one-off',
+          hint: 'Aplica al bloque one-off completo (setup + N mensualidades prepagadas) cuando llega el primer evento.',
+          input: `<select name="nonrecurring_trigger" class="${INPUT_CLASS}">${triggerOptions}</select>`,
+        })}
+        ${formField({
+          label: 'Estructura de la factura del cierre',
+          hint: 'Cómo se agrupan los conceptos (renta, setup, baja) en la factura al cerrar el periodo.',
+          input: `<select name="cycle_invoice_mode" class="${INPUT_CLASS}">${cycleModeOptions}</select>`,
+        })}
+      </div>
+    `,
+  });
+
+  const actions = `
+    <div class="flex items-center gap-3 pt-6 mt-2 border-t border-slate-200">
+      ${primaryButton('Crear cliente')}
+      ${secondaryLink('/admin/customers', 'Cancelar')}
+      <span class="ml-auto text-xs ink-faint">Los datos fiscales completos (dirección, NetSuite ID) se editan después en la pestaña <strong>Datos fiscales</strong>.</span>
     </div>
   `;
 
-  return pageHeader("Nuevo cliente", btn("/admin/customers", "← Cancelar"))
-    + intro
-    + card("Datos del cliente", `
-    <form method="post" action="/admin/customers/new" class="space-y-5 max-w-3xl">
-      <div class="grid grid-cols-2 gap-4">
-        <label class="block col-span-2">
-          <span class="text-sm font-medium text-gray-700">Identificador externo <span class="text-red-600">*</span></span>
-          <input required name="external_id" value="${v("external_id")}" placeholder="ej. transportes-marva o cust-001" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          <span class="text-xs text-gray-500">ID estable para mapear con sistemas externos (Numaris, NetSuite). Único por organización; no se puede cambiar.</span>
-        </label>
-        <label class="block col-span-2">
-          <span class="text-sm font-medium text-gray-700">Nombre comercial <span class="text-red-600">*</span></span>
-          <input required name="name" value="${v("name")}" placeholder="Transportes MARVA S.A. de C.V." class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium text-gray-700">Moneda <span class="text-red-600">*</span></span>
-          <input required name="currency" value="${escapeHtml(form.currency ?? "MXN")}" maxlength="3" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
-          <span class="text-xs text-gray-500">ISO 4217 — MXN, USD, EUR, etc.</span>
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium text-gray-700">País</span>
-          <input name="country" value="${v("country")}" maxlength="2" placeholder="MX" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
-          <span class="text-xs text-gray-500">ISO 3166-1 alpha-2.</span>
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium text-gray-700">Timezone (IANA)</span>
-          <input name="timezone" value="${v("timezone")}" placeholder="${escapeHtml(orgTimezone)} (default de la organización)" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          <span class="text-xs text-gray-500">Determina cómo se interpreta el día de corte.</span>
-        </label>
-      </div>
-
-      <div class="border-t pt-5">
-        <h3 class="text-sm font-semibold text-gray-700 mb-3">Calendario de facturación</h3>
-        <div class="grid grid-cols-2 gap-4">
-          <label class="block col-span-2">
-            <span class="text-sm font-medium text-gray-700">Inicio de suscripción <span class="text-xs text-gray-500">(zona <code>${escapeHtml(displayTz)}</code>)</span></span>
-            <input type="datetime-local" name="subscription_at" value="${v("subscription_at")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            <span class="text-xs text-gray-500">Se interpreta en tu zona (la de Ajustes). Si lo dejas vacío usa el momento del alta. Si es futuro, el cliente queda <em>programado</em> hasta que llegue la fecha.</span>
-          </label>
-          <label class="block">
-            <span class="text-sm font-medium text-gray-700">Frecuencia</span>
-            <select name="billing_period_months" class="mt-1 block w-full rounded border-gray-300 text-sm">${periodOptions}</select>
-          </label>
-          <label class="block">
-            <span class="text-sm font-medium text-gray-700">Día de corte (1–28)</span>
-            <input type="number" name="billing_anchor_day" min="1" max="28" value="${escapeHtml(form.billing_anchor_day ?? "1")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            <span class="text-xs text-gray-500">Día del mes en que cierra el periodo.</span>
-          </label>
-          <label class="block col-span-2">
-            <span class="text-sm font-medium text-gray-700">Mes ancla (solo si la frecuencia es trimestral / semestral / anual)</span>
-            <select name="billing_anchor_month" class="mt-1 block w-full rounded border-gray-300 text-sm">${anchorMonthOptions}</select>
-            <span class="text-xs text-gray-500">Alinea el ciclo a un mes calendario específico. Ignorado para la frecuencia mensual.</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="border-t pt-5">
-        <h3 class="text-sm font-semibold text-gray-700 mb-3">Estructura de facturación</h3>
-        <p class="text-xs text-gray-500 mb-3">
-          Decide cuándo se factura el bloque one-off (setup + mensualidades prepagadas) al recibir
-          el primer evento de la unit, y cómo se estructuran los conceptos en la factura del cierre.
-          <span class="text-gray-400">El setup y la baja de servicios <em>recurrentes</em> se configuran a nivel del servicio.</span>
-        </p>
-        <div class="grid grid-cols-2 gap-4">
-          <label class="block">
-            <span class="text-sm font-medium text-gray-700">Cuándo facturar los servicios one-off</span>
-            <select name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm">${triggerOptions}</select>
-            <span class="text-xs text-gray-500">Aplica al bloque one-off completo (setup + N mensualidades prepagadas) cuando llega el primer evento.</span>
-          </label>
-          <label class="block">
-            <span class="text-sm font-medium text-gray-700">Estructura de la factura del cierre</span>
-            <select name="cycle_invoice_mode" class="mt-1 block w-full rounded border-gray-300 text-sm">${cycleModeOptions}</select>
-            <span class="text-xs text-gray-500">Cómo se agrupan los conceptos (renta, setup, baja) en la factura al cerrar el periodo.</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="border-t pt-5 flex items-center gap-3">
-        <button type="submit" class="px-5 py-2 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Crear cliente</button>
-        <a href="/admin/customers" class="text-sm text-gray-600 hover:text-gray-900">Cancelar</a>
-        <span class="text-xs text-gray-500 ml-auto">Los datos fiscales completos (dirección, NetSuite ID) se editan después en la pestaña <strong>Datos fiscales</strong>.</span>
-      </div>
+  const form_ = `
+    <form method="post" action="/admin/customers/new" class="space-y-0">
+      ${identificationSection}
+      ${calendarSection}
+      ${billingSection}
+      ${actions}
     </form>
-  `);
+  `;
+
+  return pageTitle({
+    eyebrow: 'Clientes',
+    title: 'Nuevo cliente',
+    description: 'En operación normal los clientes llegan por API desde Numaris. Este formulario es para casos manuales, demos o pruebas. Solo nombre, identificador y moneda son obligatorios; el resto tiene defaults razonables.',
+    actions: secondaryLink('/admin/customers', '← Clientes'),
+  }) + panel({ body: form_ });
 }
