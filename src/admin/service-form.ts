@@ -74,6 +74,9 @@ export function renderServiceNewForm(args: {
       .pricing-card:has(input[type="radio"]:checked) .pricing-card-dot-inner { background: var(--accent); }
       .pricing-card:has(input[type="radio"]:checked) .pricing-card-title { color: var(--accent); }
       .pricing-card:hover:not(:has(input[type="radio"]:checked)) { border-color: var(--ink-faint); }
+      /* Mostrar el campo "Meses prepagados" solo cuando Prepago está seleccionado */
+      .prepago-only { display: none; }
+      form:has(input[name="pricing_model"][value="one_off"]:checked) .prepago-only { display: block; }
     </style>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       ${card('recurring', 'Recurrente', 'Renta mensual por unidad activa. Opcionalmente setup al instalar y baja al desinstalar.')}
@@ -133,7 +136,7 @@ export function renderServiceNewForm(args: {
         ${formField({
           label: 'Renta mensual por unidad',
           required: true,
-          hint: 'En servicios recurrentes se cobra cada periodo. En prepago se multiplica por los meses pagados por adelantado.',
+          hint: 'En servicios recurrentes se cobra cada periodo. En prepago se multiplica por los meses prepagados.',
           input: moneyInputInline({ name: 'monthly_unit_amount', currency, value: form.monthly_unit_amount, required: true, placeholder: '0.00' }),
         })}
         ${formField({
@@ -147,12 +150,19 @@ export function renderServiceNewForm(args: {
           input: moneyInputInline({ name: 'removal_unit_amount', currency, value: form.removal_unit_amount ?? '0' }),
         })}
       </div>
+      <div class="prepago-only mt-5">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-5">
+          ${formField({
+            label: 'Meses prepagados',
+            required: true,
+            hint: 'Cuántos meses paga el cliente por adelantado al instalar cada unidad. Se puede sobrescribir por unidad.',
+            input: `<input type="number" name="prepaid_months_default" min="1" value="${v('prepaid_months_default')}" placeholder="48" class="${INPUT_CLASS_MONO} max-w-xs">`,
+          })}
+        </div>
+      </div>
     `,
   });
 
-  // Sección "Emisión" — cuándo facturar setup/baja (recurring) o meses
-  // prepagados (prepago). Los dos casos son mutuamente excluyentes; en una
-  // implementación más sofisticada esto se ocultaría dinámicamente.
   const setupModeOptions = [
     { value: 'next_cycle', label: 'Al cierre del periodo (consolidado con la renta)' },
     { value: 'immediate', label: 'Inmediato (factura individual al instalar la unidad)' },
@@ -163,7 +173,7 @@ export function renderServiceNewForm(args: {
   ];
   const emissionSection = formSection({
     title: 'Emisión de cargos no recurrentes',
-    description: 'Cuándo emitir factura para setup, baja (recurrentes) y mensualidades prepagadas.',
+    description: 'Cuándo emitir factura para setup y baja.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
         ${formField({
@@ -175,12 +185,6 @@ export function renderServiceNewForm(args: {
           label: 'Cuándo emitir la baja',
           hint: 'Solo aplica a planes recurrentes con monto de baja mayor a 0.',
           input: renderSelect('removal_billing_mode', removalModeOptions, form.removal_billing_mode ?? 'next_cycle'),
-        })}
-        ${formField({
-          label: 'Meses prepagados por defecto',
-          span: 2,
-          hint: 'Cuántos meses cobra el cliente por adelantado al instalar cada unidad. Solo aplica a prepago. Se puede sobrescribir por unidad. Dejar vacío si el plan es recurrente.',
-          input: `<input type="number" name="prepaid_months_default" min="1" value="${v('prepaid_months_default')}" placeholder="48" class="${INPUT_CLASS_MONO} max-w-xs">`,
         })}
       </div>
     `,
