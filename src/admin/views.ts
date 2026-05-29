@@ -123,39 +123,39 @@ export function statusBadge(status: string): string {
   return badge(status, map[status] ?? 'gray');
 }
 
-// Render una sidebar. Cada `active` se compara contra `href` (exacto para
-// /admin, prefix para los otros).
+// Render una sidebar editorial — links sutiles, indicador de activo con
+// una barra vertical en lugar de un bloque resaltado pesado.
 function renderNav(active?: string): string {
   return NAV_SECTIONS.map((section) => {
     const links = section.items.map((item) => {
       const isActive = active === item.href || (item.href !== '/admin' && active?.startsWith(item.href));
-      const classes = isActive
-        ? 'bg-gray-900 text-white'
-        : 'text-gray-300 hover:bg-gray-700 hover:text-white';
+      const linkClass = isActive ? 'nav-link-active' : 'nav-link';
+      const indicator = isActive
+        ? '<span class="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-[2px]" style="background: var(--accent);"></span>'
+        : '';
       const targetAttr = item.target ? ` target="${item.target}" rel="noopener"` : '';
-      return `<a href="${item.href}"${targetAttr} class="block px-3 py-1.5 rounded text-sm ${classes}">${escapeHtml(item.label)}</a>`;
+      return `<a href="${item.href}"${targetAttr} class="${linkClass} relative block pl-4 pr-3 py-1.5 rounded-sm text-[13px] font-normal">${indicator}${escapeHtml(item.label)}</a>`;
     }).join('');
     const heading = section.heading
-      ? `<div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-500 font-semibold">${escapeHtml(section.heading)}</div>`
+      ? `<div class="px-4 pt-5 pb-1.5 text-[10px] uppercase tracking-[0.12em] font-medium" style="color: #6E6759;">${escapeHtml(section.heading)}</div>`
       : '';
-    return `<div class="space-y-0.5">${heading}${links}</div>`;
-  }).join('<div class="my-2"></div>');
+    return `<div class="space-y-px">${heading}${links}</div>`;
+  }).join('<div class="my-1.5"></div>');
 }
 
 function renderTechToggle(currentUrl: string): string {
   const on = isTechMode();
   const next = on ? 'off' : 'on';
   return `
-    <form method="post" action="/admin/settings/tech-mode" class="mt-3">
+    <form method="post" action="/admin/settings/tech-mode" class="mt-4">
       <input type="hidden" name="next" value="${escapeHtml(next)}">
       <input type="hidden" name="return_to" value="${escapeHtml(currentUrl)}">
-      <button type="submit" class="w-full flex items-center justify-between px-3 py-2 rounded text-xs text-gray-300 hover:bg-gray-700 hover:text-white border border-gray-700">
-        <span>Modo técnico</span>
+      <button type="submit" class="tech-toggle w-full flex items-center justify-between px-3 py-2 rounded-sm text-[11px]">
+        <span class="uppercase tracking-wider">Modo técnico</span>
         <span class="inline-flex items-center gap-1.5">
-          <span class="w-7 h-3.5 rounded-full ${on ? 'bg-indigo-500' : 'bg-gray-600'} relative">
-            <span class="absolute top-0.5 ${on ? 'right-0.5' : 'left-0.5'} w-2.5 h-2.5 rounded-full bg-white transition-all"></span>
+          <span class="relative inline-block w-7 h-3.5 rounded-full transition-colors" style="background: ${on ? 'var(--accent)' : '#3F4A40'};">
+            <span class="absolute top-0.5 w-2.5 h-2.5 rounded-full transition-all" style="background: #FBFAF7; ${on ? 'right: 2px;' : 'left: 2px;'}"></span>
           </span>
-          <span class="text-[10px] uppercase font-semibold ${on ? 'text-indigo-300' : 'text-gray-400'}">${on ? 'on' : 'off'}</span>
         </span>
       </button>
     </form>
@@ -189,49 +189,237 @@ export function layout(options: {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(options.title)} · Numaris Billing admin</title>
+<title>${escapeHtml(options.title)} · Numaris Billing</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+<link rel="preconnect" href="https://fonts.bunny.net" crossorigin>
+<link rel="stylesheet" href="https://fonts.bunny.net/css?family=fraunces:400,500,600,700|ibm-plex-sans:400,500,600|ibm-plex-mono:400,500&display=swap">
 <style>
-  pre.json { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+  /* ----- design tokens: 'quiet precision' ----- */
+  :root {
+    --paper:        #FBFAF7;
+    --paper-soft:   #F4F1EA;
+    --ink:          #1A1714;
+    --ink-soft:     #4A463F;
+    --ink-faint:    #8A857B;
+    --rule:         #E5E1D8;
+    --rule-soft:    #EFEBE2;
+    --accent:       #0F3D2E;
+    --accent-hover: #1A5B47;
+    --accent-soft:  #E4ECE7;
+    --warn:         #B8731A;
+    --warn-soft:    #FAF1E0;
+    --danger:       #A8351F;
+    --danger-soft:  #F6E5E2;
+    --info:         #2C5282;
+    --info-soft:    #E3EAF2;
+    --sidebar:      #1A1F1B;
+    --sidebar-soft: #283129;
+  }
+  html, body { background: var(--paper); }
+  body {
+    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    color: var(--ink);
+    font-feature-settings: 'ss01';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  /* subtle grain — gives the paper feel without being distracting */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  body > * { position: relative; z-index: 1; }
+  .font-display { font-family: 'Fraunces', Georgia, serif; font-feature-settings: 'ss01'; letter-spacing: -0.01em; }
+  .font-mono-pro { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* surfaces */
+  .surface-paper { background: var(--paper); }
+  .surface-card { background: #FFFFFF; border: 1px solid var(--rule); }
+  .surface-tone { background: var(--paper-soft); }
+  .rule { border-color: var(--rule); }
+  .rule-soft { border-color: var(--rule-soft); }
+
+  /* ink colors as utilities */
+  .ink { color: var(--ink); }
+  .ink-soft { color: var(--ink-soft); }
+  .ink-faint { color: var(--ink-faint); }
+
+  /* accent system */
+  .accent { color: var(--accent); }
+  .bg-accent { background: var(--accent); }
+  .bg-accent-soft { background: var(--accent-soft); }
+  .border-accent { border-color: var(--accent); }
+
+  /* primary button — refined, no gratuitous shadows */
+  .btn-primary {
+    background: var(--accent); color: #FBFAF7;
+    padding: 0.625rem 1.25rem;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 0.875rem;
+    letter-spacing: 0.01em;
+    transition: background 160ms ease;
+    border: 1px solid var(--accent);
+    box-shadow: 0 1px 0 rgba(15,61,46,.08);
+  }
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn-primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ghost / secondary */
+  .btn-ghost {
+    background: transparent; color: var(--ink-soft);
+    padding: 0.625rem 1.25rem;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 0.875rem;
+    border: 1px solid var(--rule);
+    transition: border-color 160ms ease, color 160ms ease;
+  }
+  .btn-ghost:hover { border-color: var(--ink-faint); color: var(--ink); }
+
+  /* inputs — refined: only bottom border on focus, restrained palette */
+  .field {
+    width: 100%;
+    background: #FFFFFF;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 0.625rem 0.875rem;
+    font-size: 0.875rem;
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .field::placeholder { color: var(--ink-faint); }
+  .field:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(15,61,46,0.08);
+  }
+  .field-mono { font-family: 'IBM Plex Mono', monospace; font-size: 0.8125rem; }
+
+  /* select chevron */
+  select.field {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%238A857B' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.875rem center;
+    padding-right: 2.25rem;
+  }
+
+  /* badges editorial — pills sin bordes pesados */
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .pill-success { background: var(--accent-soft); color: var(--accent); }
+  .pill-warn    { background: var(--warn-soft);   color: var(--warn); }
+  .pill-danger  { background: var(--danger-soft); color: var(--danger); }
+  .pill-info    { background: var(--info-soft);   color: var(--info); }
+  .pill-mute    { background: var(--paper-soft);  color: var(--ink-soft); }
+
+  /* page entrance — discreto, sin bouncy springs */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  main > * { animation: fadeUp 320ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  main > *:nth-child(1) { animation-delay: 0ms; }
+  main > *:nth-child(2) { animation-delay: 40ms; }
+  main > *:nth-child(3) { animation-delay: 80ms; }
+  main > *:nth-child(4) { animation-delay: 120ms; }
+
+  /* form section dividers — only between siblings, not before the first */
+  .form-section + .form-section {
+    border-top: 1px solid var(--rule);
+    padding-top: 2.25rem;
+    margin-top: 2.25rem;
+  }
+
+  /* sidebar interactives */
+  .nav-link {
+    color: #B6AB97;
+    transition: color 160ms ease, background 160ms ease;
+  }
+  .nav-link:hover { color: #FBFAF7; }
+  .nav-link-active {
+    color: #FBFAF7;
+    background: #283129;
+  }
+  .nav-link-active:hover { color: #FBFAF7; }
+
+  .tech-toggle {
+    color: #8A8678;
+    border: 1px solid #2F3A30;
+    transition: color 160ms ease, border-color 160ms ease;
+  }
+  .tech-toggle:hover { color: #E9E5DC; border-color: #3F4A40; }
+
+  .user-link {
+    color: #8A8678;
+    transition: color 160ms ease, background 160ms ease;
+  }
+  .user-link:hover { color: #E9E5DC; background: #283129; }
+
+  pre.json { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+
+  /* override de utilidades tailwind clave que aparecen en el código viejo
+     para que las páginas no migradas hereden la nueva paleta automáticamente */
+  .bg-indigo-600, .hover\\:bg-indigo-700:hover { background-color: var(--accent) !important; }
+  .bg-indigo-700 { background-color: var(--accent-hover) !important; }
+  .text-indigo-600, .text-indigo-700 { color: var(--accent) !important; }
+  .border-indigo-600, .border-indigo-500 { border-color: var(--accent) !important; }
+  .ring-indigo-500 { --tw-ring-color: var(--accent) !important; }
+  .focus\\:ring-indigo-500:focus { --tw-ring-color: var(--accent) !important; }
+  .focus\\:border-indigo-500:focus { border-color: var(--accent) !important; }
 </style>
 </head>
-<body class="min-h-screen bg-gray-50 text-gray-900">
+<body class="min-h-screen">
 <div class="flex">
-  <aside class="w-60 min-h-screen bg-gray-800 text-white p-4 sticky top-0 flex flex-col">
-    <div class="mb-6">
-      <div class="text-xl font-bold">Numaris Billing</div>
-      <div class="text-xs text-gray-400 mt-1">${escapeHtml(options.orgSlug)}</div>
-      <a href="/admin/settings" class="text-xs text-gray-400 hover:text-white mt-1 inline-block">
-        tz: <code>${escapeHtml(currentTz())}</code> ✎
+  <aside class="w-64 min-h-screen p-5 sticky top-0 flex flex-col" style="background: var(--sidebar); color: #E9E5DC;">
+    <div class="mb-8">
+      <div class="font-display text-[1.35rem] leading-tight font-medium" style="color: #FBFAF7;">Numaris</div>
+      <div class="font-display text-[1.35rem] leading-tight italic font-normal" style="color: #B6AB97; margin-top: -2px;">Billing</div>
+      <div class="mt-3 flex items-center gap-2">
+        <span class="text-[10px] uppercase tracking-wider font-medium" style="color: #6E6759;">${escapeHtml(options.orgSlug)}</span>
+      </div>
+      <a href="/admin/settings" class="text-xs mt-2 inline-flex items-center gap-1 transition-colors" style="color: #6E6759;" onmouseover="this.style.color='#E9E5DC'" onmouseout="this.style.color='#6E6759'">
+        <span class="font-mono-pro text-[10px]">${escapeHtml(currentTz())}</span> ✎
       </a>
     </div>
     <nav class="flex-1">${nav}</nav>
     ${techToggle}
     ${(() => {
-      // v16: usuario activo (Google session) — viene del options.user explícito O del
-      // AsyncLocalStorage (el hook lo pone para que cualquier handler que llame
-      // `layout()` herede el usuario sin tener que recibirlo como argumento).
       const u = options.user ?? getCurrentAdminUser();
       return u ? `
-    <div class="mt-3 pt-3 border-t border-gray-700">
-      <div class="flex items-center gap-2 mb-2">
+    <div class="mt-4 pt-4" style="border-top: 1px solid #2F3A30;">
+      <div class="flex items-center gap-2.5 mb-2.5">
         ${u.picture
           ? `<img src="${escapeHtml(u.picture)}" referrerpolicy="no-referrer" class="w-8 h-8 rounded-full" alt="">`
-          : `<div class="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-bold">${escapeHtml(u.email.charAt(0).toUpperCase())}</div>`}
+          : `<div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium" style="background: var(--accent); color: #FBFAF7;">${escapeHtml(u.email.charAt(0).toUpperCase())}</div>`}
         <div class="min-w-0 flex-1">
-          <div class="text-xs font-medium truncate">${escapeHtml(u.name)}</div>
-          <div class="text-xs text-gray-400 truncate">${escapeHtml(u.email)}</div>
+          <div class="text-xs font-medium truncate" style="color: #E9E5DC;">${escapeHtml(u.name)}</div>
+          <div class="text-[11px] truncate" style="color: #8A8678;">${escapeHtml(u.email)}</div>
         </div>
       </div>
       <form method="post" action="/admin/auth/logout">
-        <button type="submit" class="block w-full text-left text-xs text-gray-300 hover:text-white py-1 px-2 hover:bg-gray-700 rounded">Cerrar sesión</button>
+        <button type="submit" class="user-link block w-full text-left text-xs py-1.5 px-2 rounded">Cerrar sesión</button>
       </form>
     </div>
     ` : '';
     })()}
   </aside>
-  <main class="flex-1 p-8 max-w-7xl">
+  <main class="flex-1 px-10 py-10 max-w-[1280px]">
     ${flashBanner}
     ${options.body}
   </main>
@@ -424,32 +612,33 @@ export function unlessTech(content: string): string {
   return content;
 }
 
-// --- Form helpers (v21 refresh) ------------------------------------------
+// --- Form helpers (v21 — 'quiet precision') -----------------------------
 
-// Clase compartida para inputs de texto/número/select — paleta refinada
-// (slate en vez de gray), ring de focus más sutil, padding generoso.
-export const INPUT_CLASS =
-  'block w-full rounded-md border-slate-300 bg-white py-2 px-3 text-sm text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20';
-export const INPUT_CLASS_MONO = INPUT_CLASS + ' font-mono';
+// Las clases viven en el <style> del layout (ver clase `.field`). Estas
+// constantes solo añaden lo que es específico de cada uso.
+export const INPUT_CLASS = 'field';
+export const INPUT_CLASS_MONO = 'field field-mono';
 
-// Bloque visual para una sección del form. Título + descripción opcional +
-// body. Pensado para agrupar 3-6 campos relacionados.
+// Bloque visual para una sección del form. El hairline divider se aplica
+// vía CSS `.form-section + .form-section` solo entre hermanos — el primero
+// no recibe borde ni padding-top adicional.
 export function formSection(opts: {
   title: string;
   description?: string;
   body: string;
 }): string {
-  return `<section class="border-t border-slate-200 first:border-t-0 pt-8 first:pt-0 pb-2 -mb-2">
-    <div class="mb-5">
-      <h3 class="text-base font-semibold text-slate-900">${escapeHtml(opts.title)}</h3>
-      ${opts.description ? `<p class="text-sm text-slate-500 mt-1">${opts.description}</p>` : ''}
+  return `<section class="form-section pb-1">
+    <div class="mb-6">
+      <h3 class="font-display text-lg font-medium ink tracking-tight">${escapeHtml(opts.title)}</h3>
+      ${opts.description ? `<p class="text-sm ink-soft mt-1 max-w-2xl leading-relaxed">${opts.description}</p>` : ''}
     </div>
     <div>${opts.body}</div>
   </section>`;
 }
 
-// Campo de form con label, input arbitrario y hint. `input` debe ser HTML
-// crudo (un <input>, <select>, etc.) — usar INPUT_CLASS para consistencia.
+// Campo de form con label uppercase pequeño (estilo editorial), input
+// arbitrario y hint. `input` debe ser HTML crudo — usar INPUT_CLASS para
+// consistencia.
 export function formField(opts: {
   label: string;
   required?: boolean;
@@ -457,18 +646,18 @@ export function formField(opts: {
   input: string;
   span?: 1 | 2;
 }): string {
-  const reqMark = opts.required ? ' <span class="text-red-600" aria-hidden="true">*</span>' : '';
-  const hint = opts.hint ? `<p class="mt-1.5 text-xs text-slate-500">${opts.hint}</p>` : '';
+  const reqMark = opts.required ? ' <span style="color: var(--danger);" aria-hidden="true">*</span>' : '';
+  const hint = opts.hint ? `<p class="mt-2 text-xs ink-faint leading-relaxed">${opts.hint}</p>` : '';
   const colSpan = opts.span === 2 ? 'sm:col-span-2' : '';
   return `<label class="block ${colSpan}">
-    <span class="block text-sm font-medium text-slate-700 mb-1.5">${escapeHtml(opts.label)}${reqMark}</span>
+    <span class="block text-[11px] uppercase tracking-[0.08em] font-medium ink-soft mb-2">${escapeHtml(opts.label)}${reqMark}</span>
     ${opts.input}
     ${hint}
   </label>`;
 }
 
-// Input de monto en pesos (con prefijo de currency). El valor se maneja en
-// PESOS con 2 decimales; el handler convierte a cents al persistir.
+// Input de monto: prefix de currency en mono, valor en pesos con dos
+// decimales. El handler convierte a cents al persistir.
 export function moneyInput(opts: {
   name: string;
   currency: string;
@@ -480,58 +669,63 @@ export function moneyInput(opts: {
   const valuePesos = opts.valueCents != null ? (opts.valueCents / 100).toFixed(2) : '';
   const required = opts.required ? 'required' : '';
   const min = opts.min !== undefined ? `min="${opts.min}"` : 'min="0"';
-  const placeholder = opts.placeholder ? `placeholder="${escapeHtml(opts.placeholder)}"` : 'placeholder="0.00"';
+  const placeholder = opts.placeholder ?? '0.00';
   return `<div class="relative">
-    <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-slate-400">${escapeHtml(opts.currency)}</span>
-    <input ${required} type="number" step="0.01" ${min} name="${escapeHtml(opts.name)}" value="${escapeHtml(valuePesos)}" ${placeholder} class="${INPUT_CLASS} pl-12 font-mono">
+    <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(opts.currency)}</span>
+    <input ${required} type="number" step="0.01" ${min} name="${escapeHtml(opts.name)}" value="${escapeHtml(valuePesos)}" placeholder="${escapeHtml(placeholder)}" class="field field-mono pl-14 text-right">
   </div>`;
 }
 
-// Botones primario / secundario refinados (sombra sutil, hover suave).
+// Botones. El primario tiene la sombra editorial muy sutil; el secundario
+// es ghost con hairline.
 export function primaryButton(label: string, opts?: { type?: 'submit' | 'button' }): string {
-  return `<button type="${opts?.type ?? 'submit'}" class="inline-flex items-center justify-center rounded-md bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">${escapeHtml(label)}</button>`;
+  return `<button type="${opts?.type ?? 'submit'}" class="btn-primary inline-flex items-center justify-center">${escapeHtml(label)}</button>`;
 }
 
 export function secondaryLink(href: string, label: string): string {
-  return `<a href="${href}" class="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">${escapeHtml(label)}</a>`;
+  return `<a href="${href}" class="btn-ghost inline-flex items-center justify-center">${escapeHtml(label)}</a>`;
 }
 
-// Card "premium" — paleta refinada, bordes suaves, padding generoso.
-// Coexiste con `card()` (estilo viejo) hasta migrar todas las páginas.
+// Panel — sustituye `card()` para páginas migradas. Surface cream sobre
+// fondo papel, hairline en lugar de sombra pesada.
 export function panel(opts: {
   title?: string;
   description?: string;
   body: string;
   actions?: string;
+  toned?: boolean;
 }): string {
+  const surface = opts.toned ? 'surface-tone' : 'surface-card';
   const header = opts.title
-    ? `<div class="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
+    ? `<div class="flex items-start justify-between gap-4 px-7 py-5" style="border-bottom: 1px solid var(--rule);">
         <div>
-          <h2 class="text-sm font-semibold text-slate-900">${escapeHtml(opts.title)}</h2>
-          ${opts.description ? `<p class="text-xs text-slate-500 mt-0.5">${opts.description}</p>` : ''}
+          <h2 class="text-[11px] uppercase tracking-[0.1em] font-semibold ink-soft">${escapeHtml(opts.title)}</h2>
+          ${opts.description ? `<p class="text-xs ink-faint mt-1">${opts.description}</p>` : ''}
         </div>
         ${opts.actions ? `<div class="flex items-center gap-2 shrink-0">${opts.actions}</div>` : ''}
       </div>`
     : '';
-  return `<div class="bg-white rounded-lg border border-slate-200 shadow-sm mb-6">
+  return `<div class="${surface} mb-8" style="border-radius: 6px;">
     ${header}
-    <div class="px-6 py-5">${opts.body}</div>
+    <div class="px-7 py-6">${opts.body}</div>
   </div>`;
 }
 
-// Cabecera de página con título grande, opcional eyebrow y acciones.
+// Cabecera de página — eyebrow uppercase + título serif XL + descripción.
+// Asimétrica: el título a la izquierda con buen aire, acciones empujadas a
+// la derecha. La descripción se permite respirar (max-w-2xl, leading-relax).
 export function pageTitle(opts: {
   eyebrow?: string;
   title: string;
   description?: string;
   actions?: string;
 }): string {
-  return `<header class="mb-8 flex items-start justify-between gap-6">
-    <div>
-      ${opts.eyebrow ? `<div class="text-xs font-semibold uppercase tracking-wide text-indigo-600 mb-1">${escapeHtml(opts.eyebrow)}</div>` : ''}
-      <h1 class="text-2xl font-semibold text-slate-900 tracking-tight">${escapeHtml(opts.title)}</h1>
-      ${opts.description ? `<p class="text-sm text-slate-500 mt-1.5 max-w-2xl">${opts.description}</p>` : ''}
+  return `<header class="mb-10 flex items-end justify-between gap-8 flex-wrap">
+    <div class="max-w-3xl">
+      ${opts.eyebrow ? `<div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">${escapeHtml(opts.eyebrow)}</div>` : ''}
+      <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">${escapeHtml(opts.title)}</h1>
+      ${opts.description ? `<p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">${opts.description}</p>` : ''}
     </div>
-    ${opts.actions ? `<div class="flex items-center gap-2 shrink-0">${opts.actions}</div>` : ''}
+    ${opts.actions ? `<div class="flex items-center gap-2 shrink-0 pb-1">${opts.actions}</div>` : ''}
   </header>`;
 }

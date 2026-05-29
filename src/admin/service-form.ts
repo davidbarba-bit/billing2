@@ -45,28 +45,31 @@ export function renderServiceNewForm(args: {
     return `<option value="${escapeHtml(c.externalId)}" data-currency="${escapeHtml(c.currency)}" ${sel}>${escapeHtml(c.name)} — ${escapeHtml(c.externalId)}</option>`;
   }).join('');
 
-  // Modelo de cobro como dos opciones, no como dropdown — la decisión cambia
+  // Modelo de cobro como radio cards editoriales — la decisión cambia
   // qué campos aplican (setup/baja vs prepaid_months), conviene visualizarlo.
   const pricingModelField = (() => {
     const current = form.pricing_model ?? 'recurring';
     const card = (value: 'recurring' | 'one_off', title: string, description: string): string => {
       const isActive = current === value;
-      const ring = isActive ? 'ring-2 ring-indigo-500 border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-white hover:border-slate-400';
+      const surfaceStyle = isActive
+        ? 'background: var(--accent-soft); border-color: var(--accent);'
+        : 'background: #FFFFFF; border-color: var(--rule);';
       const radio = isActive
-        ? '<span class="w-4 h-4 rounded-full border-2 border-indigo-600 bg-white flex items-center justify-center"><span class="w-2 h-2 rounded-full bg-indigo-600"></span></span>'
-        : '<span class="w-4 h-4 rounded-full border-2 border-slate-300 bg-white"></span>';
-      return `<label class="relative cursor-pointer rounded-lg border p-4 transition-all ${ring}">
-        <input type="radio" name="pricing_model" value="${value}" ${isActive ? 'checked' : ''} class="sr-only" data-model="${value}">
+        ? '<span class="inline-flex w-4 h-4 rounded-full items-center justify-center" style="border: 1.5px solid var(--accent);"><span class="w-1.5 h-1.5 rounded-full" style="background: var(--accent);"></span></span>'
+        : '<span class="inline-block w-4 h-4 rounded-full" style="border: 1.5px solid var(--rule);"></span>';
+      const titleColor = isActive ? 'color: var(--accent);' : '';
+      return `<label class="relative cursor-pointer p-5 transition-all" style="${surfaceStyle} border-style: solid; border-width: 1px; border-radius: 4px;">
+        <input type="radio" name="pricing_model" value="${value}" ${isActive ? 'checked' : ''} class="sr-only">
         <div class="flex items-start gap-3">
           ${radio}
           <div class="flex-1">
-            <div class="text-sm font-semibold text-slate-900">${escapeHtml(title)}</div>
-            <div class="text-xs text-slate-500 mt-0.5">${escapeHtml(description)}</div>
+            <div class="font-display text-[15px] font-medium leading-tight" style="${titleColor}">${escapeHtml(title)}</div>
+            <div class="text-[13px] ink-soft mt-1.5 leading-relaxed">${escapeHtml(description)}</div>
           </div>
         </div>
       </label>`;
     };
-    return `<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+    return `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       ${card('recurring', 'Recurrente', 'Renta mensual por unidad activa. Opcionalmente setup al instalar y baja al desinstalar.')}
       ${card('one_off', 'Pago único (one-off)', 'Cobro único por unidad al recibir el primer evento. Incluye setup opcional + N mensualidades prepagadas.')}
     </div>`;
@@ -243,8 +246,8 @@ function moneyInputInline(opts: {
   const required = opts.required ? 'required' : '';
   const placeholder = opts.placeholder ?? '0.00';
   return `<div class="relative">
-    <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-slate-400 font-medium">${escapeHtml(opts.currency)}</span>
-    <input ${required} type="number" step="0.01" min="0" name="${escapeHtml(opts.name)}" value="${escapeHtml(opts.value ?? '')}" placeholder="${escapeHtml(placeholder)}" class="${INPUT_CLASS_MONO} pl-12">
+    <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(opts.currency)}</span>
+    <input ${required} type="number" step="0.01" min="0" name="${escapeHtml(opts.name)}" value="${escapeHtml(opts.value ?? '')}" placeholder="${escapeHtml(placeholder)}" class="${INPUT_CLASS_MONO} pl-14 text-right">
   </div>`;
 }
 
