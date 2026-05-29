@@ -213,6 +213,7 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
         // v18: edición del modo de emisión post-creación.
         setup_billing_mode?: 'next_cycle' | 'immediate';
         removal_billing_mode?: 'next_cycle' | 'immediate';
+        prepaid_months_default?: number | null;
         netsuite_monthly_item_code?: string | null;
         netsuite_setup_item_code?: string | null;
         netsuite_removal_item_code?: string | null;
@@ -275,6 +276,16 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
           throw validation({ removal_billing_mode: ['requires_removal_unit_amount_cents_greater_than_zero'] });
         }
         data.removalBillingMode = mode;
+      }
+      if (payload.prepaid_months_default !== undefined) {
+        if (service.pricingModel !== 'one_off') {
+          throw validation({ prepaid_months_default: ['only_applicable_to_one_off'] });
+        }
+        const v = payload.prepaid_months_default;
+        if (v !== null && (!Number.isInteger(v) || v <= 0)) {
+          throw validation({ prepaid_months_default: ['must_be_positive_integer'] });
+        }
+        data.prepaidMonthsDefault = v;
       }
       if (payload.metadata !== undefined) {
         data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;

@@ -159,6 +159,106 @@ function renderResumen(service: ServiceWithRelations): string {
     </div>
   `;
 
+  // Panel de configuración — muestra opciones definidas al crear el plan.
+  const setupModeLabel = (m: string): string =>
+    m === 'immediate' ? 'Inmediato' : 'Al cierre del periodo';
+  const removalModeLabel = (m: string): string =>
+    m === 'immediate' ? 'Inmediato' : 'Al cierre del periodo';
+
+  const configBlock = (() => {
+    const rows = `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+        <div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Modelo de cobro</div>
+          <div class="ink">${isOneOff ? 'Prepago' : 'Recurrente'}</div>
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Descripción</div>
+          <div class="ink">${service.description ? escapeHtml(service.description) : '<span class="ink-faint">— sin descripción</span>'}</div>
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Emisión de setup</div>
+          <div class="ink">${setupModeLabel(service.setupBillingMode)}</div>
+        </div>
+        ${!isOneOff ? `<div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Emisión de baja</div>
+          <div class="ink">${removalModeLabel(service.removalBillingMode)}</div>
+        </div>` : ''}
+        ${isOneOff ? `<div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Meses prepagados</div>
+          <div class="ink font-mono-pro">${service.prepaidMonthsDefault ?? '<span class="ink-faint">— no configurado</span>'}</div>
+        </div>` : ''}
+      </div>
+    `;
+    const editTrigger = service.status !== 'terminated'
+      ? `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-config', label: 'Editar configuración' })}</div>`
+      : '';
+    return rows + editTrigger;
+  })();
+
+  const configForm = (() => {
+    if (service.status === 'terminated') return '';
+    const setupModeOptions = [
+      { value: 'next_cycle', label: 'Al cierre del periodo' },
+      { value: 'immediate', label: 'Inmediato' },
+    ];
+    const removalModeOptions = [
+      { value: 'next_cycle', label: 'Al cierre del periodo' },
+      { value: 'immediate', label: 'Inmediato' },
+    ];
+    const renderSelect = (name: string, options: Array<{ value: string; label: string }>, selected: string): string => {
+      const opts = options.map((o) => {
+        const sel = o.value === selected ? 'selected' : '';
+        return `<option value="${escapeHtml(o.value)}" ${sel}>${escapeHtml(o.label)}</option>`;
+      }).join('');
+      return `<select name="${escapeHtml(name)}" class="${INPUT_CLASS}">${opts}</select>`;
+    };
+    return `
+      <form method="post" action="/admin/services/${escapeHtml(service.code)}/config" class="space-y-0">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+          ${formField({
+            label: 'Nombre comercial',
+            required: true,
+            span: 2,
+            input: `<input required name="name" value="${escapeHtml(service.name)}" class="${INPUT_CLASS}">`,
+          })}
+          ${formField({
+            label: 'Descripción',
+            span: 2,
+            hint: 'Texto interno. No se muestra al cliente.',
+            input: `<input name="description" value="${escapeHtml(service.description ?? '')}" class="${INPUT_CLASS}">`,
+          })}
+          ${formField({
+            label: 'Emisión de setup',
+            hint: 'Solo aplica si el monto de setup es mayor a 0.',
+            input: renderSelect('setup_billing_mode', setupModeOptions, service.setupBillingMode),
+          })}
+          ${!isOneOff ? formField({
+            label: 'Emisión de baja',
+            hint: 'Solo aplica si el monto de baja es mayor a 0.',
+            input: renderSelect('removal_billing_mode', removalModeOptions, service.removalBillingMode),
+          }) : ''}
+          ${isOneOff ? formField({
+            label: 'Meses prepagados',
+            hint: 'Se puede sobrescribir por unidad.',
+            input: `<input type="number" name="prepaid_months_default" min="1" value="${service.prepaidMonthsDefault ?? ''}" class="${INPUT_CLASS_MONO} max-w-xs">`,
+          }) : ''}
+        </div>
+        <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+          ${primaryButton('Guardar configuración')}
+        </div>
+      </form>
+    `;
+  })();
+  const configModal = service.status !== 'terminated'
+    ? modal({
+        id: 'modal-config',
+        title: 'Editar configuración del plan',
+        description: 'Nombre, descripción y opciones de emisión. El modelo de cobro (recurrente/prepago) no se puede cambiar después de creado.',
+        body: configForm,
+      })
+    : '';
+
   // Códigos NetSuite — bloque informativo si todo OK, advertencia si faltan.
   const netsuiteBlock = (() => {
     const missing: string[] = [];
@@ -232,6 +332,11 @@ function renderResumen(service: ServiceWithRelations): string {
 
   return headlineMetrics
     + panel({
+      title: 'Configuración del plan',
+      description: 'Opciones definidas al crear el plan.',
+      body: configBlock,
+    })
+    + panel({
       title: 'NetSuite · códigos de producto',
       description: 'Mapeo de líneas de factura al catálogo de NetSuite.',
       body: netsuiteBlock,
@@ -240,6 +345,7 @@ function renderResumen(service: ServiceWithRelations): string {
       title: 'Acciones',
       body: `<div class="flex items-center gap-4">${terminateForm}<span>${invoicesLink}</span></div>`,
     })
+    + configModal
     + netsuiteCodesModal;
 }
 

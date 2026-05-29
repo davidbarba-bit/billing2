@@ -1370,6 +1370,34 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     reply.redirect(`/admin/services/${svcCode}`);
   });
 
+  // Editar configuración del plan (nombre, descripción, billing modes, prepaid months).
+  app.post('/admin/services/:code/config', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    const payload: Record<string, unknown> = {
+      name: body.name,
+      description: body.description || null,
+      setup_billing_mode: body.setup_billing_mode,
+    };
+    if (body.removal_billing_mode) {
+      payload.removal_billing_mode = body.removal_billing_mode;
+    }
+    if (body.prepaid_months_default) {
+      payload.prepaid_months_default = parseInt(body.prepaid_months_default, 10);
+    }
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/services/${encodeURIComponent(svcCode)}`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { service: payload },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Configuración actualizada.`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
   // ------------------------------------------------------------------
   // Units (read-only list + actions).
   // ------------------------------------------------------------------
