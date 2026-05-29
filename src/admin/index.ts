@@ -32,6 +32,8 @@ import { buildSignatureHeader } from '../services/hmac.js';
 import { isValidIanaTimezone } from '../services/tz.js';
 import { adminContextStorage } from './context.js';
 import {
+  INPUT_CLASS,
+  INPUT_CLASS_MONO,
   badge,
   btn,
   card,
@@ -40,10 +42,16 @@ import {
   fmtDate,
   fmtDateOnly,
   fmtMoney,
+  formField,
+  formSection,
   kv,
   layout,
   pageHeader,
+  pageTitle,
+  panel,
   postButton,
+  primaryButton,
+  secondaryLink,
   statusBadge,
   table,
 } from './views.js';
@@ -1382,26 +1390,51 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const invoices = await prisma.invoice.findMany({
       where: { organizationId: org.id },
       orderBy: { createdAt: 'desc' },
-      include: { customer: true, _count: { select: { fees: true } } },
+      include: { customer: { select: { externalId: true, name: true } } },
     });
     const flash = readFlash(request, reply);
+
+    const totalNet = invoices
+      .filter((i) => i.status !== 'voided')
+      .reduce((sum, i) => sum + i.feesAmountCents, 0);
+    const totalCurrency = invoices[0]?.currency ?? 'MXN';
+    const failedCount = invoices.filter((i) => i.externalDispatchStatus === 'failed').length;
+
+    const renderMoney = (cents: number, currency: string): string =>
+      `<span class="font-mono-pro num">${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> <span class="text-[10px] uppercase ink-faint">${escapeHtml(currency)}</span>`;
+
+    const header = `
+      <header class="mb-8 flex items-end justify-between gap-6 flex-wrap">
+        <div class="max-w-3xl">
+          <div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">Operaciones</div>
+          <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">Facturas</h1>
+          <p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">
+            ${invoices.length} factura${invoices.length === 1 ? '' : 's'} en total · ${renderMoney(totalNet, totalCurrency)} neto sin impuestos${failedCount > 0 ? ` · <span style="color: var(--danger);"><strong>${failedCount}</strong> con dispatch fallido</span>` : ''}.
+            Los impuestos los aplica NetSuite al emitir el CFDI.
+          </p>
+        </div>
+      </header>
+    `;
+
+    const tableBody = table({
+      rows: invoices,
+      empty: 'Sin facturas emitidas',
+      rowHref: (i) => `/admin/invoices/${i.id}`,
+      columns: [
+        { label: '#', render: (i) => `<span class="font-mono-pro ink-faint num">${i.sequentialId}</span>` },
+        { label: 'Folio fiscal', render: (i) => i.number ? `<code class="font-mono-pro text-[12px] ink">${escapeHtml(i.number)}</code>` : '<span class="ink-faint">—</span>' },
+        { label: 'Cliente', render: (i) => `<span class="ink">${escapeHtml(i.customer.name)}</span>` },
+        { label: 'Periodo', render: (i) => i.periodFrom && i.periodTo ? `<span class="text-xs ink-soft">${fmtDateOnly(i.periodFrom)} → ${fmtDateOnly(i.periodTo)}</span>` : '<span class="ink-faint">—</span>' },
+        { label: 'Status', render: (i) => statusBadge(i.status) },
+        { label: 'Dispatch', render: (i) => statusBadge(i.externalDispatchStatus) },
+        { label: 'Total neto', render: (i) => renderMoney(i.feesAmountCents, i.currency), className: 'text-right' },
+        { label: 'Emitida', render: (i) => `<span class="text-xs ink-soft">${fmtDateOnly(i.issuingDate)}</span>` },
+      ],
+    });
+
     reply.type('text/html').send(layout({
-      title: 'Invoices', active: '/admin/invoices', orgSlug: org.slug, flash,
-      body: pageHeader('Invoices') + table({
-        rows: invoices,
-        empty: 'Sin invoices',
-        rowHref: (i) => `/admin/invoices/${i.id}`,
-        columns: [
-          { label: '#', render: (i) => String(i.sequentialId) },
-          { label: 'Folio', render: (i) => i.number ? `<code>${escapeHtml(i.number)}</code>` : '<span class="text-gray-400">—</span>' },
-          { label: 'Customer', render: (i) => escapeHtml(i.customer.externalId) },
-          { label: 'Period', render: (i) => i.periodFrom && i.periodTo ? `${fmtDateOnly(i.periodFrom)} → ${fmtDateOnly(i.periodTo)}` : '—' },
-          { label: 'Status', render: (i) => statusBadge(i.status) },
-          { label: 'Dispatch', render: (i) => statusBadge(i.externalDispatchStatus) },
-          { label: 'Total', render: (i) => fmtMoney(i.feesAmountCents, i.currency) },
-          { label: 'Emitida', render: (i) => fmtDateOnly(i.issuingDate) },
-        ],
-      }),
+      title: 'Facturas', active: '/admin/invoices', orgSlug: org.slug, flash,
+      body: header + tableBody,
     }));
   });
 
@@ -1416,76 +1449,174 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!invoice) {
       reply.status(404).type('text/html').send(layout({
         title: 'Not Found', orgSlug: org.slug,
-        body: pageHeader('Invoice no existe') + btn('/admin/invoices', '← back'),
+        body: pageHeader('Factura no existe') + btn('/admin/invoices', '← back'),
       }));
       return;
     }
-    const info = kv([
-      ['ID', `<code>${escapeHtml(invoice.id)}</code>`],
-      ['Sequential', String(invoice.sequentialId)],
-      ['Folio fiscal', invoice.number ? `<code>${escapeHtml(invoice.number)}</code>` : '<span class="text-gray-400">— (sin folio NetSuite)</span>'],
-      ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(invoice.customer.externalId)}">${escapeHtml(invoice.customer.externalId)}</a>`],
-      ['Status', statusBadge(invoice.status)],
-      ['Dispatch', statusBadge(invoice.externalDispatchStatus)],
-      ['Payment', statusBadge(invoice.paymentStatus)],
-      ['Currency', escapeHtml(invoice.currency)],
-      ['Period from', fmtDate(invoice.periodFrom)],
-      ['Period to', fmtDate(invoice.periodTo)],
-      ['Fees (neto)', `<b>${fmtMoney(invoice.feesAmountCents, invoice.currency)}</b>`],
-      ['Impuestos', '<span class="text-gray-400">Los calcula NetSuite al emitir el CFDI</span>'],
-      ['Emitida', fmtDateOnly(invoice.issuingDate)],
-      ['External error', invoice.externalDispatchError ? `<span class="text-red-700">${escapeHtml(invoice.externalDispatchError)}</span>` : '—'],
-    ]);
-
-    const feesBlock = table({
-      rows: invoice.fees,
-      columns: [
-        { label: 'Kind', render: (f) => badge(f.kind, f.kind === 'setup' ? 'blue' : 'green') },
-        { label: 'Descripción', render: (f) => escapeHtml(f.description ?? '') },
-        { label: 'Units', render: (f) => `<code>${escapeHtml(f.units)}</code>` },
-        { label: '$/u', render: (f) => `$${escapeHtml(f.preciseUnitAmount)}` },
-        { label: 'Amount (neto)', render: (f) => fmtMoney(f.amountCents, invoice.currency) },
-        { label: 'Detail', render: (f) => `<details><summary class="cursor-pointer text-indigo-700">${(f.billedUnitsDetail as unknown[]).length} unidades</summary>${code(f.billedUnitsDetail)}</details>` },
-      ],
-    });
-
-    const externalInvoice = invoice.externalInvoiceFolio ? code({
-      folio: invoice.externalInvoiceFolio,
-      uuid_cfdi: invoice.externalInvoiceUuidCfdi,
-      system: invoice.externalInvoiceSystem,
-      netsuite_internal_id: invoice.externalInvoiceNetsuiteInternalId,
-      issued_at: invoice.externalInvoiceIssuedAt,
-      confirmed_at: invoice.externalInvoiceConfirmedAt,
-    }) : '<span class="text-gray-500">No confirmada (sin folio fiscal aún)</span>';
 
     const canVoid = invoice.status !== 'voided';
     const canConfirm = invoice.externalDispatchStatus !== 'confirmed';
-    const folioField = `
-      <form method="post" action="/admin/invoices/${invoice.id}/simulate-confirm" class="flex gap-2 items-end">
-        <label class="block flex-1"><span class="text-xs text-gray-600">Folio fiscal</span>
-          <input required name="folio" value="A-2026-${String(invoice.sequentialId).padStart(6, '0')}" class="block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <label class="block flex-1"><span class="text-xs text-gray-600">UUID CFDI</span>
-          <input name="uuid_cfdi" class="block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <button class="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm" ${canConfirm ? '' : 'disabled'}>Simular folio NetSuite</button>
-      </form>
+    const techMode = adminContextStorage.getStore()?.techMode ?? false;
+
+    // Header: número grande de invoice + estado + acciones.
+    const header = `
+      <div class="flex items-start justify-between gap-6 mb-2">
+        <div>
+          <div class="text-[11px] uppercase tracking-[0.14em] mb-2 ink-faint">
+            Factura · <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/customers/${escapeHtml(invoice.customer.externalId)}">${escapeHtml(invoice.customer.name)}</a>
+          </div>
+          <h1 class="font-display text-[2rem] leading-tight font-medium ink tracking-tight">
+            ${invoice.number ? `<code class="font-mono-pro text-[1.6rem]">${escapeHtml(invoice.number)}</code>` : `#${invoice.sequentialId}`}
+          </h1>
+          <div class="flex items-center gap-2 mt-3">
+            ${statusBadge(invoice.status)}
+            ${statusBadge(invoice.externalDispatchStatus)}
+            ${statusBadge(invoice.paymentStatus)}
+          </div>
+        </div>
+        <div class="shrink-0">${secondaryLink('/admin/invoices', '← Facturas')}</div>
+      </div>
     `;
-    const actions = `<div class="space-y-3">
-      ${canVoid ? postButton(`/admin/invoices/${invoice.id}/void`, 'Void invoice', 'danger', `¿Anular invoice #${invoice.sequentialId}?`) : '<span class="text-gray-400">voided</span>'}
-      <div>${folioField}</div>
-    </div>`;
+
+    // Cifras grandes: total, periodo, emitida.
+    const renderMoneyBig = (cents: number, currency: string): string =>
+      `<div class="font-mono-pro text-3xl ink num tracking-tight">${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+       <div class="text-[10px] uppercase tracking-wider ink-faint mt-1">${escapeHtml(currency)} · neto sin impuestos</div>`;
+    const metricsRow = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-px surface-card mb-8" style="border-radius: 6px; overflow: hidden;">
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Total neto</div>
+          ${renderMoneyBig(invoice.feesAmountCents, invoice.currency)}
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Periodo facturado</div>
+          ${invoice.periodFrom && invoice.periodTo
+            ? `<div class="font-mono-pro text-sm ink mt-1">${fmtDateOnly(invoice.periodFrom)} <span class="ink-faint">→</span> ${fmtDateOnly(invoice.periodTo)}</div>`
+            : `<div class="ink-faint italic">No aplica (factura individual)</div>`}
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Emitida</div>
+          <div class="font-mono-pro text-sm ink mt-1">${fmtDateOnly(invoice.issuingDate)}</div>
+          ${invoice.externalInvoiceConfirmedAt
+            ? `<div class="text-[11px] mt-1.5" style="color: var(--accent-deep);">Confirmada ${fmtDateOnly(invoice.externalInvoiceConfirmedAt)}</div>`
+            : ''}
+        </div>
+      </div>
+    `;
+
+    // Banner de error si hay dispatch fallido.
+    const errorBanner = invoice.externalDispatchError
+      ? `<div class="rounded p-4 mb-6" style="background: var(--danger-soft); border: 1px solid var(--danger-soft);">
+          <div class="text-[10px] uppercase tracking-[0.14em] font-medium mb-2" style="color: var(--danger);">Error de dispatch</div>
+          <code class="font-mono-pro text-xs ink">${escapeHtml(invoice.externalDispatchError)}</code>
+        </div>`
+      : '';
+
+    // Líneas de la factura.
+    const feesTable = invoice.fees.length === 0
+      ? '<div class="text-sm ink-faint italic py-6 text-center">Sin líneas en esta factura.</div>'
+      : table({
+          rows: invoice.fees,
+          columns: [
+            { label: 'Concepto', render: (f) => {
+              const kindLabels: Record<string, string> = { monthly: 'Renta mensual', setup: 'Setup', removal: 'Baja', service_addon: 'Add-on de plan', customer_addon: 'Add-on de cliente', one_off: 'One-off' };
+              return `<div class="font-medium ink">${escapeHtml(kindLabels[f.kind] ?? f.kind)}</div><div class="text-xs ink-faint mt-0.5">${escapeHtml(f.description ?? '')}</div>`;
+            } },
+            { label: 'Unidades', render: (f) => `<span class="font-mono-pro num text-sm">${escapeHtml(f.units)}</span>` },
+            { label: 'Precio /u', render: (f) => `<span class="font-mono-pro num text-sm">${escapeHtml(f.preciseUnitAmount)}</span>` },
+            { label: 'Total', render: (f) => `<span class="font-mono-pro num">${(f.amountCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> <span class="text-[10px] uppercase ink-faint">${escapeHtml(invoice.currency)}</span>`, className: 'text-right' },
+            { label: 'Detalle', render: (f) => {
+              const units = f.billedUnitsDetail as unknown[];
+              if (units.length === 0) return '<span class="ink-faint text-xs">—</span>';
+              return `<details><summary class="cursor-pointer text-xs hover:underline" style="color: var(--accent-deep);">${units.length} unidad${units.length === 1 ? '' : 'es'}</summary><div class="mt-2 max-h-64 overflow-auto">${code(units)}</div></details>`;
+            } },
+          ],
+        });
+
+    // Acciones: void + simular folio (en finance / billing-ops, normalmente).
+    const voidAction = canVoid
+      ? `<form method="post" action="/admin/invoices/${invoice.id}/void" class="inline" onsubmit="return confirm('¿Anular factura #${invoice.sequentialId}? Esta acción no se puede deshacer.')">
+          <button type="submit" class="inline-flex items-center justify-center rounded text-sm font-medium px-4 py-2 transition-colors" style="background: var(--danger); color: #FAFAFA;">Anular factura</button>
+        </form>`
+      : `<span class="pill pill-danger">Anulada</span>`;
+    const confirmForm = canConfirm ? `
+      <form method="post" action="/admin/invoices/${invoice.id}/simulate-confirm" class="space-y-4">
+        <p class="text-sm ink-soft">Para staging y demos: simula el callback de NetSuite que confirma el folio fiscal y el UUID CFDI.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          ${formField({
+            label: 'Folio fiscal',
+            required: true,
+            input: `<input required name="folio" value="A-2026-${String(invoice.sequentialId).padStart(6, '0')}" class="${INPUT_CLASS_MONO}">`,
+          })}
+          ${formField({
+            label: 'UUID CFDI',
+            input: `<input name="uuid_cfdi" placeholder="vacío para simulación rápida" class="${INPUT_CLASS_MONO}">`,
+          })}
+        </div>
+        ${primaryButton('Simular confirmación NetSuite')}
+      </form>
+    ` : '<div class="text-sm ink-faint">La factura ya está confirmada por NetSuite.</div>';
+
+    const externalBlock = invoice.externalInvoiceFolio
+      ? `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Folio fiscal</div>
+            <div class="font-mono-pro ink">${escapeHtml(invoice.externalInvoiceFolio)}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">UUID CFDI</div>
+            <div class="font-mono-pro ink text-xs">${invoice.externalInvoiceUuidCfdi ? escapeHtml(invoice.externalInvoiceUuidCfdi) : '<span class="ink-faint">—</span>'}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Sistema</div>
+            <div class="font-mono-pro ink">${escapeHtml(invoice.externalInvoiceSystem ?? '—')}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Emitida en NetSuite</div>
+            <div class="font-mono-pro ink">${invoice.externalInvoiceIssuedAt ? fmtDate(invoice.externalInvoiceIssuedAt) : '<span class="ink-faint">—</span>'}</div>
+          </div>
+        </div>`
+      : '<div class="text-sm ink-faint italic">Aún sin confirmar por NetSuite — sin folio fiscal disponible.</div>';
+
+    const techBlocks = techMode ? (
+      panel({
+        title: 'Datos técnicos',
+        description: 'Identificadores internos, units annex y metadata raw.',
+        body: `
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm mb-5">
+            <div>
+              <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">UUID interno</div>
+              <code class="font-mono-pro text-xs ink">${escapeHtml(invoice.id)}</code>
+            </div>
+            <div>
+              <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Sequential ID</div>
+              <span class="font-mono-pro num ink">${invoice.sequentialId}</span>
+            </div>
+            <div class="sm:col-span-2">
+              <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Idempotency key</div>
+              <code class="font-mono-pro text-xs ink">${invoice.idempotencyKey ? escapeHtml(invoice.idempotencyKey) : '—'}</code>
+            </div>
+          </div>
+          <details class="mb-4"><summary class="cursor-pointer text-sm font-medium" style="color: var(--accent-deep);">Units annex (JSON)</summary><div class="mt-3">${code(invoice.unitsAnnex)}</div></details>
+          <details><summary class="cursor-pointer text-sm font-medium" style="color: var(--accent-deep);">Metadata (JSON)</summary><div class="mt-3">${code(invoice.metadata)}</div></details>
+        `,
+      })
+    ) : '';
 
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
-      title: `Invoice #${invoice.sequentialId}`, active: '/admin/invoices', orgSlug: org.slug, flash,
-      body: pageHeader(`Invoice #${invoice.sequentialId}`, btn('/admin/invoices', '← back'))
-        + card('Identidad', info)
-        + card('Acciones', actions)
-        + card(`Fees (${invoice.fees.length})`, feesBlock)
-        + card('Units annex', code(invoice.unitsAnnex))
-        + card('External invoice (folio fiscal + impuestos calculados por NetSuite)', externalInvoice)
-        + card('Metadata', code(invoice.metadata)),
+      title: `Factura ${invoice.number ?? '#' + invoice.sequentialId}`,
+      active: '/admin/invoices', orgSlug: org.slug, flash,
+      body: header
+        + metricsRow
+        + errorBanner
+        + panel({ title: `Líneas · ${invoice.fees.length}`, description: 'Conceptos cobrados. Los impuestos los calcula NetSuite al emitir el CFDI.', body: feesTable })
+        + panel({ title: 'Información fiscal · NetSuite', body: externalBlock })
+        + panel({
+            title: 'Acciones',
+            body: `<div class="space-y-6">${voidAction}<hr style="border-top: 1px solid var(--rule-soft);">${confirmForm}</div>`,
+          })
+        + techBlocks,
     }));
   });
 
@@ -1542,25 +1673,50 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const cns = await prisma.creditNote.findMany({
       where: { organizationId: org.id }, orderBy: { createdAt: 'desc' },
-      include: { customer: true, invoice: true },
+      include: {
+        customer: { select: { externalId: true, name: true } },
+        invoice: { select: { id: true, number: true, sequentialId: true } },
+      },
     });
     const flash = readFlash(request, reply);
+
+    const totalNet = cns.reduce((sum, cn) => sum + cn.totalAmountCents, 0);
+    const totalCurrency = cns[0]?.currency ?? 'MXN';
+    const pendingCount = cns.filter((cn) => cn.externalDispatchStatus !== 'confirmed' && cn.externalDispatchStatus !== 'failed').length;
+
+    const renderMoney = (cents: number, currency: string): string =>
+      `<span class="font-mono-pro num">${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> <span class="text-[10px] uppercase ink-faint">${escapeHtml(currency)}</span>`;
+
+    const header = `
+      <header class="mb-8 flex items-end justify-between gap-6 flex-wrap">
+        <div class="max-w-3xl">
+          <div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">Operaciones</div>
+          <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">Notas de crédito</h1>
+          <p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">
+            ${cns.length} en total · ${renderMoney(totalNet, totalCurrency)} acreditado${pendingCount > 0 ? ` · <span style="color: var(--warn);"><strong>${pendingCount}</strong> sin confirmar por NetSuite</span>` : ''}.
+          </p>
+        </div>
+      </header>
+    `;
+
+    const tableBody = table({
+      rows: cns,
+      empty: 'Sin notas de crédito emitidas',
+      rowHref: (cn) => `/admin/credit-notes/${cn.id}`,
+      columns: [
+        { label: 'Folio', render: (cn) => cn.number ? `<code class="font-mono-pro text-[12px] ink">${escapeHtml(cn.number)}</code>` : `<span class="font-mono-pro ink-faint num">#${cn.sequentialId}</span>` },
+        { label: 'Factura', render: (cn) => cn.invoice.number ? `<code class="font-mono-pro text-[11px] ink-soft">${escapeHtml(cn.invoice.number)}</code>` : `<span class="font-mono-pro ink-faint">#${cn.invoice.sequentialId}</span>` },
+        { label: 'Cliente', render: (cn) => `<span class="ink">${escapeHtml(cn.customer.name)}</span>` },
+        { label: 'Status', render: (cn) => statusBadge(cn.status) },
+        { label: 'Dispatch', render: (cn) => statusBadge(cn.externalDispatchStatus) },
+        { label: 'Total', render: (cn) => renderMoney(cn.totalAmountCents, cn.currency), className: 'text-right' },
+        { label: 'Razón', render: (cn) => `<span class="text-xs ink-soft">${escapeHtml(cn.reason)}</span>` },
+      ],
+    });
+
     reply.type('text/html').send(layout({
-      title: 'Credit notes', active: '/admin/credit-notes', orgSlug: org.slug, flash,
-      body: pageHeader('Credit notes') + table({
-        rows: cns,
-        empty: 'Sin credit notes',
-        rowHref: (cn) => `/admin/credit-notes/${cn.id}`,
-        columns: [
-          { label: 'Folio', render: (cn) => cn.number ? `<code>${escapeHtml(cn.number)}</code>` : '<span class="text-gray-400">—</span>' },
-          { label: 'Invoice', render: (cn) => cn.invoice.number ? `<code>${escapeHtml(cn.invoice.number)}</code>` : `<code class="text-xs">${escapeHtml(cn.invoiceId.slice(0, 8))}…</code>` },
-          { label: 'Customer', render: (cn) => escapeHtml(cn.customer.externalId) },
-          { label: 'Status', render: (cn) => statusBadge(cn.status) },
-          { label: 'Dispatch', render: (cn) => statusBadge(cn.externalDispatchStatus) },
-          { label: 'Total', render: (cn) => fmtMoney(cn.totalAmountCents, cn.currency) },
-          { label: 'Razón', render: (cn) => escapeHtml(cn.reason) },
-        ],
-      }),
+      title: 'Notas de crédito', active: '/admin/credit-notes', orgSlug: org.slug, flash,
+      body: header + tableBody,
     }));
   });
 
@@ -1575,54 +1731,111 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!cn) {
       reply.status(404).type('text/html').send(layout({
         title: 'Not Found', orgSlug: org.slug,
-        body: pageHeader('Credit note no existe') + btn('/admin/credit-notes', '← back'),
+        body: pageHeader('Nota de crédito no existe') + btn('/admin/credit-notes', '← back'),
       }));
       return;
     }
-    const info = kv([
-      ['ID', `<code>${escapeHtml(cn.id)}</code>`],
-      ['Folio', cn.number ? `<code>${escapeHtml(cn.number)}</code>` : '—'],
-      ['Invoice', `<a class="text-indigo-700 underline" href="/admin/invoices/${cn.invoiceId}">${cn.invoice.number ?? cn.invoiceId.slice(0, 8)}</a>`],
-      ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(cn.customer.externalId)}">${escapeHtml(cn.customer.externalId)}</a>`],
-      ['Status', statusBadge(cn.status)],
-      ['Dispatch', statusBadge(cn.externalDispatchStatus)],
-      ['Credit status', statusBadge(cn.creditStatus)],
-      ['Razón', escapeHtml(cn.reason)],
-      ['Descripción', escapeHtml(cn.description ?? '—')],
-      ['Total (neto)', `<b>${fmtMoney(cn.totalAmountCents, cn.currency)}</b>`],
-      ['Impuestos', '<span class="text-gray-400">Los calcula NetSuite al emitir el CFDI</span>'],
-    ]);
-    const itemsBlock = table({
-      rows: cn.items,
-      columns: [
-        { label: 'Fee', render: (it) => `<code class="text-xs">${escapeHtml(it.feeId.slice(0, 8))}…</code><div class="text-xs text-gray-500">${escapeHtml(it.fee.kind)}</div>` },
-        { label: 'Amount', render: (it) => fmtMoney(it.amountCents, it.amountCurrency) },
-      ],
-    });
-    const externalCN = cn.externalCreditNoteFolio ? code({
-      folio: cn.externalCreditNoteFolio,
-      uuid_cfdi: cn.externalCreditNoteUuidCfdi,
-      system: cn.externalCreditNoteSystem,
-      issued_at: cn.externalCreditNoteIssuedAt,
-      confirmed_at: cn.externalCreditNoteConfirmedAt,
-    }) : '<span class="text-gray-500">No confirmada</span>';
+
     const canConfirm = cn.externalDispatchStatus !== 'confirmed';
-    const confirmForm = `
-      <form method="post" action="/admin/credit-notes/${cn.id}/simulate-confirm" class="flex gap-2 items-end">
-        <label class="block flex-1"><span class="text-xs text-gray-600">Folio CN</span>
-          <input required name="folio" value="B-2026-${String(cn.sequentialId).padStart(6, '0')}" class="block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <button class="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm" ${canConfirm ? '' : 'disabled'}>Simular folio NetSuite</button>
-      </form>
+    const techMode = adminContextStorage.getStore()?.techMode ?? false;
+
+    const header = `
+      <div class="flex items-start justify-between gap-6 mb-2">
+        <div>
+          <div class="text-[11px] uppercase tracking-[0.14em] mb-2 ink-faint">
+            Nota de crédito · <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/customers/${escapeHtml(cn.customer.externalId)}">${escapeHtml(cn.customer.name)}</a> · sobre <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/invoices/${cn.invoiceId}">${cn.invoice.number ?? '#' + cn.invoice.sequentialId}</a>
+          </div>
+          <h1 class="font-display text-[2rem] leading-tight font-medium ink tracking-tight">
+            ${cn.number ? `<code class="font-mono-pro text-[1.6rem]">${escapeHtml(cn.number)}</code>` : `#${cn.sequentialId}`}
+          </h1>
+          <div class="flex items-center gap-2 mt-3">
+            ${statusBadge(cn.status)}
+            ${statusBadge(cn.externalDispatchStatus)}
+            ${statusBadge(cn.creditStatus)}
+          </div>
+        </div>
+        <div class="shrink-0">${secondaryLink('/admin/credit-notes', '← Notas de crédito')}</div>
+      </div>
     `;
+
+    const metricsRow = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-px surface-card mb-8" style="border-radius: 6px; overflow: hidden;">
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Total acreditado</div>
+          <div class="font-mono-pro text-3xl ink num tracking-tight">${(cn.totalAmountCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mt-1">${escapeHtml(cn.currency)} · neto sin impuestos</div>
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Razón</div>
+          <div class="text-sm ink mt-1">${escapeHtml(cn.reason)}</div>
+          ${cn.description ? `<div class="text-xs ink-soft mt-1.5 leading-relaxed">${escapeHtml(cn.description)}</div>` : ''}
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Emitida</div>
+          <div class="font-mono-pro text-sm ink mt-1">${fmtDateOnly(cn.issuingDate)}</div>
+          ${cn.externalCreditNoteConfirmedAt
+            ? `<div class="text-[11px] mt-1.5" style="color: var(--accent-deep);">Confirmada ${fmtDateOnly(cn.externalCreditNoteConfirmedAt)}</div>`
+            : ''}
+        </div>
+      </div>
+    `;
+
+    const itemsTable = cn.items.length === 0
+      ? '<div class="text-sm ink-faint italic py-6 text-center">Sin líneas en esta nota de crédito.</div>'
+      : table({
+          rows: cn.items,
+          columns: [
+            { label: 'Concepto', render: (it) => {
+              const kindLabels: Record<string, string> = { monthly: 'Renta mensual', setup: 'Setup', removal: 'Baja', service_addon: 'Add-on de plan', customer_addon: 'Add-on de cliente', one_off: 'One-off' };
+              return `<div class="font-medium ink">${escapeHtml(kindLabels[it.fee.kind] ?? it.fee.kind)}</div><div class="text-xs ink-faint mt-0.5">${escapeHtml(it.fee.description ?? '')}</div>`;
+            } },
+            { label: 'Monto acreditado', render: (it) => `<span class="font-mono-pro num">${(it.amountCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> <span class="text-[10px] uppercase ink-faint">${escapeHtml(it.amountCurrency)}</span>`, className: 'text-right' },
+            ...(techMode ? [{ label: 'Fee ID', render: (it: typeof cn.items[number]) => `<code class="font-mono-pro text-[11px] ink-faint">${escapeHtml(it.feeId.slice(0, 8))}…</code>` }] : []),
+          ],
+        });
+
+    const externalBlock = cn.externalCreditNoteFolio
+      ? `<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Folio fiscal</div>
+            <div class="font-mono-pro ink">${escapeHtml(cn.externalCreditNoteFolio)}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">UUID CFDI</div>
+            <div class="font-mono-pro ink text-xs">${cn.externalCreditNoteUuidCfdi ? escapeHtml(cn.externalCreditNoteUuidCfdi) : '<span class="ink-faint">—</span>'}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Sistema</div>
+            <div class="font-mono-pro ink">${escapeHtml(cn.externalCreditNoteSystem ?? '—')}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Emitida en NetSuite</div>
+            <div class="font-mono-pro ink">${cn.externalCreditNoteIssuedAt ? fmtDate(cn.externalCreditNoteIssuedAt) : '<span class="ink-faint">—</span>'}</div>
+          </div>
+        </div>`
+      : '<div class="text-sm ink-faint italic">Aún sin confirmar por NetSuite — sin folio fiscal disponible.</div>';
+
+    const confirmForm = canConfirm
+      ? `<form method="post" action="/admin/credit-notes/${cn.id}/simulate-confirm" class="space-y-4">
+          <p class="text-sm ink-soft">Para staging y demos: simula el callback de NetSuite que confirma el folio fiscal.</p>
+          ${formField({
+            label: 'Folio fiscal de la nota',
+            required: true,
+            input: `<input required name="folio" value="B-2026-${String(cn.sequentialId).padStart(6, '0')}" class="${INPUT_CLASS_MONO}" style="max-width: 20rem;">`,
+          })}
+          ${primaryButton('Simular confirmación NetSuite')}
+        </form>`
+      : '<div class="text-sm ink-faint">La nota ya está confirmada por NetSuite.</div>';
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
-      title: `Credit note · ${cn.number ?? cn.id}`, active: '/admin/credit-notes', orgSlug: org.slug, flash,
-      body: pageHeader(`Credit note #${cn.sequentialId}`, btn('/admin/credit-notes', '← back'))
-        + card('Identidad', info)
-        + card('Acciones', confirmForm)
-        + card('Items', itemsBlock)
-        + card('External credit note', externalCN),
+      title: `Nota de crédito ${cn.number ?? '#' + cn.sequentialId}`,
+      active: '/admin/credit-notes', orgSlug: org.slug, flash,
+      body: header
+        + metricsRow
+        + panel({ title: `Líneas · ${cn.items.length}`, description: 'Conceptos acreditados.', body: itemsTable })
+        + panel({ title: 'Información fiscal · NetSuite', body: externalBlock })
+        + panel({ title: 'Acciones', body: confirmForm }),
     }));
   });
 
