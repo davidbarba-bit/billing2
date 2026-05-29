@@ -19,6 +19,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import basicAuth from '@fastify/basic-auth';
+import { DateTime } from 'luxon';
 import formbody from '@fastify/formbody';
 import type { Organization, PrismaClient } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -64,6 +65,18 @@ function toUtcIso(raw: string): string {
   if (!trimmed) return trimmed;
   if (trimmed.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(trimmed)) return trimmed;
   return /T\d{2}:\d{2}:\d{2}/.test(trimmed) ? `${trimmed}Z` : `${trimmed}:00Z`;
+}
+
+// Para campos donde la UI etiqueta el datetime-local con la tz de
+// preferencia del admin (no UTC), convierte la entrada local a UTC ISO
+// usando esa tz. Si la tz es inválida, cae a comportamiento UTC.
+function dtLocalInTzToUtcIso(raw: string, tz: string): string {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(trimmed)) return trimmed;
+  const dt = DateTime.fromISO(trimmed, { zone: tz });
+  if (!dt.isValid) return toUtcIso(raw);
+  return dt.toUTC().toISO() ?? toUtcIso(raw);
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
@@ -359,7 +372,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       active: '/admin/customers',
       orgSlug: org.slug,
       flash,
-      body: renderNewCustomerForm({}, org.timezone),
+      body: renderNewCustomerForm({}, { displayTz: adminContextStorage.getStore()?.displayTz ?? org.timezone, orgTimezone: org.timezone }),
     }));
   });
 
@@ -388,7 +401,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const currency = get('currency');
     if (currency) customerPayload.currency = currency.toUpperCase();
     const subAt = get('subscription_at');
-    if (subAt) customerPayload.subscription_at = toUtcIso(subAt);
+    if (subAt) {
+      const displayTz = adminContextStorage.getStore()?.displayTz ?? org.timezone;
+      customerPayload.subscription_at = dtLocalInTzToUtcIso(subAt, displayTz);
+    }
     const periodMonths = num('billing_period_months');
     if (periodMonths) customerPayload.billing_period_months = periodMonths;
     const anchorDay = num('billing_anchor_day');
@@ -420,7 +436,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           active: '/admin/customers',
           orgSlug: org.slug,
           flash: { kind: 'error', message: msg },
-          body: renderNewCustomerForm(form, org.timezone),
+          body: renderNewCustomerForm(form, { displayTz: adminContextStorage.getStore()?.displayTz ?? org.timezone, orgTimezone: org.timezone }),
         }));
         return;
       }
@@ -466,7 +482,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       active: '/admin/customers',
       orgSlug: org.slug,
       flash: { kind: 'error', message: errorMsg },
-      body: renderNewCustomerForm(form, org.timezone),
+      body: renderNewCustomerForm(form, { displayTz: adminContextStorage.getStore()?.displayTz ?? org.timezone, orgTimezone: org.timezone }),
     }));
   });
 
@@ -1177,7 +1193,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const { externalId } = request.params as { externalId: string };
     const body = request.body as Record<string, string>;
     const payload: Record<string, unknown> = {};
-    if (body.subscription_at) payload.subscription_at = toUtcIso(body.subscription_at);
+    if (body.subscription_at) {
+      const displayTz = adminContextStorage.getStore()?.displayTz ?? org.timezone;
+      payload.subscription_at = dtLocalInTzToUtcIso(body.subscription_at, displayTz);
+    }
     if (body.billing_anchor_day) payload.billing_anchor_day = Number(body.billing_anchor_day);
     if (body.billing_period_months) payload.billing_period_months = Number(body.billing_period_months);
     // billing_anchor_month: string vacío → null (limpia override); número → set.

@@ -353,14 +353,15 @@ function renderScheduleEditForm(customer: CustomerWithRelations): string {
   const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
   const blocked = nonVoidedInvoices > 0;
   const terminated = customer.status === 'terminated';
+  // Pre-populamos el datetime-local en la tz del admin (la que ve en
+  // su sidebar), no en UTC. El POST handler reconvierte usando la
+  // misma tz para que el round-trip sea consistente.
+  const displayTz = adminContextStorage.getStore()?.displayTz ?? 'UTC';
   const dtLocal = (d: Date | null | undefined): string => {
     if (!d) return '';
-    const yyyy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-    const hh = String(d.getUTCHours()).padStart(2, '0');
-    const mi = String(d.getUTCMinutes()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    return DateTime.fromJSDate(d, { zone: 'utc' })
+      .setZone(displayTz)
+      .toFormat("yyyy-LL-dd'T'HH:mm");
   };
   const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -394,7 +395,7 @@ function renderScheduleEditForm(customer: CustomerWithRelations): string {
     <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/billing-schedule" class="space-y-3 max-w-3xl"
       onsubmit="return confirm('Esto recalculará el ciclo actual y guardará el cambio en el historial. ¿Continuar?')">
       <div class="grid grid-cols-2 gap-3">
-        <label class="block"><span class="text-sm text-gray-700">Subscription at (UTC)</span>
+        <label class="block"><span class="text-sm text-gray-700">Inicio de suscripción <span class="text-xs text-gray-500">(zona <code>${escapeHtml(displayTz)}</code>)</span></span>
           <input ${disabledHard} type="datetime-local" name="subscription_at" value="${escapeHtml(dtLocal(customer.subscriptionAt))}" class="mt-1 block w-full rounded border-gray-300 text-sm ${disabledHard ? 'bg-gray-100' : ''}">
         </label>
         <label class="block"><span class="text-sm text-gray-700">Anchor day (1–28)</span>
@@ -707,8 +708,9 @@ export function renderCustomerDetail(args: {
 // El submit POSTea a /admin/customers/new que internamente llama al API.
 export function renderNewCustomerForm(
   form: Record<string, string | undefined>,
-  orgTimezone: string,
+  opts: { displayTz: string; orgTimezone: string },
 ): string {
+  const { displayTz, orgTimezone } = opts;
   const v = (k: string): string => escapeHtml(form[k] ?? "");
   const periodMonths = form.billing_period_months ?? "1";
   const periodOptions = [
@@ -787,9 +789,9 @@ export function renderNewCustomerForm(
         <h3 class="text-sm font-semibold text-gray-700 mb-3">Calendario de facturación</h3>
         <div class="grid grid-cols-2 gap-4">
           <label class="block col-span-2">
-            <span class="text-sm font-medium text-gray-700">Inicio de suscripción (UTC)</span>
+            <span class="text-sm font-medium text-gray-700">Inicio de suscripción <span class="text-xs text-gray-500">(zona <code>${escapeHtml(displayTz)}</code>)</span></span>
             <input type="datetime-local" name="subscription_at" value="${v("subscription_at")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            <span class="text-xs text-gray-500">Si lo dejas vacío usa el momento del alta. Si es futuro, el cliente queda <em>programado</em> hasta que llegue la fecha.</span>
+            <span class="text-xs text-gray-500">Se interpreta en tu zona (la de Ajustes). Si lo dejas vacío usa el momento del alta. Si es futuro, el cliente queda <em>programado</em> hasta que llegue la fecha.</span>
           </label>
           <label class="block">
             <span class="text-sm font-medium text-gray-700">Frecuencia</span>
