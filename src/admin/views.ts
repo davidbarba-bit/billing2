@@ -367,6 +367,11 @@ export function layout(options: {
   main > *:nth-child(3) { animation-delay: 80ms; }
   main > *:nth-child(4) { animation-delay: 120ms; }
 
+  /* table rows */
+  .data-row { transition: background 120ms ease; }
+  .data-row:hover { background: var(--paper-soft); }
+  .data-row-clickable { cursor: pointer; }
+
   /* form section dividers — only between siblings, not before the first */
   .form-section + .form-section {
     border-top: 1px solid var(--rule);
@@ -494,27 +499,27 @@ export function table<T>(args: {
   rowHref?: (row: T) => string;
 }): string {
   if (args.rows.length === 0) {
-    return `<div class="text-gray-500 italic py-8">${escapeHtml(args.empty ?? 'No hay elementos')}</div>`;
+    return `<div class="surface-card text-center ink-faint italic text-sm py-12" style="border-radius: 6px;">${escapeHtml(args.empty ?? 'No hay elementos')}</div>`;
   }
   const head = args.columns
-    .map((c) => `<th class="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider ${c.className ?? ''}">${escapeHtml(c.label)}</th>`)
+    .map((c) => `<th class="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] ink-soft ${c.className ?? ''}">${escapeHtml(c.label)}</th>`)
     .join('');
   const body = args.rows
     .map((row) => {
       const cells = args.columns
-        .map((c) => `<td class="px-4 py-3 text-sm border-t ${c.className ?? ''}">${c.render(row)}</td>`)
+        .map((c) => `<td class="px-5 py-3.5 text-sm align-middle ${c.className ?? ''}" style="border-top: 1px solid var(--rule-soft);">${c.render(row)}</td>`)
         .join('');
       if (args.rowHref) {
         const href = args.rowHref(row);
-        return `<tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='${href}'">${cells}</tr>`;
+        return `<tr class="data-row data-row-clickable" onclick="window.location='${href}'">${cells}</tr>`;
       }
-      return `<tr class="hover:bg-gray-50">${cells}</tr>`;
+      return `<tr class="data-row">${cells}</tr>`;
     })
     .join('');
-  return `<div class="bg-white rounded shadow-sm border overflow-hidden">
-<table class="min-w-full divide-y">
-  <thead class="bg-gray-50">${head}</thead>
-  <tbody class="divide-y">${body}</tbody>
+  return `<div class="surface-card overflow-hidden" style="border-radius: 6px;">
+<table class="min-w-full">
+  <thead style="background: var(--paper-soft); border-bottom: 1px solid var(--rule);">${head}</thead>
+  <tbody>${body}</tbody>
 </table>
 </div>`;
 }

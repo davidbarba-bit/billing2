@@ -50,6 +50,7 @@ import {
 import { computeDashboardMetrics, renderDashboardBody } from './dashboard.js';
 import { isCustomerTab, renderCustomerDetail, renderNewCustomerForm, type CustomerTab } from './customer-detail.js';
 import { renderServiceNewForm } from './service-form.js';
+import { isServiceTab, renderServiceDetail, type ServiceTab } from './service-detail.js';
 
 type Deps = {
   config: AppConfig;
@@ -552,28 +553,63 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const services = await prisma.service.findMany({
       where: { organizationId: org.id },
-      orderBy: { createdAt: 'desc' },
-      include: { customer: true, _count: { select: { units: true } } },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+      include: {
+        customer: { select: { externalId: true, name: true } },
+        _count: { select: { units: { where: { activeTo: null } } } },
+      },
     });
     const flash = readFlash(request, reply);
+
+    const activeCount = services.filter((s) => s.status === 'active').length;
+    const terminatedCount = services.length - activeCount;
+
+    const renderMoney = (cents: number, currency: string): string =>
+      cents === 0
+        ? '<span class="ink-faint">—</span>'
+        : `<span class="font-mono-pro num">${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> <span class="text-[10px] uppercase ink-faint">${escapeHtml(currency)}</span>`;
+
+    const tableBody = services.length === 0
+      ? `<div class="surface-card p-12 text-center" style="border-radius: 6px;">
+          <div class="ink-soft text-sm">Sin planes todavía. <a href="/admin/services/new" class="hover:underline" style="color: var(--accent-deep);">Crea el primero</a> o usa la API.</div>
+        </div>`
+      : table({
+          rows: services,
+          empty: 'Sin planes',
+          rowHref: (s) => `/admin/services/${s.code}`,
+          columns: [
+            { label: 'Plan', render: (s) => `<div class="font-medium ink">${escapeHtml(s.name)}</div><code class="font-mono-pro text-[11px] ink-faint">${escapeHtml(s.code)}</code>` },
+            { label: 'Cliente', render: (s) => `<span class="ink-soft">${escapeHtml(s.customer.name)}</span>` },
+            { label: 'Status', render: (s) => statusBadge(s.status) },
+            { label: 'Modelo', render: (s) => s.pricingModel === 'one_off'
+              ? '<span class="pill pill-info">Pago único</span>'
+              : '<span class="pill pill-success">Recurrente</span>' },
+            { label: 'Renta /u', render: (s) => renderMoney(s.monthlyUnitAmountCents, s.currency) },
+            { label: 'Setup /u', render: (s) => renderMoney(s.setupUnitAmountCents, s.currency) },
+            { label: 'Baja /u', render: (s) => renderMoney(s.removalUnitAmountCents, s.currency) },
+            { label: 'Unidades', render: (s) => `<span class="font-mono-pro num">${s._count.units}</span>` },
+          ],
+        });
+
+    const header = `
+      <header class="mb-8 flex items-end justify-between gap-6 flex-wrap">
+        <div class="max-w-3xl">
+          <div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">Catálogo</div>
+          <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">Planes</h1>
+          <p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">
+            ${activeCount} activo${activeCount === 1 ? '' : 's'}${terminatedCount > 0 ? ` · ${terminatedCount} terminado${terminatedCount === 1 ? '' : 's'}` : ''}.
+            Un plan define cómo se cobra un servicio (renta, setup, baja, mensualidades prepagadas) y a qué item de NetSuite se mapea cada línea.
+          </p>
+        </div>
+        <div class="flex items-center gap-2 shrink-0 pb-1">
+          <a href="/admin/services/new" class="btn-primary inline-flex items-center justify-center">+ Nuevo plan</a>
+        </div>
+      </header>
+    `;
+
     reply.type('text/html').send(layout({
-      title: 'Services', active: '/admin/services', orgSlug: org.slug, flash,
-      body: pageHeader('Services', btn('/admin/services/new', '+ Nuevo service', 'primary')) + table({
-        rows: services,
-        empty: 'Sin services',
-        rowHref: (s) => `/admin/services/${s.code}`,
-        columns: [
-          { label: 'Nombre', render: (s) => escapeHtml(s.name) },
-          { label: 'Customer', render: (s) => escapeHtml(s.customer.name) },
-          { label: 'Status', render: (s) => statusBadge(s.status) },
-          { label: 'Modelo', render: (s) => badge(s.pricingModel, s.pricingModel === 'one_off' ? 'green' : 'blue') },
-          { label: 'Monto /u', render: (s) => fmtMoney(s.monthlyUnitAmountCents, s.currency) },
-          { label: 'Setup /u', render: (s) => fmtMoney(s.setupUnitAmountCents, s.currency) },
-          { label: 'Baja /u', render: (s) => s.removalUnitAmountCents > 0 ? fmtMoney(s.removalUnitAmountCents, s.currency) : '<span class="text-gray-400">—</span>' },
-          { label: 'Prepaid (m)', render: (s) => s.pricingModel === 'one_off' ? (s.prepaidMonthsDefault !== null ? String(s.prepaidMonthsDefault) : '<span class="text-red-600">—</span>') : '<span class="text-gray-400">n/a</span>' },
-          { label: 'Units', render: (s) => String(s._count.units) },
-        ],
-      }),
+      title: 'Planes', active: '/admin/services', orgSlug: org.slug, flash,
+      body: header + tableBody,
     }));
   });
 
@@ -648,276 +684,32 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
     const { code: svcCode } = request.params as { code: string };
+    const query = request.query as { tab?: string };
+    const tab: ServiceTab = isServiceTab(query.tab) ? query.tab : 'resumen';
     const service = await prisma.service.findUnique({
       where: { organizationId_code: { organizationId: org.id, code: svcCode } },
       include: {
         customer: true,
-        units: { orderBy: [{ activeFrom: 'desc' }] },
+        units: { orderBy: [{ activeTo: 'asc' }, { activeFrom: 'desc' }] },
         addOns: { orderBy: [{ activeFrom: 'desc' }] },
       },
     });
     if (!service) {
       reply.status(404).type('text/html').send(layout({
         title: 'Not Found', orgSlug: org.slug,
-        body: pageHeader('Service no existe') + btn('/admin/services', '← back'),
+        body: pageHeader('Plan no existe') + btn('/admin/services', '← back'),
       }));
       return;
     }
-    // v7: el precio "vigente ahora" puede ser el `pending*` si su effective_from
-    // ya pasó. Resolvemos para mostrar valores correctos.
-    const now = new Date();
-    const pendingActive =
-      service.pendingEffectiveFrom !== null
-      && service.pendingMonthlyUnitAmountCents !== null
-      && service.pendingSetupUnitAmountCents !== null
-      && service.pendingEffectiveFrom <= now;
-    const effectiveMonthly = pendingActive ? service.pendingMonthlyUnitAmountCents! : service.monthlyUnitAmountCents;
-    const effectiveSetup = pendingActive ? service.pendingSetupUnitAmountCents! : service.setupUnitAmountCents;
-    const pendingFuture =
-      service.pendingEffectiveFrom !== null
-      && service.pendingMonthlyUnitAmountCents !== null
-      && service.pendingSetupUnitAmountCents !== null
-      && service.pendingEffectiveFrom > now;
-    const info = kv([
-      ['Code', `<code>${escapeHtml(service.code)}</code>`],
-      ['Nombre', escapeHtml(service.name)],
-      ['Customer', `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">${escapeHtml(service.customer.externalId)}</a>`],
-      ['Status', statusBadge(service.status)],
-      ['Pricing model', badge(service.pricingModel, service.pricingModel === 'one_off' ? 'green' : 'blue')],
-      ['Monto /unidad (vigente)', fmtMoney(effectiveMonthly, service.currency) + (service.pricingModel === 'one_off' ? ' /mes prepagado' : ' /periodo')],
-      ['Setup /unidad (vigente)', fmtMoney(effectiveSetup, service.currency)
-        + (service.setupBillingMode === 'immediate' ? ' <span class="text-xs ml-2">' + badge('emisión inmediata', 'blue') + '</span>' : '')],
-      ['Baja /unidad', service.pricingModel === 'recurring'
-        ? fmtMoney(service.removalUnitAmountCents, service.currency)
-          + (service.removalUnitAmountCents === 0 ? ' <span class="text-gray-400">(sin cargo)</span>' : '')
-          + (service.removalBillingMode === 'immediate' ? ' <span class="text-xs ml-2">' + badge('emisión inmediata', 'blue') + '</span>' : '')
-        : '<span class="text-gray-400">n/a (one_off)</span>'],
-      ['Meses prepagados (default)', service.pricingModel === 'one_off' ? (service.prepaidMonthsDefault !== null ? String(service.prepaidMonthsDefault) + ' meses' : '<span class="text-red-600">no configurado — se debe especificar por unit</span>') : '<span class="text-gray-400">n/a (recurring)</span>'],
-      ['Terminated at', fmtDate(service.terminatedAt)],
-    ]);
-
-    const isOneOff = service.pricingModel === 'one_off';
-    const unitsBlock = table({
-      rows: service.units,
-      empty: 'Sin unidades',
-      columns: [
-        { label: 'External ID', render: (u) => `<code>${escapeHtml(u.externalId)}</code>` },
-        { label: 'Label', render: (u) => escapeHtml(u.label ?? '—') },
-        { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
-        { label: 'Active from', render: (u) => fmtDate(u.activeFrom) },
-        // v8: billing_starts_at visible solo si está seteado (override).
-        { label: 'Billing starts', render: (u) => u.billingStartsAt ? `<span class="text-amber-700 font-medium" title="override de fecha de facturación (migración)">${escapeHtml(fmtDate(u.billingStartsAt))}</span>` : '<span class="text-gray-400">—</span>' },
-        { label: 'Active to', render: (u) => fmtDate(u.activeTo) },
-        ...(isOneOff
-          ? [
-              { label: 'Meses prepagados', render: (u: typeof service.units[number]) => u.prepaidMonths !== null ? `${u.prepaidMonths}m` : (service.prepaidMonthsDefault !== null ? `${service.prepaidMonthsDefault}m (default)` : '<span class="text-red-600">—</span>') },
-              { label: 'One-off facturado', render: (u: typeof service.units[number]) => u.oneoffBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow') },
-            ]
-          : [
-              // Setup gate solo aplica si el service tiene setup > 0. Si es 0,
-              // setupBilledAt nunca se marca y mostrar "pendiente" eternamente
-              // es confuso → mostramos "n/a" en gris.
-              { label: 'Setup billed', render: (u: typeof service.units[number]) =>
-                service.setupUnitAmountCents === 0
-                  ? '<span class="text-gray-400 text-xs">n/a (sin setup)</span>'
-                  : (u.setupBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow'))
-              },
-              { label: 'Baja billed', render: (u: typeof service.units[number]) =>
-                service.removalUnitAmountCents === 0
-                  ? '<span class="text-gray-400 text-xs">n/a (sin baja)</span>'
-                  : (u.activeTo === null
-                    ? '<span class="text-gray-400 text-xs">activa</span>'
-                    : (u.removalBilledAt ? badge('billed', 'green') : badge('pendiente', 'yellow')))
-              },
-            ]),
-        { label: 'Acciones', render: (u) => `<a class="text-indigo-700 underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
-      ],
-    });
-
-    // v3: invoices are per-customer. The "calcular factura" button now
-    // lives on the customer page; here we just link to the customer's
-    // invoices.
-    const invoicesLink = `<a class="text-indigo-700 underline" href="/admin/customers/${escapeHtml(service.customer.externalId)}">Ver invoices del customer →</a>`;
-    const terminateForm = service.status !== 'terminated' ? postButton(`/admin/services/${service.code}/terminate`, 'Terminar service', 'danger', `¿Terminar ${service.code}?`) : '';
-
-    // v7: card de cambio de precio. Muestra el cambio pendiente (si existe y
-    // aún no entra en vigor), permite programar uno nuevo (sobreescribe el
-    // anterior) y permite cancelarlo si aún no entró en vigor.
-    const priceChangeBlock = service.status === 'terminated'
-      ? '<p class="text-sm text-gray-500">Service terminado — los precios no se pueden modificar.</p>'
-      : (() => {
-        const pendingRow = pendingFuture
-          ? `
-            <div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm space-y-1">
-              <div class="font-medium text-amber-900">Cambio programado</div>
-              <div>Mensual: <strong>${escapeHtml(fmtMoney(service.pendingMonthlyUnitAmountCents!, service.currency))}</strong></div>
-              <div>Setup: <strong>${escapeHtml(fmtMoney(service.pendingSetupUnitAmountCents!, service.currency))}</strong></div>
-              <div>Entra en vigor: <strong>${escapeHtml(fmtDate(service.pendingEffectiveFrom!))}</strong></div>
-              <div class="pt-2">${postButton(`/admin/services/${service.code}/pending-price/cancel`, 'Cancelar cambio programado', 'danger', '¿Cancelar el cambio de precio programado?')}</div>
-            </div>`
-          : '<p class="text-sm text-gray-500">No hay cambio de precio programado.</p>';
-
-        // Default effective_from sugerido: mañana 00:00 UTC (input datetime-local).
-        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-        const yyyy = tomorrow.getUTCFullYear();
-        const mm = String(tomorrow.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(tomorrow.getUTCDate()).padStart(2, '0');
-        const defaultEffective = `${yyyy}-${mm}-${dd}T00:00`;
-
-        const form = `
-          <details class="mt-4"${pendingFuture ? '' : ' open'}>
-            <summary class="cursor-pointer text-indigo-700 font-medium">${pendingFuture ? 'Sobrescribir' : '+ Programar'} cambio de precio</summary>
-            <form method="post" action="/admin/services/${escapeHtml(service.code)}/price" class="mt-3 space-y-3 max-w-2xl">
-              <p class="text-xs text-gray-500">El nuevo precio aplicará a la facturación de cada cliente cuyo ciclo empiece on-or-after la fecha indicada. Clientes mid-cycle mantienen el precio vigente hasta el siguiente cierre. Aplica igual a servicios recurring y one_off.</p>
-              <div class="grid grid-cols-2 gap-3">
-                <label class="block"><span class="text-sm text-gray-700">Monto mensual /unidad (cents)</span>
-                  <input required type="number" name="monthly_unit_amount_cents" min="0" value="${effectiveMonthly}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-                </label>
-                <label class="block"><span class="text-sm text-gray-700">Setup /unidad (cents)</span>
-                  <input required type="number" name="setup_unit_amount_cents" min="0" value="${effectiveSetup}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-                </label>
-                <label class="block col-span-2"><span class="text-sm text-gray-700">Vigente a partir de (UTC)</span>
-                  <input required type="datetime-local" name="effective_from" value="${defaultEffective}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-                </label>
-              </div>
-              <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">${pendingFuture ? 'Sobrescribir' : 'Programar'} cambio</button>
-            </form>
-          </details>`;
-        return pendingRow + form;
-      })();
-
-    const addOnsBlock = table({
-      rows: service.addOns,
-      empty: 'Sin add-ons per-unit',
-      columns: [
-        { label: 'Code', render: (a) => `<code>${escapeHtml(a.code)}</code>` },
-        { label: 'Nombre', render: (a) => escapeHtml(a.name) },
-        { label: 'Amount /u', render: (a) => `${fmtMoney(a.amountCents, service.currency)}/u/mes` },
-        { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
-        { label: 'Active from', render: (a) => fmtDate(a.activeFrom) },
-        { label: 'Active to', render: (a) => fmtDate(a.activeTo) },
-        { label: 'Acciones', render: (a) => a.activeTo === null
-          ? postButton(`/admin/service-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
-          : '<span class="text-gray-400">terminated</span>' },
-      ],
-    });
-
-    const addOnForm = `
-      <details>
-        <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar add-on per-unit</summary>
-        <form method="post" action="/admin/services/${escapeHtml(service.code)}/add-ons" class="mt-3 space-y-3 max-w-2xl">
-          <p class="text-xs text-gray-500">Add-ons per-unit se cobran sobre cada unidad activa del service. Si necesitas un cargo flat independiente de unidades, agrégalo a nivel customer.</p>
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">Code</span>
-              <input required name="code" placeholder="historial-12m" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Nombre</span>
-              <input required name="name" placeholder="Historial 6→12 meses" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Amount per unit (cents) /mes</span>
-              <input required type="number" name="amount_cents" min="0" value="5000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">NetSuite item code</span>
-              <input name="netsuite_item_code" placeholder="ADDON-PERUNIT" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
-              <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-          </div>
-          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear add-on</button>
-        </form>
-      </details>
-    `;
-
-    // v8: form de migración manual — crea una unit con active_from y
-    // billing_starts_at explícitos. Útil cuando integras desde otra plataforma
-    // GPS donde la unit ya existía y necesitas controlar exactamente cuándo
-    // empieza a facturarse (full mes, skip mes, prorrateo parcial).
-    const migrateForm = service.status === 'terminated' ? '' : `
-      <details class="mt-4">
-        <summary class="cursor-pointer text-indigo-700 font-medium">+ Migrar unit (desde sistema legacy)</summary>
-        <form method="post" action="/admin/services/${escapeHtml(service.code)}/units" class="mt-3 space-y-3 max-w-3xl">
-          <p class="text-xs text-gray-500">Crea una unit con overrides de migración. <code>active_from</code> = cuándo empezó a reportar (verdad operativa). <code>billing_starts_at</code> = desde cuándo se factura. Los checkboxes evitan re-cobrar conceptos ya pagados en el sistema legacy.</p>
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">External ID</span>
-              <input required name="external_id" placeholder="gps-001" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Label (opcional)</span>
-              <input name="label" placeholder="Camión 001" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Active from (UTC)</span>
-              <input required type="datetime-local" name="active_from" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Billing starts at (UTC, opcional)</span>
-              <input type="datetime-local" name="billing_starts_at" class="mt-1 block w-full rounded border-gray-300 text-sm">
-            </label>
-            ${isOneOff ? `
-            <label class="block col-span-2"><span class="text-sm text-gray-700">Meses prepagados (opcional — default del service: ${service.prepaidMonthsDefault ?? '—'})</span>
-              <input type="number" name="prepaid_months" min="1" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-            </label>` : ''}
-          </div>
-          <div class="mt-3 p-3 rounded bg-amber-50 border border-amber-200 space-y-2">
-            <div class="text-xs font-semibold text-amber-900 uppercase">Conceptos ya pagados en sistema legacy</div>
-            ${isOneOff ? `
-            <label class="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" name="one_off_already_billed" value="1" class="rounded border-gray-300">
-              <span>One-off ya facturado afuera (setup + N mensualidades prepagadas). La unit NO entra al cycle invoice ni al ping immediate.</span>
-            </label>` : `
-            <label class="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" name="setup_already_billed" value="1" class="rounded border-gray-300">
-              <span>Setup ya facturado afuera. La unit sigue facturando mensualidad normal pero NO incluye renglón de setup.</span>
-            </label>`}
-          </div>
-          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear unit migrada</button>
-        </form>
-      </details>
-    `;
-
-    // v9: card de códigos NetSuite — edición inline, vacío = null.
-    const netsuiteBlock = (() => {
-      const monthlyVal = service.netsuiteMonthlyItemCode ?? '';
-      const setupVal = service.netsuiteSetupItemCode ?? '';
-      const isOne = service.pricingModel === 'one_off';
-      const missing: string[] = [];
-      // monthly aplica para ambos pricing_models (recurring y one_off
-      // comparten el mismo item — en one_off representa las N mensualidades
-      // prepagadas).
-      if (!service.netsuiteMonthlyItemCode) missing.push('monthly');
-      if (service.setupUnitAmountCents > 0 && !service.netsuiteSetupItemCode) missing.push('setup');
-      const warning = missing.length > 0
-        ? `<div class="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 mb-3"><strong>Códigos faltantes:</strong> ${missing.map((m) => `<code>${m}</code>`).join(', ')}. Las invoices emitidas tendrán item_code=null en esas líneas; NetSuite probablemente las rechace.</div>`
-        : '<div class="rounded border border-green-300 bg-green-50 p-3 text-sm text-green-900 mb-3">Todos los códigos requeridos para este service están configurados.</div>';
-      const monthlyHint = isOne
-        ? 'Para las N mensualidades prepagadas (fees kind=one_off).'
-        : 'Para fees kind=monthly.';
-      return warning + `
-        <form method="post" action="/admin/services/${escapeHtml(service.code)}/netsuite-codes" class="space-y-3 max-w-3xl">
-          <div class="grid grid-cols-2 gap-3">
-            <label class="block"><span class="text-sm text-gray-700">Item code mensual</span>
-              <input name="netsuite_monthly_item_code" value="${escapeHtml(monthlyVal)}" placeholder="SUB-MONTHLY" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-              <span class="text-xs text-gray-500">${escapeHtml(monthlyHint)}</span>
-            </label>
-            <label class="block"><span class="text-sm text-gray-700">Item code setup</span>
-              <input name="netsuite_setup_item_code" value="${escapeHtml(setupVal)}" placeholder="SUB-SETUP" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-              <span class="text-xs text-gray-500">Para fees kind=setup. Aplica si setup &gt; 0.</span>
-            </label>
-          </div>
-          <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar códigos</button>
-        </form>
-      `;
-    })();
-
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
-      title: `Service · ${service.code}`, active: '/admin/services', orgSlug: org.slug, flash,
-      body: pageHeader(service.name, btn('/admin/services', '← back'))
-        + card('Identidad', info)
-        + card('Precio', priceChangeBlock)
-        + card('Códigos NetSuite', netsuiteBlock)
-        + card('Acciones', `${terminateForm} <span class="ml-3">${invoicesLink}</span>`)
-        + card(`Add-ons per-unit (${service.addOns.length})`, addOnsBlock + '<div class="mt-4">' + addOnForm + '</div>')
-        + card(`Units (${service.units.length})`, unitsBlock + migrateForm),
+      title: `${service.name} · Plan`,
+      active: '/admin/services',
+      orgSlug: org.slug,
+      flash,
+      body: renderServiceDetail({ service, tab }),
     }));
+    return;
   });
 
   app.post('/admin/services/:code/add-ons', async (request, reply) => {
