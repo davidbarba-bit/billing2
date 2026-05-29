@@ -367,12 +367,12 @@ function renderScheduleEditForm(customer: CustomerWithRelations): string {
   const periodOptions = [1, 3, 6, 12].map((n) =>
     `<option value="${n}" ${n === customer.billingPeriodMonths ? 'selected' : ''}>${n} mes${n === 1 ? '' : 'es'}</option>`).join('');
   const triggerOptions = [
-    `<option value="next_cycle" ${customer.nonrecurringTrigger === 'next_cycle' ? 'selected' : ''}>next_cycle (cobrar en próximo cierre)</option>`,
-    `<option value="immediate" ${customer.nonrecurringTrigger === 'immediate' ? 'selected' : ''}>immediate (factura individual al ping)</option>`,
+    `<option value="next_cycle" ${customer.nonrecurringTrigger === 'next_cycle' ? 'selected' : ''}>Al próximo cierre (acumular y cobrar al cerrar el periodo)</option>`,
+    `<option value="immediate" ${customer.nonrecurringTrigger === 'immediate' ? 'selected' : ''}>Inmediato (factura individual al recibir el evento)</option>`,
   ].join('');
   const cycleModeOptions = [
-    `<option value="unified" ${customer.cycleInvoiceMode === 'unified' ? 'selected' : ''}>unified — 1 factura con todos los conceptos</option>`,
-    `<option value="split_by_kind" ${customer.cycleInvoiceMode === 'split_by_kind' ? 'selected' : ''}>split_by_kind — 2 facturas: recurrentes + únicos</option>`,
+    `<option value="unified" ${customer.cycleInvoiceMode === 'unified' ? 'selected' : ''}>1 factura — renta + setup + baja en un solo documento</option>`,
+    `<option value="split_by_kind" ${customer.cycleInvoiceMode === 'split_by_kind' ? 'selected' : ''}>2 facturas — recurrentes (renta + add-ons) y únicos (setup + baja) separados</option>`,
   ].join('');
   const anchorMonthOptions = ['<option value="">— (anclado a subscription_at)</option>']
     .concat(monthNames.map((name, i) => {
@@ -728,8 +728,8 @@ export function renderNewCustomerForm(
     .join("");
 
   const triggerOptions = [
-    { value: "next_cycle", label: "Al próximo cierre (cobrar junto con la renta)" },
-    { value: "immediate", label: "Inmediato (factura individual al ping)" },
+    { value: "next_cycle", label: "Al próximo cierre (acumular y cobrar al cerrar el periodo)" },
+    { value: "immediate", label: "Inmediato (factura individual al recibir el evento)" },
   ].map((o) => {
     const selected = (form.nonrecurring_trigger ?? "next_cycle") === o.value ? "selected" : "";
     return `<option value="${o.value}" ${selected}>${escapeHtml(o.label)}</option>`;
@@ -812,7 +812,7 @@ export function renderNewCustomerForm(
         <h3 class="text-sm font-semibold text-gray-700 mb-3">Estructura de facturación</h3>
         <p class="text-xs text-gray-500 mb-3">
           Decide cuándo se cobran los cargos no recurrentes (setup, baja, servicios one-off) y
-          cómo se agrupan junto con la renta al cierre del periodo.
+          cómo se estructuran los conceptos en la factura del cierre.
         </p>
         <div class="grid grid-cols-2 gap-4">
           <label class="block">
