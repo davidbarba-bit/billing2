@@ -698,3 +698,126 @@ export function renderCustomerDetail(args: {
     + renderTabsNav(args.customer.externalId, args.tab, counts)
     + tabContent;
 }
+
+
+// --- Form de alta de cliente ---------------------------------------------
+
+// Form para crear un cliente desde la UI. Los valores se pre-pueblan con
+// `form` para preservar input del usuario al re-renderizar tras un error.
+// El submit POSTea a /admin/customers/new que internamente llama al API.
+export function renderNewCustomerForm(
+  form: Record<string, string | undefined>,
+  orgTimezone: string,
+): string {
+  const v = (k: string): string => escapeHtml(form[k] ?? "");
+  const periodMonths = form.billing_period_months ?? "1";
+  const periodOptions = [
+    { value: "1", label: "1 mes — mensual" },
+    { value: "3", label: "3 meses — trimestral" },
+    { value: "6", label: "6 meses — semestral" },
+    { value: "12", label: "12 meses — anual" },
+  ].map((o) => `<option value="${o.value}" ${o.value === periodMonths ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("");
+
+  const monthNames = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+  const anchorMonthOptions = ["<option value=\"\">— (anclado al mes de inicio)</option>"]
+    .concat(monthNames.map((name, i) => {
+      const n = i + 1;
+      const selected = String(n) === form.billing_anchor_month ? "selected" : "";
+      return `<option value="${n}" ${selected}>${n} — ${name}</option>`;
+    }))
+    .join("");
+
+  const triggerOptions = [
+    { value: "next_cycle", label: "Al próximo cierre (cobrar junto con la renta)" },
+    { value: "immediate", label: "Inmediato (factura individual al ping)" },
+  ].map((o) => {
+    const selected = (form.nonrecurring_trigger ?? "next_cycle") === o.value ? "selected" : "";
+    return `<option value="${o.value}" ${selected}>${escapeHtml(o.label)}</option>`;
+  }).join("");
+
+  const intro = `
+    <div class="bg-indigo-50 border border-indigo-200 rounded p-4 mb-6 text-sm text-indigo-900">
+      <div class="font-semibold mb-1">Crear cliente</div>
+      <p>En operación normal los clientes llegan por API desde Numaris. Este form es para casos
+      manuales, demos o pruebas. Solo nombre, identificador y moneda son obligatorios; el resto
+      tiene defaults razonables y puedes editarlos después en el detalle del cliente.</p>
+    </div>
+  `;
+
+  return pageHeader("Nuevo cliente", btn("/admin/customers", "← Cancelar"))
+    + intro
+    + card("Datos del cliente", `
+    <form method="post" action="/admin/customers/new" class="space-y-5 max-w-3xl">
+      <div class="grid grid-cols-2 gap-4">
+        <label class="block col-span-2">
+          <span class="text-sm font-medium text-gray-700">Identificador externo <span class="text-red-600">*</span></span>
+          <input required name="external_id" value="${v("external_id")}" placeholder="ej. transportes-marva o cust-001" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+          <span class="text-xs text-gray-500">ID estable para mapear con sistemas externos (Numaris, NetSuite). Único por organización; no se puede cambiar.</span>
+        </label>
+        <label class="block col-span-2">
+          <span class="text-sm font-medium text-gray-700">Nombre comercial <span class="text-red-600">*</span></span>
+          <input required name="name" value="${v("name")}" placeholder="Transportes MARVA S.A. de C.V." class="mt-1 block w-full rounded border-gray-300 text-sm">
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium text-gray-700">Moneda <span class="text-red-600">*</span></span>
+          <input required name="currency" value="${escapeHtml(form.currency ?? "MXN")}" maxlength="3" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
+          <span class="text-xs text-gray-500">ISO 4217 — MXN, USD, EUR, etc.</span>
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium text-gray-700">País</span>
+          <input name="country" value="${v("country")}" maxlength="2" placeholder="MX" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
+          <span class="text-xs text-gray-500">ISO 3166-1 alpha-2.</span>
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium text-gray-700">Email</span>
+          <input type="email" name="email" value="${v("email")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium text-gray-700">RFC / Tax ID</span>
+          <input name="tax_identification_number" value="${v("tax_identification_number")}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+        </label>
+        <label class="block col-span-2">
+          <span class="text-sm font-medium text-gray-700">Timezone (IANA)</span>
+          <input name="timezone" value="${v("timezone")}" placeholder="${escapeHtml(orgTimezone)} (default de la organización)" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
+          <span class="text-xs text-gray-500">Determina cómo se interpreta el día de corte. Si lo dejas vacío usa la timezone de la organización.</span>
+        </label>
+      </div>
+
+      <div class="border-t pt-5">
+        <h3 class="text-sm font-semibold text-gray-700 mb-3">Calendario de facturación</h3>
+        <div class="grid grid-cols-2 gap-4">
+          <label class="block col-span-2">
+            <span class="text-sm font-medium text-gray-700">Inicio de suscripción (UTC)</span>
+            <input type="datetime-local" name="subscription_at" value="${v("subscription_at")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            <span class="text-xs text-gray-500">Si lo dejas vacío usa el momento del alta. Si es futuro, el cliente queda <em>programado</em> hasta que llegue la fecha.</span>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium text-gray-700">Frecuencia</span>
+            <select name="billing_period_months" class="mt-1 block w-full rounded border-gray-300 text-sm">${periodOptions}</select>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium text-gray-700">Día de corte (1–28)</span>
+            <input type="number" name="billing_anchor_day" min="1" max="28" value="${escapeHtml(form.billing_anchor_day ?? "1")}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            <span class="text-xs text-gray-500">Día del mes en que cierra el periodo.</span>
+          </label>
+          <label class="block col-span-2">
+            <span class="text-sm font-medium text-gray-700">Mes ancla (solo si la frecuencia es trimestral / semestral / anual)</span>
+            <select name="billing_anchor_month" class="mt-1 block w-full rounded border-gray-300 text-sm">${anchorMonthOptions}</select>
+            <span class="text-xs text-gray-500">Alinea el ciclo a un mes calendario específico. Ignorado para la frecuencia mensual.</span>
+          </label>
+          <label class="block col-span-2">
+            <span class="text-sm font-medium text-gray-700">Cargos no recurrentes</span>
+            <select name="nonrecurring_trigger" class="mt-1 block w-full rounded border-gray-300 text-sm">${triggerOptions}</select>
+            <span class="text-xs text-gray-500">Cómo se cobran los servicios one-off (instalación, etc.) cuando llega un evento.</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="border-t pt-5 flex items-center gap-3">
+        <button type="submit" class="px-5 py-2 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Crear cliente</button>
+        <a href="/admin/customers" class="text-sm text-gray-600 hover:text-gray-900">Cancelar</a>
+        <span class="text-xs text-gray-500 ml-auto">Los datos fiscales completos (dirección, NetSuite ID) se editan después en la pestaña <strong>Datos fiscales</strong>.</span>
+      </div>
+    </form>
+  `);
+}

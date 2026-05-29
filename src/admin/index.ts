@@ -47,7 +47,7 @@ import {
   table,
 } from './views.js';
 import { computeDashboardMetrics, renderDashboardBody } from './dashboard.js';
-import { isCustomerTab, renderCustomerDetail, type CustomerTab } from './customer-detail.js';
+import { isCustomerTab, renderCustomerDetail, renderNewCustomerForm, type CustomerTab } from './customer-detail.js';
 
 type Deps = {
   config: AppConfig;
@@ -317,24 +317,161 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const customers = await prisma.customer.findMany({
       where: { organizationId: org.id },
       orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { services: { where: { status: 'active' } } } } },
     });
     const flash = readFlash(request, reply);
+    const newButton = btn('/admin/customers/new', '+ Nuevo cliente', 'primary');
     reply.type('text/html').send(layout({
-      title: 'Customers', active: '/admin/customers', orgSlug: org.slug, flash,
-      body: pageHeader('Customers') + table({
+      title: 'Clientes', active: '/admin/customers', orgSlug: org.slug, flash,
+      body: pageHeader('Clientes', newButton) + table({
         rows: customers,
-        empty: 'Sin customers — usa "Seed Numaris" en el dashboard',
+        empty: '<div>Sin clientes todavía. <a href="/admin/customers/new" class="text-indigo-700 hover:underline">Crear el primero</a> o usa la API.</div>',
         rowHref: (c) => `/admin/customers/${c.externalId}`,
         columns: [
           { label: 'Nombre', render: (c) => escapeHtml(c.name) },
+          { label: 'Estado', render: (c) => {
+            if (c.status === 'pending') return badge('programado', 'blue');
+            if (c.status === 'terminated') return badge('terminado', 'gray');
+            if (c._count.services === 0) return badge('sin plan', 'yellow');
+            return badge('activo', 'green');
+          } },
           { label: 'Currency', render: (c) => escapeHtml(c.currency) },
-          { label: 'Country', render: (c) => escapeHtml(c.country ?? '—') },
+          { label: 'País', render: (c) => escapeHtml(c.country ?? '—') },
           { label: 'Timezone', render: (c) => escapeHtml(c.timezone ?? '—') },
           { label: 'Creado', render: (c) => fmtDate(c.createdAt) },
         ],
       }),
     }));
   });
+
+  // Form de alta de cliente. En la práctica los clientes llegan por API
+  // (Numaris u otra plataforma externa), pero el form es útil para casos
+  // manuales, demos y pruebas. El POST reutiliza el endpoint API vía
+  // app.inject() — así no duplicamos la lógica de validación / counter /
+  // currentBillingPeriod, y los cambios al endpoint API se propagan
+  // automáticamente al admin.
+  app.get('/admin/customers/new', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: 'Nuevo cliente',
+      active: '/admin/customers',
+      orgSlug: org.slug,
+      flash,
+      body: renderNewCustomerForm({}, org.timezone),
+    }));
+  });
+
+  app.post('/admin/customers/new', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const form = (request.body ?? {}) as Record<string, string | undefined>;
+
+    // Transformar el form (todos los campos llegan como string) al payload
+    // del API. Sólo incluimos campos con valor — así los `undefined` dejan
+    // que el API aplique sus defaults sin enviar `null` y disparar
+    // validaciones innecesarias.
+    const get = (k: string): string | undefined => {
+      const v = form[k];
+      return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+    };
+    const num = (k: string): number | undefined => {
+      const v = get(k);
+      return v === undefined ? undefined : Number(v);
+    };
+    const customerPayload: Record<string, unknown> = {};
+    const externalId = get('external_id');
+    if (externalId) customerPayload.external_id = externalId;
+    const name = get('name');
+    if (name) customerPayload.name = name;
+    const currency = get('currency');
+    if (currency) customerPayload.currency = currency.toUpperCase();
+    const subAt = get('subscription_at');
+    if (subAt) customerPayload.subscription_at = toUtcIso(subAt);
+    const periodMonths = num('billing_period_months');
+    if (periodMonths) customerPayload.billing_period_months = periodMonths;
+    const anchorDay = num('billing_anchor_day');
+    if (anchorDay) customerPayload.billing_anchor_day = anchorDay;
+    const anchorMonth = num('billing_anchor_month');
+    if (anchorMonth) customerPayload.billing_anchor_month = anchorMonth;
+    const trigger = get('nonrecurring_trigger');
+    if (trigger) customerPayload.nonrecurring_trigger = trigger;
+    const email = get('email');
+    if (email) customerPayload.email = email;
+    const rfc = get('tax_identification_number');
+    if (rfc) customerPayload.tax_identification_number = rfc;
+    const tz = get('timezone');
+    if (tz) customerPayload.timezone = tz;
+    const country = get('country');
+    if (country) customerPayload.country = country.toUpperCase();
+
+    // El endpoint /api/v1/customers hace upsert por external_id; desde la
+    // UI eso confunde — si el operador escribe un id que ya existe quiere
+    // saberlo, no actualizar al cliente silenciosamente. Validación previa
+    // para reportar conflicto explícito.
+    if (typeof customerPayload.external_id === 'string') {
+      const dup = await prisma.customer.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId: customerPayload.external_id } },
+        select: { name: true, externalId: true },
+      });
+      if (dup) {
+        const msg = `Ya existe un cliente con identificador "${dup.externalId}" (${dup.name}). Elige otro identificador o edita el existente.`;
+        reply.status(409).type('text/html').send(layout({
+          title: 'Nuevo cliente',
+          active: '/admin/customers',
+          orgSlug: org.slug,
+          flash: { kind: 'error', message: msg },
+          body: renderNewCustomerForm(form, org.timezone),
+        }));
+        return;
+      }
+    }
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/customers',
+      headers: {
+        authorization: `Bearer ${org.apiKey}`,
+        'content-type': 'application/json',
+      },
+      payload: { customer: customerPayload },
+    });
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      const result = response.json() as { customer: { external_id: string; name: string } };
+      setFlash(reply, 'success', `Cliente "${result.customer.name}" creado.`);
+      return reply.redirect(`/admin/customers/${result.customer.external_id}`);
+    }
+
+    // Error: re-renderizar el form con los valores capturados y el
+    // mensaje del API (validación o conflict).
+    type ApiError = { error_details?: Record<string, string[]>; code?: string; error?: string };
+    let parsed: ApiError = {};
+    try {
+      parsed = response.json() as ApiError;
+    } catch {
+      // body no era JSON (raro pero defensivo)
+    }
+    let errorMsg = 'No se pudo crear el cliente.';
+    if (parsed.error_details && Object.keys(parsed.error_details).length > 0) {
+      errorMsg = Object.entries(parsed.error_details)
+        .map(([k, v]) => `${k}: ${v.join(', ')}`)
+        .join(' · ');
+    } else if (parsed.code) {
+      errorMsg = parsed.code;
+    } else if (parsed.error) {
+      errorMsg = parsed.error;
+    }
+    reply.status(response.statusCode).type('text/html').send(layout({
+      title: 'Nuevo cliente',
+      active: '/admin/customers',
+      orgSlug: org.slug,
+      flash: { kind: 'error', message: errorMsg },
+      body: renderNewCustomerForm(form, org.timezone),
+    }));
+  });
+
 
 
   app.get('/admin/customers/:externalId', async (request, reply) => {
