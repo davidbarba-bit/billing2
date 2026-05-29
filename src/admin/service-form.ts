@@ -69,10 +69,35 @@ export function renderServiceNewForm(args: {
         </div>
       </label>`;
     };
-    return `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    return `<div id="pricing-model-cards" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       ${card('recurring', 'Recurrente', 'Renta mensual por unidad activa. Opcionalmente setup al instalar y baja al desinstalar.')}
       ${card('one_off', 'Prepago', 'Setup opcional + N mensualidades pagadas por adelantado al recibir el primer evento.')}
-    </div>`;
+    </div>
+    <script>
+      (function(){
+        var container = document.getElementById('pricing-model-cards');
+        if (!container) return;
+        container.addEventListener('change', function(e) {
+          var labels = container.querySelectorAll('label');
+          labels.forEach(function(label) {
+            var radio = label.querySelector('input[type="radio"]');
+            var dot = label.querySelector('.flex > span:first-child');
+            var title = label.querySelector('.font-display');
+            if (radio.checked) {
+              label.style.background = 'var(--accent-soft)';
+              label.style.borderColor = 'var(--accent)';
+              if (title) title.style.color = 'var(--accent)';
+              if (dot) dot.outerHTML = '<span class="inline-flex w-4 h-4 rounded-full items-center justify-center" style="border: 1.5px solid var(--accent);"><span class="w-1.5 h-1.5 rounded-full" style="background: var(--accent);"></span></span>';
+            } else {
+              label.style.background = '#FFFFFF';
+              label.style.borderColor = 'var(--rule)';
+              if (title) title.style.color = '';
+              if (dot) dot.outerHTML = '<span class="inline-block w-4 h-4 rounded-full" style="border: 1.5px solid var(--rule);"></span>';
+            }
+          });
+        });
+      })();
+    </script>`;
   })();
 
   // Sección "Identificación" — cliente, código, nombre, descripción.
