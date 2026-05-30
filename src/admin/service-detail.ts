@@ -407,13 +407,14 @@ function renderUnidades(service: ServiceWithRelations): string {
     : '';
 
   const addButton = service.status !== 'terminated'
-    ? `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-new-unit', label: 'Agregar unidad' })}</div>`
+    ? modalTrigger({ modalId: 'modal-new-unit', label: '+ Agregar unidad' })
     : '';
 
   return panel({
     title: `Unidades · ${service.units.length}`,
     description: 'Cada unidad representa un dispositivo o un servicio individual asociado a este plan.',
-    body: unitsTable + addButton,
+    actions: addButton,
+    body: unitsTable,
   }) + migrateModal;
 }
 
@@ -537,13 +538,14 @@ function renderAddons(service: ServiceWithRelations): string {
     : '';
 
   const addButton = service.status !== 'terminated'
-    ? `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-new-addon', label: 'Agregar add-on' })}</div>`
+    ? modalTrigger({ modalId: 'modal-new-addon', label: '+ Agregar add-on' })
     : '';
 
   return panel({
     title: `Add-ons per-unit · ${service.addOns.length}`,
     description: 'Cargos adicionales que se cobran sobre cada unidad activa del plan. Si necesitas un cargo flat independiente, agrégalo a nivel del cliente.',
-    body: addonsTable + addButton,
+    actions: addButton,
+    body: addonsTable,
   }) + addonModal;
 }
 
