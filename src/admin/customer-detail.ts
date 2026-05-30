@@ -489,20 +489,107 @@ function renderUnidades(customer: CustomerWithRelations): string {
     }
   }
 
-  // Las unidades se crean dentro de cada plan, no aquí. Si hay planes,
-  // ofrecemos un atajo: link a la pestaña Unidades del primer plan activo.
-  const firstActivePlan = customer.services.find((s) => s.status !== 'terminated');
-  const addAction = firstActivePlan
-    ? `<a href="/admin/services/${escapeHtml(firstActivePlan.code)}?tab=unidades" class="btn-primary inline-flex items-center justify-center text-sm">+ Agregar unidad</a>`
+  const activePlans = customer.services.filter((s) => s.status !== 'terminated');
+
+  // Modal de nueva unidad — incluye selector de plan + campos comunes.
+  // La selección del plan determina qué campos "ya facturado afuera" aplican
+  // (vía CSS :has() — sin JS frágil).
+  const newUnitForm = (() => {
+    if (activePlans.length === 0) return '';
+    const planOptions = activePlans.map((p) => {
+      const prepaidHint = p.prepaidMonthsDefault !== null ? `${p.prepaidMonthsDefault}m` : '';
+      return `<option value="${escapeHtml(p.code)}" data-pricing-model="${escapeHtml(p.pricingModel)}" data-prepaid-default="${escapeHtml(String(p.prepaidMonthsDefault ?? ''))}">${escapeHtml(p.name)} — ${escapeHtml(p.code)}${p.pricingModel === 'one_off' ? ` · prepago ${prepaidHint}` : ' · recurrente'}</option>`;
+    }).join('');
+
+    // CSS :has() para mostrar/ocultar campos según el plan seleccionado.
+    const conditionalStyles = `<style>
+      .unit-prepago-only, .unit-recurring-only { display: none; }
+      form:has(select[name="service_code"] option:checked[data-pricing-model="one_off"]) .unit-prepago-only { display: block; }
+      form:has(select[name="service_code"] option:checked[data-pricing-model="recurring"]) .unit-recurring-only { display: block; }
+    </style>`;
+
+    return `${conditionalStyles}
+      <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/units" class="space-y-0">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+          ${formField({
+            label: 'Plan',
+            required: true,
+            span: 2,
+            hint: 'A qué plan del cliente se va a asociar la unidad.',
+            input: `<select required name="service_code" class="${INPUT_CLASS}">${planOptions}</select>`,
+          })}
+          ${formField({
+            label: 'Identificador externo',
+            required: true,
+            input: `<input required name="external_id" placeholder="gps-001" class="${INPUT_CLASS_MONO}">`,
+            hint: 'ID estable proporcionado por el sistema externo.',
+          })}
+          ${formField({
+            label: 'Etiqueta',
+            input: `<input name="label" placeholder="Camión 001" class="${INPUT_CLASS}">`,
+            hint: 'Texto humano descriptivo (opcional).',
+          })}
+          ${formField({
+            label: 'Activa desde',
+            required: true,
+            input: `<input required type="datetime-local" name="active_from" class="${INPUT_CLASS}">`,
+            hint: 'Verdad operativa — cuándo empezó a reportar.',
+          })}
+          ${formField({
+            label: 'Empieza a facturarse',
+            input: `<input type="datetime-local" name="billing_starts_at" class="${INPUT_CLASS}">`,
+            hint: 'Override opcional. Si lo dejas vacío se factura desde activa.',
+          })}
+        </div>
+        <div class="unit-prepago-only mb-6">
+          ${formField({
+            label: 'Meses prepagados',
+            hint: 'Opcional — si lo dejas vacío usa el default del plan.',
+            input: `<input type="number" name="prepaid_months" min="1" class="${INPUT_CLASS_MONO}" style="max-width: 12rem;">`,
+          })}
+        </div>
+        <div class="unit-recurring-only rounded p-4 text-sm mb-6" style="background: var(--warn-soft); border: 1px solid var(--warn-soft);">
+          <div class="text-[10px] uppercase tracking-wider font-medium mb-2" style="color: var(--warn);">Cobros ya pagados afuera</div>
+          <label class="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" name="setup_already_billed" value="1" class="mt-0.5">
+            <span class="text-sm ink-soft">El setup ya se facturó en el sistema legacy. La unidad sigue facturando renta normal pero no incluirá el renglón de setup.</span>
+          </label>
+        </div>
+        <div class="unit-prepago-only rounded p-4 text-sm mb-6" style="background: var(--warn-soft); border: 1px solid var(--warn-soft);">
+          <div class="text-[10px] uppercase tracking-wider font-medium mb-2" style="color: var(--warn);">Cobros ya pagados afuera</div>
+          <label class="flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" name="one_off_already_billed" value="1" class="mt-0.5">
+            <span class="text-sm ink-soft">El paquete prepago ya se facturó en el sistema legacy (setup + N mensualidades). La unidad no se cobrará al primer evento ni al cierre.</span>
+          </label>
+        </div>
+        <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+          ${primaryButton('Crear unidad')}
+        </div>
+      </form>`;
+  })();
+
+  const newUnitModal = newUnitForm
+    ? modal({
+        id: 'modal-new-unit-customer',
+        title: 'Agregar unidad',
+        description: 'Selecciona el plan al que se va a asociar la unidad. El identificador externo lo proporciona el sistema externo (GPS, video, etc.).',
+        body: newUnitForm,
+      })
+    : '';
+
+  const addAction = activePlans.length > 0
+    ? modalTrigger({ modalId: 'modal-new-unit-customer', label: '+ Agregar unidad' })
     : '';
 
   if (rows.length === 0) {
     return panel({
       title: 'Unidades',
-      description: 'Las unidades se crean dentro de cada plan del cliente.',
+      description: activePlans.length > 0
+        ? 'Las unidades se asocian a un plan del cliente.'
+        : 'Este cliente no tiene planes activos. Crea un plan primero para poder agregar unidades.',
       actions: addAction,
       body: `<div class="text-sm ink-faint italic py-6 text-center">Este cliente todavía no tiene unidades.</div>`,
-    });
+    }) + newUnitModal;
   }
 
   rows.sort((a, b) => {
@@ -536,10 +623,10 @@ function renderUnidades(customer: CustomerWithRelations): string {
 
   return panel({
     title: `Unidades · ${rows.length}`,
-    description: 'Unidades de todos los planes del cliente. Para agregar nuevas, entra al plan correspondiente.',
+    description: 'Unidades de todos los planes del cliente.',
     actions: addAction,
     body: unitsTable,
-  });
+  }) + newUnitModal;
 }
 
 // --- Tab: Add-ons ---------------------------------------------------------

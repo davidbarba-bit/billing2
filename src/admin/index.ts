@@ -1043,6 +1043,39 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     reply.redirect(`/admin/customers/${addOn.customer.externalId}`);
   });
 
+  // Crear unit desde la pestaña Unidades del cliente: el plan se elige en el
+  // form en lugar de venir en la URL.
+  app.post('/admin/customers/:externalId/units', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+    const svcCode = body.service_code;
+    if (!svcCode) {
+      setFlash(reply, 'error', 'Plan no seleccionado');
+      return reply.redirect(`/admin/customers/${externalId}?tab=unidades`);
+    }
+    const payload: Record<string, unknown> = {
+      service_code: svcCode,
+      external_id: body.external_id,
+      active_from: toUtcIso(body.active_from ?? ''),
+    };
+    if (body.label) payload.label = body.label;
+    if (body.billing_starts_at) payload.billing_starts_at = toUtcIso(body.billing_starts_at);
+    if (body.prepaid_months) payload.prepaid_months = Number(body.prepaid_months);
+    if (body.setup_already_billed === '1') payload.setup_already_billed = true;
+    if (body.one_off_already_billed === '1') payload.one_off_already_billed = true;
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/v1/units',
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { unit: payload },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', `Unit ${body.external_id} creada en plan ${svcCode}.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=unidades`);
+  });
+
   // v8: crear unit (form admin → POST /api/v1/units).
   app.post('/admin/services/:code/units', async (request, reply) => {
     const org = await getOrg(prisma);
