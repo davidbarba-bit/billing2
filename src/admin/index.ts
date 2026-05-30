@@ -1059,7 +1059,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
     else setFlash(reply, 'success', `Unit ${body.external_id} creada.`);
-    reply.redirect(`/admin/services/${svcCode}`);
+    reply.redirect(`/admin/services/${svcCode}?tab=unidades`);
   });
 
   // v8: pantalla simple para editar una unit (label, billing_starts_at, active_to).

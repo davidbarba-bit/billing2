@@ -397,31 +397,36 @@ function renderUnidades(service: ServiceWithRelations): string {
       });
 
   const migrateForm = service.status === 'terminated' ? '' : renderMigrateUnitForm(service);
+  const migrateModal = migrateForm
+    ? modal({
+        id: 'modal-new-unit',
+        title: 'Agregar unidad',
+        description: 'Crea una unidad con fechas explícitas de activación y facturación. El identificador externo lo proporciona el sistema externo (GPS, video, etc.).',
+        body: migrateForm,
+      })
+    : '';
+
+  const addButton = service.status !== 'terminated'
+    ? `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-new-unit', label: 'Agregar unidad' })}</div>`
+    : '';
 
   return panel({
     title: `Unidades · ${service.units.length}`,
     description: 'Cada unidad representa un dispositivo o un servicio individual asociado a este plan.',
-    body: unitsTable,
-  }) + (migrateForm
-    ? panel({
-        title: 'Migrar unidad desde sistema legacy',
-        description: 'Crea una unidad con fechas explícitas de activación y facturación. Útil al integrar desde otra plataforma GPS.',
-        body: migrateForm,
-        toned: true,
-      })
-    : '');
+    body: unitsTable + addButton,
+  }) + migrateModal;
 }
 
 function renderMigrateUnitForm(service: ServiceWithRelations): string {
   const isOneOff = service.pricingModel === 'one_off';
   return `
-    <form method="post" action="/admin/services/${escapeHtml(service.code)}/units" class="space-y-5">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+    <form method="post" action="/admin/services/${escapeHtml(service.code)}/units" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
         ${formField({
           label: 'Identificador externo',
           required: true,
           input: `<input required name="external_id" placeholder="gps-001" class="${INPUT_CLASS_MONO}">`,
-          hint: 'ID estable que viene del sistema legacy.',
+          hint: 'ID estable proporcionado por el sistema externo.',
         })}
         ${formField({
           label: 'Etiqueta',
@@ -445,7 +450,7 @@ function renderMigrateUnitForm(service: ServiceWithRelations): string {
           input: `<input type="number" name="prepaid_months" min="1" class="${INPUT_CLASS_MONO}" style="max-width: 12rem;">`,
         }) : ''}
       </div>
-      <div class="rounded p-4 text-sm" style="background: var(--warn-soft); border: 1px solid var(--warn-soft);">
+      <div class="rounded p-4 text-sm mb-6" style="background: var(--warn-soft); border: 1px solid var(--warn-soft);">
         <div class="text-[10px] uppercase tracking-wider font-medium mb-2" style="color: var(--warn);">Cobros ya pagados afuera</div>
         ${isOneOff ? `
           <label class="flex items-start gap-2 cursor-pointer">
@@ -459,7 +464,9 @@ function renderMigrateUnitForm(service: ServiceWithRelations): string {
           </label>
         `}
       </div>
-      ${primaryButton('Crear unidad migrada')}
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton('Crear unidad')}
+      </div>
     </form>
   `;
 }
