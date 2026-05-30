@@ -489,10 +489,20 @@ function renderUnidades(customer: CustomerWithRelations): string {
     }
   }
 
+  // Las unidades se crean dentro de cada plan, no aquí. Si hay planes,
+  // ofrecemos un atajo: link a la pestaña Unidades del primer plan activo.
+  const firstActivePlan = customer.services.find((s) => s.status !== 'terminated');
+  const addAction = firstActivePlan
+    ? `<a href="/admin/services/${escapeHtml(firstActivePlan.code)}?tab=unidades" class="btn-primary inline-flex items-center justify-center text-sm">+ Agregar unidad</a>`
+    : '';
+
   if (rows.length === 0) {
-    return `<div class="bg-white border rounded p-8 text-center text-gray-500">
-      Este cliente todavía no tiene unidades. Las unidades se crean dentro de cada plan.
-    </div>`;
+    return panel({
+      title: 'Unidades',
+      description: 'Las unidades se crean dentro de cada plan del cliente.',
+      actions: addAction,
+      body: `<div class="text-sm ink-faint italic py-6 text-center">Este cliente todavía no tiene unidades.</div>`,
+    });
   }
 
   rows.sort((a, b) => {
@@ -501,12 +511,12 @@ function renderUnidades(customer: CustomerWithRelations): string {
     return b.activeFrom.getTime() - a.activeFrom.getTime();
   });
 
-  return table({
+  const unitsTable = table({
     rows,
     empty: 'Sin unidades',
     columns: [
-      { label: 'Identificador', render: (u) => `<code>${escapeHtml(u.externalId)}</code>${u.label ? `<div class="text-xs text-gray-500">${escapeHtml(u.label)}</div>` : ''}` },
-      { label: 'Plan', render: (u) => `<a class="text-indigo-700 underline" href="/admin/services/${escapeHtml(u.serviceCode)}">${escapeHtml(u.serviceName)}</a>` },
+      { label: 'Identificador', render: (u) => `<code class="font-mono-pro text-xs">${escapeHtml(u.externalId)}</code>${u.label ? `<div class="text-xs ink-faint mt-0.5">${escapeHtml(u.label)}</div>` : ''}` },
+      { label: 'Plan', render: (u) => `<a class="hover:underline" style="color: var(--accent-deep);" href="/admin/services/${escapeHtml(u.serviceCode)}">${escapeHtml(u.serviceName)}</a>` },
       { label: 'Status', render: (u) => statusBadge(u.activeTo === null ? 'active' : 'terminated') },
       { label: 'Activa desde', render: (u) => fmtDateOnly(u.activeFrom) },
       { label: 'Activa hasta', render: (u) => fmtDateOnly(u.activeTo) },
@@ -514,64 +524,95 @@ function renderUnidades(customer: CustomerWithRelations): string {
         const isOneOff = u.pricingModel === 'one_off';
         const billedAt = isOneOff ? u.oneoffBilledAt : u.setupBilledAt;
         if (!isOneOff && u.setupAmount === 0) {
-          return '<span class="text-gray-400 text-xs">sin setup</span>';
+          return '<span class="ink-faint text-xs">sin setup</span>';
         }
         return billedAt
-          ? badge(isOneOff ? 'pagada' : 'setup pagado', 'green')
-          : badge('pendiente', 'yellow');
+          ? `<span class="pill pill-success">${isOneOff ? 'pagada' : 'setup pagado'}</span>`
+          : `<span class="pill pill-warn">pendiente</span>`;
       } },
-      { label: '', render: (u) => `<a class="text-indigo-700 hover:underline text-xs" href="/admin/units/${u.id}/edit">editar</a>` },
+      { label: '', render: (u) => `<a class="text-xs hover:underline" style="color: var(--accent-deep);" href="/admin/units/${u.id}/edit">editar</a>` },
     ],
+  });
+
+  return panel({
+    title: `Unidades · ${rows.length}`,
+    description: 'Unidades de todos los planes del cliente. Para agregar nuevas, entra al plan correspondiente.',
+    actions: addAction,
+    body: unitsTable,
   });
 }
 
 // --- Tab: Add-ons ---------------------------------------------------------
 
 function renderAddons(customer: CustomerWithRelations): string {
-  const tableHtml = table({
-    rows: customer.addOns,
-    empty: 'Sin add-ons flat',
-    columns: [
-      { label: 'Code', render: (a) => `<code>${escapeHtml(a.code)}</code>` },
-      { label: 'Nombre', render: (a) => escapeHtml(a.name) },
-      { label: 'Monto /mes', render: (a) => `${fmtMoney(a.amountCents, customer.currency)} flat/mes` },
-      { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
-      { label: 'Vigente desde', render: (a) => fmtDateOnly(a.activeFrom) },
-      { label: 'Vigente hasta', render: (a) => fmtDateOnly(a.activeTo) },
-      { label: '', render: (a) => a.activeTo === null
-        ? postButton(`/admin/customer-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
-        : '<span class="text-gray-400 text-xs">terminado</span>' },
-    ],
-  });
+  const tableHtml = customer.addOns.length === 0
+    ? `<div class="text-sm ink-faint italic py-6 text-center">Sin add-ons flat. Los add-ons flat son cargos fijos mensuales independientes de unidades.</div>`
+    : table({
+        rows: customer.addOns,
+        empty: 'Sin add-ons flat',
+        columns: [
+          { label: 'Código', render: (a) => `<code class="font-mono-pro text-xs">${escapeHtml(a.code)}</code>` },
+          { label: 'Nombre', render: (a) => escapeHtml(a.name) },
+          { label: 'Monto /mes', render: (a) => `<span class="font-mono-pro">${fmtMoney(a.amountCents, customer.currency)}</span> <span class="ink-faint text-xs">flat/mes</span>` },
+          { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
+          { label: 'Vigente desde', render: (a) => fmtDateOnly(a.activeFrom) },
+          { label: 'Vigente hasta', render: (a) => fmtDateOnly(a.activeTo) },
+          { label: '', render: (a) => a.activeTo === null
+            ? postButton(`/admin/customer-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
+            : '<span class="ink-faint text-xs">terminado</span>' },
+        ],
+      });
 
-  const form = `
-    <details>
-      <summary class="cursor-pointer text-indigo-700 font-medium">+ Agregar add-on flat</summary>
-      <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/add-ons" class="mt-3 space-y-3 max-w-2xl">
-        <p class="text-xs text-gray-500">Cargos flat independientes de unidades o servicios (ej. "10 reglas de evento +$1,000/mes").</p>
-        <div class="grid grid-cols-2 gap-3">
-          <label class="block"><span class="text-sm text-gray-700">Code</span>
-            <input required name="code" placeholder="reglas-10" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Nombre</span>
-            <input required name="name" placeholder="Reglas de evento 5→10" class="mt-1 block w-full rounded border-gray-300 text-sm">
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">Monto flat (cents) /mes</span>
-            <input required type="number" name="amount_cents" min="0" value="100000" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          </label>
-          <label class="block"><span class="text-sm text-gray-700">NetSuite item code</span>
-            <input name="netsuite_item_code" placeholder="ADDON-FLAT" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          </label>
-          <label class="block col-span-2"><span class="text-sm text-gray-700">Descripción</span>
-            <input name="description" class="mt-1 block w-full rounded border-gray-300 text-sm">
-          </label>
-        </div>
-        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded">Crear add-on</button>
-      </form>
-    </details>
+  const addonForm = `
+    <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/add-ons" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+        ${formField({
+          label: 'Nombre',
+          required: true,
+          span: 2,
+          hint: 'El código se genera automáticamente.',
+          input: `<input required name="name" placeholder="Reglas de evento 5 → 10" class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Monto flat mensual',
+          required: true,
+          hint: `Cargo fijo cada periodo, independiente de unidades. En ${escapeHtml(customer.currency)}.`,
+          input: `<div class="relative">
+            <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(customer.currency)}</span>
+            <input required type="number" step="0.01" min="0" name="amount" placeholder="0.00" class="${INPUT_CLASS_MONO} pl-14 text-right">
+          </div>`,
+        })}
+        ${formField({
+          label: 'Item code NetSuite',
+          input: `<input name="netsuite_item_code" placeholder="ADDON-FLAT" class="${INPUT_CLASS_MONO}">`,
+        })}
+        ${formField({
+          label: 'Descripción',
+          span: 2,
+          input: `<input name="description" class="${INPUT_CLASS}">`,
+        })}
+      </div>
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton('Crear add-on')}
+      </div>
+    </form>
   `;
 
-  return tableHtml + '<div class="mt-6">' + form + '</div>';
+  const addonModal = modal({
+    id: 'modal-new-customer-addon',
+    title: 'Nuevo add-on flat',
+    description: 'Cargo fijo mensual a nivel del cliente, independiente de unidades o planes (ej. "10 reglas de evento +$1,000/mes").',
+    body: addonForm,
+  });
+
+  const addButton = modalTrigger({ modalId: 'modal-new-customer-addon', label: '+ Agregar add-on flat' });
+
+  return panel({
+    title: `Add-ons flat · ${customer.addOns.length}`,
+    description: 'Cargos fijos mensuales independientes de unidades o servicios.',
+    actions: addButton,
+    body: tableHtml,
+  }) + addonModal;
 }
 
 // --- Tab: Facturas --------------------------------------------------------

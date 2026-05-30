@@ -995,23 +995,31 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const { externalId } = request.params as { externalId: string };
     const body = request.body as Record<string, string>;
+    const customer = await prisma.customer.findFirst({
+      where: { organizationId: org.id, externalId },
+      include: { addOns: true },
+    });
+    if (!customer) { setFlash(reply, 'error', 'Cliente no encontrado'); return reply.redirect('/admin/customers'); }
+    const seq = String(customer.addOns.length + 1).padStart(2, '0');
+    const generatedCode = `${externalId}-addon-${seq}`;
+    const amountCents = Math.round(Number(body.amount || 0) * 100);
     const result = await app.inject({
       method: 'POST',
       url: `/api/v1/customers/${encodeURIComponent(externalId)}/add-ons`,
       headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
       payload: {
         customer_add_on: {
-          code: body.code,
+          code: generatedCode,
           name: body.name,
           description: (body.description as string) || undefined,
-          amount_cents: Number(body.amount_cents),
+          amount_cents: amountCents,
           netsuite_item_code: body.netsuite_item_code || null,
         },
       },
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
-    else setFlash(reply, 'success', `Customer add-on "${body.code}" creado`);
-    reply.redirect(`/admin/customers/${externalId}`);
+    else setFlash(reply, 'success', `Add-on "${body.name}" creado`);
+    reply.redirect(`/admin/customers/${externalId}?tab=addons`);
   });
 
   app.post('/admin/customer-add-ons/:id/terminate', async (request, reply) => {
