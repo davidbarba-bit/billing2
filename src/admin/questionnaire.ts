@@ -377,6 +377,7 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
 
       <div>
         <label class="field-label">Cómo se factura un servicio prepago al instalar una unidad <span class="req">*</span></label>
+        <div class="text-[13px] ink-soft" style="margin-bottom: 0.75rem; line-height: 1.55;">Un servicio <strong>prepago</strong> es aquél en el que el cliente paga varias mensualidades por adelantado (típicamente 12, 24, 36, 48, 60 o 72 meses) en una sola exhibición al instalar cada unidad. Una vez cobrado el paquete, esa unidad no genera más cargos hasta que se renueve.</div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label class="radio-card">
             <input type="radio" name="calendar[prepago_trigger]" value="next_cycle" checked class="sr-only">
