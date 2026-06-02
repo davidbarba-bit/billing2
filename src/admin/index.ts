@@ -21,7 +21,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import basicAuth from '@fastify/basic-auth';
 import { DateTime } from 'luxon';
 import formbody from '@fastify/formbody';
-import type { Organization, PrismaClient } from '@prisma/client';
+import type { Organization, Prisma, PrismaClient } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
@@ -59,6 +59,13 @@ import { computeDashboardMetrics, renderDashboardBody } from './dashboard.js';
 import { isCustomerTab, renderCustomerDetail, renderNewCustomerForm, type CustomerTab } from './customer-detail.js';
 import { renderServiceNewForm } from './service-form.js';
 import { isServiceTab, renderServiceDetail, type ServiceTab } from './service-detail.js';
+import {
+  parseQuestionnaireBody,
+  renderQuestionnaireDetail,
+  renderQuestionnaireForm,
+  renderQuestionnaireList,
+  renderQuestionnaireThanks,
+} from './questionnaire.js';
 
 type Deps = {
   config: AppConfig;
@@ -2176,5 +2183,91 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const returnTo = body.return_to;
     const safeReturn = returnTo && returnTo.startsWith('/admin') ? returnTo : '/admin';
     reply.redirect(safeReturn);
+  });
+
+  // ------------------------------------------------------------------
+  // Cuestionario público de migración — accesible sin login. El equipo
+  // comercial lo llena con datos del cliente y el admin lo revisa.
+  // ------------------------------------------------------------------
+  app.get('/cuestionario', async (_request, reply) => {
+    reply.type('text/html').send(renderQuestionnaireForm());
+  });
+
+  app.post('/cuestionario', async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, string>;
+    const filledByName = (body.filled_by_name ?? '').trim();
+    const customerLabel = (body.customer_label ?? '').trim();
+    if (!filledByName || !customerLabel) {
+      reply.type('text/html').send(renderQuestionnaireForm({
+        error: 'Falta completar quién contesta o el nombre del cliente.',
+      }));
+      return;
+    }
+    const parsed = parseQuestionnaireBody(body);
+    await prisma.migrationQuestionnaire.create({
+      data: {
+        filledByName,
+        filledByEmail: (body.filled_by_email ?? '').trim() || null,
+        customerLabel,
+        payload: parsed as unknown as Prisma.InputJsonValue,
+      },
+    });
+    reply.type('text/html').send(renderQuestionnaireThanks({ customerLabel }));
+  });
+
+  // Lista admin de cuestionarios recibidos.
+  app.get('/admin/cuestionarios', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const rows = await prisma.migrationQuestionnaire.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: 'Cuestionarios',
+      active: '/admin/cuestionarios',
+      orgSlug: org.slug,
+      flash,
+      body: pageTitle({
+        eyebrow: 'Migración',
+        title: 'Cuestionarios recibidos',
+        description: `Respuestas del equipo comercial sobre cómo configurar nuevas cuentas. El link público es <code class="font-mono-pro" style="color: var(--accent-deep);">/cuestionario</code>.`,
+      }) + renderQuestionnaireList(rows.map((r) => ({
+        id: r.id,
+        filledByName: r.filledByName,
+        filledByEmail: r.filledByEmail,
+        customerLabel: r.customerLabel,
+        createdAt: r.createdAt,
+        payload: r.payload,
+      }))),
+    }));
+  });
+
+  // Detalle admin de un cuestionario.
+  app.get('/admin/cuestionarios/:id', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const row = await prisma.migrationQuestionnaire.findUnique({ where: { id } });
+    if (!row) {
+      setFlash(reply, 'error', 'Cuestionario no encontrado');
+      return reply.redirect('/admin/cuestionarios');
+    }
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: row.customerLabel,
+      active: '/admin/cuestionarios',
+      orgSlug: org.slug,
+      flash,
+      body: `<div class="mb-6">${secondaryLink('/admin/cuestionarios', '← Cuestionarios')}</div>`
+        + renderQuestionnaireDetail({
+          id: row.id,
+          filledByName: row.filledByName,
+          filledByEmail: row.filledByEmail,
+          customerLabel: row.customerLabel,
+          createdAt: row.createdAt,
+          payload: row.payload,
+        }),
+    }));
   });
 }

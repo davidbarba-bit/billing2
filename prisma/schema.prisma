@@ -519,3 +519,20 @@ model IdempotencyRecord {
   @@unique([organizationId, path, key])
   @@map("idempotency_records")
 }
+
+// ---------------------------------------------------------------------------
+// Cuestionario público de migración. Respuestas del equipo comercial sobre
+// cómo se debe configurar una cuenta. Payload es schema-flexible: el form
+// puede iterar libremente sin requerir nuevas migraciones.
+// ---------------------------------------------------------------------------
+
+model MigrationQuestionnaire {
+  id            String   @id @default(uuid())
+  filledByName  String   @map("filled_by_name")
+  filledByEmail String?  @map("filled_by_email")
+  customerLabel String   @map("customer_label")
+  payload       Json
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("migration_questionnaire")
+}

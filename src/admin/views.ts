@@ -30,6 +30,12 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    heading: 'Migración',
+    items: [
+      { href: '/admin/cuestionarios', label: 'Cuestionarios' },
+    ],
+  },
+  {
     heading: 'Sistema',
     items: [
       { href: '/presentacion.html', label: 'Presentación', target: '_blank' },
