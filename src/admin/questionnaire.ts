@@ -251,8 +251,10 @@ function addonUnitBlock(idx: number | string): string {
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div>
         <label class="field-label">Plan al que se asocia <span class="req">*</span></label>
-        <input required name="addons_unit[${idx}][plan_name]" placeholder="Nombre del plan (igual al que pusiste arriba)" class="field">
-        <div class="field-hint">Debe coincidir con el nombre de uno de los planes que listaste arriba.</div>
+        <select required name="addons_unit[${idx}][plan_name]" class="field" data-plan-select>
+          <option value="">— elegir plan —</option>
+        </select>
+        <div class="field-hint">Se llena automáticamente con los planes que pusiste arriba. Si no aparece el plan, primero captúralo en la sección de planes.</div>
       </div>
       <div>
         <label class="field-label">Nombre del add-on <span class="req">*</span></label>
@@ -484,6 +486,33 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
       if (label) label.textContent = String(i + 1);
     });
   }
+  // Re-popula los <select> de "Plan al que se asocia" en los add-ons por unidad
+  // con los nombres de planes capturados arriba. Preserva la selección actual
+  // si el plan sigue existiendo.
+  function refreshPlanSelects() {
+    const planInputs = document.querySelectorAll('input[name^="plans["][name$="[name]"]');
+    const names = [];
+    planInputs.forEach(function(inp) {
+      const v = (inp.value || '').trim();
+      if (v) names.push(v);
+    });
+    const selects = document.querySelectorAll('select[data-plan-select]');
+    selects.forEach(function(sel) {
+      const current = sel.value;
+      sel.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = names.length === 0 ? '— captura un plan arriba primero —' : '— elegir plan —';
+      sel.appendChild(placeholder);
+      names.forEach(function(n) {
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = n;
+        if (n === current) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    });
+  }
   document.addEventListener('click', function(e) {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
@@ -502,6 +531,7 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
       wrapper.innerHTML = html;
       const node = wrapper.firstElementChild;
       if (node) container.appendChild(node);
+      refreshPlanSelects();
     }
     const removeType = t.getAttribute('data-remove');
     if (removeType) {
@@ -515,8 +545,18 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
       if (removeType === 'plan') reindexLabels(container, 'plan-index');
       if (removeType === 'addon_flat') reindexLabels(container, 'addon-flat-index');
       if (removeType === 'addon_unit') reindexLabels(container, 'addon-unit-index');
+      if (removeType === 'plan') refreshPlanSelects();
     }
   });
+  // Cualquier cambio en el nombre de un plan refresca los selects.
+  document.addEventListener('input', function(e) {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement)) return;
+    const name = t.getAttribute('name') || '';
+    if (/^plans\\[\\d+\\]\\[name\\]$/.test(name)) refreshPlanSelects();
+  });
+  // Render inicial.
+  refreshPlanSelects();
 })();
 </script>
 `;
