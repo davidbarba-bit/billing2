@@ -164,6 +164,7 @@ function planBlock(idx: number | string, showRemove: boolean): string {
           <div class="radio-card-desc">Cliente paga N meses por adelantado al instalar cada unidad. No hay renta recurrente.</div>
         </label>
       </div>
+      <textarea name="plans[${idx}][pricing_model_comments]" rows="2" class="field" placeholder="Comentarios sobre el modelo de cobro (opcional)" style="margin-top: 0.75rem;"></textarea>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -208,6 +209,7 @@ function planBlock(idx: number | string, showRemove: boolean): string {
         </div>
       </div>
       <div class="field-hint" style="margin-top: 0.6rem;">Solo importa si el monto del cargo es mayor a 0.</div>
+      <textarea name="plans[${idx}][billing_mode_comments]" rows="2" class="field" placeholder="Comentarios sobre la emisión de estos cargos (opcional)" style="margin-top: 0.75rem;"></textarea>
     </div>
 
   </div>
@@ -388,6 +390,7 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
           </label>
         </div>
         <div class="field-hint" style="margin-top: 0.6rem;">Solo aplica si el cliente tiene planes <strong>prepago</strong>. Si todos sus planes son recurrentes, ignora esta pregunta.</div>
+        <textarea name="calendar[prepago_trigger_comments]" rows="2" class="field" placeholder="Comentarios sobre el cobro de prepago (opcional)" style="margin-top: 0.75rem;"></textarea>
       </div>
 
       <div>
@@ -404,6 +407,7 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
             <div class="radio-card-desc">Hasta dos facturas: una con conceptos recurrentes (renta + add-ons + prepagados) y otra con cargos únicos (setup, baja). Útil para clientes con contabilidad estricta que separan operación de instalaciones.</div>
           </label>
         </div>
+        <textarea name="calendar[invoice_mode_comments]" rows="2" class="field" placeholder="Comentarios sobre el modo de factura (opcional)" style="margin-top: 0.75rem;"></textarea>
       </div>
 
     </div>
@@ -707,7 +711,9 @@ export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
         ${kvRow('Día de corte', cal.anchor_day)}
         ${cal.anchor_month ? kvRow('Mes ancla', MONTH_LABEL[cal.anchor_month]) : ''}
         ${kvRow('Cobro de servicio prepago', cal.prepago_trigger ? TRIGGER_LABEL[cal.prepago_trigger] : undefined)}
+        ${cal.prepago_trigger_comments ? kvRow('↳ Comentarios', cal.prepago_trigger_comments) : ''}
         ${kvRow('Modo de factura al cierre', cal.invoice_mode ? MODE_LABEL[cal.invoice_mode] : undefined)}
+        ${cal.invoice_mode_comments ? kvRow('↳ Comentarios', cal.invoice_mode_comments) : ''}
       </div>
     </div>
   `;
@@ -723,12 +729,14 @@ export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
         <span class="text-[11px] px-2.5 py-1 rounded font-medium" style="background: ${isPrepago ? 'var(--warn-soft)' : 'var(--accent-soft)'}; color: ${isPrepago ? 'var(--warn)' : 'var(--accent-deep)'};">${isPrepago ? 'Prepago' : 'Recurrente'}</span>
       </div>
       <div class="px-7 py-5">
+        ${p.pricing_model_comments ? kvRow('Comentarios sobre el modelo', p.pricing_model_comments) : ''}
         ${kvRow('Renta mensual /unidad', p.monthly_amount)}
         ${kvRow('Setup /unidad', p.setup_amount)}
         ${!isPrepago ? kvRow('Baja /unidad', p.removal_amount) : ''}
         ${isPrepago ? kvRow('Meses prepagados', p.prepaid_months) : ''}
         ${kvRow('Emisión setup', p.setup_billing_mode)}
         ${!isPrepago ? kvRow('Emisión baja', p.removal_billing_mode) : ''}
+        ${p.billing_mode_comments ? kvRow('↳ Comentarios', p.billing_mode_comments) : ''}
       </div>
     </div>`;
   };
