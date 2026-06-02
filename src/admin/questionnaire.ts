@@ -87,8 +87,10 @@ const PUBLIC_HEAD = `<meta charset="utf-8">
   .plan-block .recurring-only, .plan-block .prepago-only { display: none; }
   .plan-block:has(input[name$="[pricing_model]"][value="recurring"]:checked) .recurring-only { display: block; }
   .plan-block:has(input[name$="[pricing_model]"][value="one_off"]:checked) .prepago-only { display: block; }
-  .cycle-block .anniv-only { display: none; }
-  .cycle-block:has(input[name="cycle[type]"][value="anniversary"]:checked) .anniv-only { display: block; }
+  .cal-block .multi-period-only { display: none; }
+  .cal-block:has(input[name="calendar[frequency_months]"][value="3"]:checked) .multi-period-only,
+  .cal-block:has(input[name="calendar[frequency_months]"][value="6"]:checked) .multi-period-only,
+  .cal-block:has(input[name="calendar[frequency_months]"][value="12"]:checked) .multi-period-only { display: block; }
   .remove-btn {
     background: transparent; border: none; cursor: pointer;
     color: var(--ink-faint); font-size: 0.78rem;
@@ -208,25 +210,6 @@ function planBlock(idx: number | string, showRemove: boolean): string {
       <div class="field-hint" style="margin-top: 0.6rem;">Solo importa si el monto del cargo es mayor a 0.</div>
     </div>
 
-    <div>
-      <label class="field-label">Códigos NetSuite</label>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div>
-          <div class="text-xs ink-soft mb-1.5">Item code mensual</div>
-          <input name="plans[${idx}][netsuite_monthly]" placeholder="SUB-MONTHLY" class="field field-mono">
-        </div>
-        <div>
-          <div class="text-xs ink-soft mb-1.5">Item code setup</div>
-          <input name="plans[${idx}][netsuite_setup]" placeholder="SUB-SETUP" class="field field-mono">
-        </div>
-        <div class="recurring-only">
-          <div class="text-xs ink-soft mb-1.5">Item code baja</div>
-          <input name="plans[${idx}][netsuite_removal]" placeholder="SUB-BAJA" class="field field-mono">
-        </div>
-      </div>
-      <div class="field-hint">Los códigos del catálogo de NetSuite que se mapean a cada línea de factura. Valida con el equipo financiero antes de capturarlos — si están mal, NetSuite rechaza el dispatch.</div>
-    </div>
-
   </div>
 </div>`;
 }
@@ -298,7 +281,7 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
   <div class="text-[10px] uppercase tracking-[0.18em] font-medium mb-3" style="color: var(--accent);">Migración de cliente</div>
   <h1 class="font-display text-[2.25rem] leading-[1.1] font-medium ink tracking-tight">Cuestionario de configuración</h1>
   <p class="text-[15px] ink-soft mt-3 leading-relaxed max-w-2xl">
-    Llénalo con los datos que te pase el cliente sobre <strong>cómo quiere que se le facture</strong>. Tarda 10–15 minutos. Si una pregunta no aplica, déjala en blanco o pon "no aplica". Si tienes dudas, pregunta antes de adivinar — un dato mal capturado puede generar facturas equivocadas.
+    Llena los siguientes datos para configurar la facturación del cliente en Numaris Billing.
   </p>
 </div>
 
@@ -327,48 +310,100 @@ ${opts.error ? `<div class="surface-card" style="border-radius: 6px; border-colo
     </div>
   </div>
 
-  <!-- SECCIÓN B — Ciclo de facturación -->
-  <div class="cycle-block surface-card" style="border-radius: 6px;">
+  <!-- SECCIÓN B — Calendario de facturación -->
+  <div class="cal-block surface-card" style="border-radius: 6px;">
     <div class="section-head">
-      <div class="section-title">Ciclo de facturación</div>
-      <div class="section-desc">Cuándo se emite cada factura del cliente. Es la decisión más importante después del precio.</div>
+      <div class="section-title">Calendario de facturación</div>
+      <div class="section-desc">Define cuándo y cómo se le emiten facturas al cliente.</div>
     </div>
-    <div class="section-body space-y-6">
+    <div class="section-body space-y-7">
 
       <div>
-        <label class="field-label">Modelo de ciclo <span class="req">*</span></label>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label class="field-label">Frecuencia de facturación <span class="req">*</span></label>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <label class="radio-card">
-            <input type="radio" name="cycle[type]" value="calendar" checked class="sr-only">
-            <div class="radio-card-title">Calendario</div>
-            <div class="radio-card-desc">La factura cubre del día 1 al último día de cada mes. Se emite al cierre. Es lo más común.</div>
+            <input type="radio" name="calendar[frequency_months]" value="1" checked class="sr-only">
+            <div class="radio-card-title">Mensual</div>
+            <div class="radio-card-desc">Una factura cada mes.</div>
           </label>
           <label class="radio-card">
-            <input type="radio" name="cycle[type]" value="anniversary" class="sr-only">
-            <div class="radio-card-title">Aniversario</div>
-            <div class="radio-card-desc">La factura cubre del día N de un mes al día N-1 del siguiente, donde N es el día en que arrancó el contrato.</div>
+            <input type="radio" name="calendar[frequency_months]" value="3" class="sr-only">
+            <div class="radio-card-title">Trimestral</div>
+            <div class="radio-card-desc">Una factura cada 3 meses.</div>
           </label>
+          <label class="radio-card">
+            <input type="radio" name="calendar[frequency_months]" value="6" class="sr-only">
+            <div class="radio-card-title">Semestral</div>
+            <div class="radio-card-desc">Una factura cada 6 meses.</div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="calendar[frequency_months]" value="12" class="sr-only">
+            <div class="radio-card-title">Anual</div>
+            <div class="radio-card-desc">Una factura al año.</div>
+          </label>
+        </div>
+        <div class="field-hint" style="margin-top: 0.6rem;">Lo más común es <strong>mensual</strong>. Frecuencias mayores agrupan más periodos en una misma factura.</div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div>
+          <label class="field-label">Día de corte <span class="req">*</span></label>
+          <input type="number" min="1" max="28" name="calendar[anchor_day]" value="1" class="field field-mono" style="max-width: 8rem;">
+          <div class="field-hint">Día del mes en que cierra cada periodo y se emite la factura. Entre 1 y 28 (para evitar problemas en febrero). Si pones <code class="font-mono-pro">1</code>, el periodo va del día 1 al fin de mes.</div>
+        </div>
+
+        <div class="multi-period-only">
+          <label class="field-label">Mes ancla</label>
+          <select name="calendar[anchor_month]" class="field" style="max-width: 14rem;">
+            <option value="">— sin ancla (arranca el mes que firmó) —</option>
+            <option value="1">Enero</option>
+            <option value="2">Febrero</option>
+            <option value="3">Marzo</option>
+            <option value="4">Abril</option>
+            <option value="5">Mayo</option>
+            <option value="6">Junio</option>
+            <option value="7">Julio</option>
+            <option value="8">Agosto</option>
+            <option value="9">Septiembre</option>
+            <option value="10">Octubre</option>
+            <option value="11">Noviembre</option>
+            <option value="12">Diciembre</option>
+          </select>
+          <div class="field-hint">Solo aplica si la frecuencia es mayor a mensual. Define en qué mes empiezan los ciclos. Ej. trimestral con ancla en enero → ciclos en ene/abr/jul/oct. Si no se especifica, arranca en el mes en que el cliente firmó el contrato.</div>
         </div>
       </div>
 
-      <div class="anniv-only">
-        <label class="field-label">Día de corte (si es aniversario) <span class="req">*</span></label>
-        <input type="number" min="1" max="28" name="cycle[anniversary_day]" placeholder="15" class="field field-mono" style="max-width: 8rem;">
-        <div class="field-hint">Día del mes en que arranca cada periodo. Entre 1 y 28 (para evitar problemas en febrero).</div>
+      <div>
+        <label class="field-label">Cómo se factura un servicio prepago al instalar una unidad <span class="req">*</span></label>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="radio-card">
+            <input type="radio" name="calendar[prepago_trigger]" value="next_cycle" checked class="sr-only">
+            <div class="radio-card-title">Al cierre del periodo</div>
+            <div class="radio-card-desc">El paquete prepago (setup + N mensualidades) se agrega a la factura del periodo en que se instala la unidad. Más común.</div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="calendar[prepago_trigger]" value="immediate" class="sr-only">
+            <div class="radio-card-title">Inmediato al instalar</div>
+            <div class="radio-card-desc">Se emite una factura individual con el paquete prepago el mismo día que entra la unidad. Útil cuando el cliente exige factura al instalar.</div>
+          </label>
+        </div>
+        <div class="field-hint" style="margin-top: 0.6rem;">Solo aplica si el cliente tiene planes <strong>prepago</strong>. Si todos sus planes son recurrentes, ignora esta pregunta.</div>
       </div>
 
       <div>
-        <label class="field-label">Términos de pago</label>
-        <select name="cycle[payment_terms]" class="field" style="max-width: 24rem;">
-          <option value="">— elegir —</option>
-          <option value="pue">PUE (pago en una sola exhibición al emitir)</option>
-          <option value="15">PPD a 15 días</option>
-          <option value="30">PPD a 30 días</option>
-          <option value="45">PPD a 45 días</option>
-          <option value="60">PPD a 60 días</option>
-          <option value="other">Otro (especifica en comentarios)</option>
-        </select>
-        <div class="field-hint">Cuánto crédito le damos al cliente para pagar la factura emitida.</div>
+        <label class="field-label">Modo de la factura al cierre del periodo <span class="req">*</span></label>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="radio-card">
+            <input type="radio" name="calendar[invoice_mode]" value="unified" checked class="sr-only">
+            <div class="radio-card-title">Unificada</div>
+            <div class="radio-card-desc">Una sola factura por periodo con todos los conceptos: renta, setup, baja, add-ons y prepagos. Es el default.</div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="calendar[invoice_mode]" value="split_by_kind" class="sr-only">
+            <div class="radio-card-title">Separada por tipo</div>
+            <div class="radio-card-desc">Hasta dos facturas: una con conceptos recurrentes (renta + add-ons + prepagados) y otra con cargos únicos (setup, baja). Útil para clientes con contabilidad estricta que separan operación de instalaciones.</div>
+          </label>
+        </div>
       </div>
 
     </div>
@@ -523,13 +558,13 @@ export function renderQuestionnaireThanks(opts: { customerLabel: string }): stri
 // `plans[0][name]`) a una estructura anidada, y re-compacta los índices
 // gappy que dejan los "Eliminar" del JS.
 export function parseQuestionnaireBody(body: Record<string, string>): {
-  cycle: { type: string; anniversary_day?: string; payment_terms?: string };
+  calendar: Record<string, string>;
   plans: Array<Record<string, string>>;
   addons_flat: Array<Record<string, string>>;
   addons_unit: Array<Record<string, string>>;
   comments: string;
 } {
-  const cycle: Record<string, string> = {};
+  const calendar: Record<string, string> = {};
   const planMap: Record<number, Record<string, string>> = {};
   const flatMap: Record<number, Record<string, string>> = {};
   const unitMap: Record<number, Record<string, string>> = {};
@@ -538,9 +573,9 @@ export function parseQuestionnaireBody(body: Record<string, string>): {
     if (typeof value !== 'string') continue;
     const trimmed = value.trim();
     if (!trimmed) continue;
-    // cycle[xxx]
-    const cm = /^cycle\[(\w+)\]$/.exec(rawKey);
-    if (cm && cm[1]) { cycle[cm[1]] = trimmed; continue; }
+    // calendar[xxx]
+    const cm = /^calendar\[(\w+)\]$/.exec(rawKey);
+    if (cm && cm[1]) { calendar[cm[1]] = trimmed; continue; }
     // plans[i][xxx]
     const pm = /^plans\[(\d+)\]\[(\w+)\]$/.exec(rawKey);
     if (pm && pm[1] && pm[2]) {
@@ -574,7 +609,7 @@ export function parseQuestionnaireBody(body: Record<string, string>): {
   };
 
   return {
-    cycle: cycle as { type: string; anniversary_day?: string; payment_terms?: string },
+    calendar,
     plans: compact(planMap),
     addons_flat: compact(flatMap),
     addons_unit: compact(unitMap),
@@ -602,10 +637,12 @@ export function renderQuestionnaireList(rows: QuestionnaireRow[]): string {
       <div class="text-xs ink-faint mt-2">El link público es <code class="font-mono-pro" style="color: var(--accent-deep);">/cuestionario</code>.</div>
     </div>`;
   }
+  const FREQ_LABEL: Record<string, string> = { '1': 'mensual', '3': 'trimestral', '6': 'semestral', '12': 'anual' };
   const list = rows.map((r) => {
-    const payload = r.payload as { plans?: unknown[]; cycle?: { type?: string } } | null;
+    const payload = r.payload as { plans?: unknown[]; calendar?: { frequency_months?: string } } | null;
     const planCount = Array.isArray(payload?.plans) ? payload.plans.length : 0;
-    const cycleType = payload?.cycle?.type ?? '—';
+    const freq = payload?.calendar?.frequency_months ?? '';
+    const freqLabel = FREQ_LABEL[freq] ?? '—';
     return `<a href="/admin/cuestionarios/${escapeHtml(r.id)}" class="surface-card block transition-colors" style="border-radius: 6px; padding: 1.25rem 1.5rem; text-decoration: none;">
       <div class="flex items-start justify-between gap-4">
         <div class="flex-1 min-w-0">
@@ -615,7 +652,7 @@ export function renderQuestionnaireList(rows: QuestionnaireRow[]): string {
           </div>
         </div>
         <div class="text-right shrink-0">
-          <div class="text-xs ink-soft">${planCount} ${planCount === 1 ? 'plan' : 'planes'} · ciclo ${escapeHtml(cycleType)}</div>
+          <div class="text-xs ink-soft">${planCount} ${planCount === 1 ? 'plan' : 'planes'} · ${escapeHtml(freqLabel)}</div>
           <div class="text-[11px] ink-faint mt-0.5">${r.createdAt.toISOString().slice(0, 10)}</div>
         </div>
       </div>
@@ -630,12 +667,16 @@ export function renderQuestionnaireList(rows: QuestionnaireRow[]): string {
 
 export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
   const payload = (row.payload ?? {}) as {
-    cycle?: { type?: string; anniversary_day?: string; payment_terms?: string };
+    calendar?: Record<string, string>;
     plans?: Array<Record<string, string>>;
     addons_flat?: Array<Record<string, string>>;
     addons_unit?: Array<Record<string, string>>;
     comments?: string;
   };
+  const FREQ_LABEL: Record<string, string> = { '1': 'Mensual', '3': 'Trimestral', '6': 'Semestral', '12': 'Anual' };
+  const MONTH_LABEL: Record<string, string> = { '1': 'Enero', '2': 'Febrero', '3': 'Marzo', '4': 'Abril', '5': 'Mayo', '6': 'Junio', '7': 'Julio', '8': 'Agosto', '9': 'Septiembre', '10': 'Octubre', '11': 'Noviembre', '12': 'Diciembre' };
+  const TRIGGER_LABEL: Record<string, string> = { 'next_cycle': 'Al cierre del periodo', 'immediate': 'Inmediato al instalar' };
+  const MODE_LABEL: Record<string, string> = { 'unified': 'Unificada', 'split_by_kind': 'Separada por tipo' };
 
   const headerBlock = `
     <div class="mb-8">
@@ -655,15 +696,18 @@ export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
       <div class="text-sm ink">${value ? escapeHtml(value) : '<span class="ink-faint">—</span>'}</div>
     </div>`;
 
+  const cal = payload.calendar ?? {};
   const cycleBlock = `
     <div class="surface-card" style="border-radius: 6px; margin-bottom: 1.5rem;">
       <div class="px-7 py-5" style="border-bottom: 1px solid var(--rule);">
-        <h2 class="text-[11px] uppercase tracking-[0.1em] font-semibold ink-soft">Ciclo de facturación</h2>
+        <h2 class="text-[11px] uppercase tracking-[0.1em] font-semibold ink-soft">Calendario de facturación</h2>
       </div>
       <div class="px-7 py-5">
-        ${kvRow('Modelo', payload.cycle?.type)}
-        ${payload.cycle?.type === 'anniversary' ? kvRow('Día de corte', payload.cycle?.anniversary_day) : ''}
-        ${kvRow('Términos de pago', payload.cycle?.payment_terms)}
+        ${kvRow('Frecuencia', cal.frequency_months ? FREQ_LABEL[cal.frequency_months] : undefined)}
+        ${kvRow('Día de corte', cal.anchor_day)}
+        ${cal.anchor_month ? kvRow('Mes ancla', MONTH_LABEL[cal.anchor_month]) : ''}
+        ${kvRow('Cobro de servicio prepago', cal.prepago_trigger ? TRIGGER_LABEL[cal.prepago_trigger] : undefined)}
+        ${kvRow('Modo de factura al cierre', cal.invoice_mode ? MODE_LABEL[cal.invoice_mode] : undefined)}
       </div>
     </div>
   `;
@@ -685,9 +729,6 @@ export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
         ${isPrepago ? kvRow('Meses prepagados', p.prepaid_months) : ''}
         ${kvRow('Emisión setup', p.setup_billing_mode)}
         ${!isPrepago ? kvRow('Emisión baja', p.removal_billing_mode) : ''}
-        ${kvRow('NetSuite mensual', p.netsuite_monthly)}
-        ${kvRow('NetSuite setup', p.netsuite_setup)}
-        ${!isPrepago ? kvRow('NetSuite baja', p.netsuite_removal) : ''}
       </div>
     </div>`;
   };
