@@ -2270,4 +2270,17 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         }),
     }));
   });
+
+  // Eliminar un cuestionario.
+  app.post('/admin/cuestionarios/:id/delete', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const row = await prisma.migrationQuestionnaire.findUnique({ where: { id } });
+    if (!row) {
+      setFlash(reply, 'error', 'Cuestionario no encontrado');
+      return reply.redirect('/admin/cuestionarios');
+    }
+    await prisma.migrationQuestionnaire.delete({ where: { id } });
+    setFlash(reply, 'success', `Cuestionario de "${row.customerLabel}" eliminado.`);
+    reply.redirect('/admin/cuestionarios');
+  });
 }

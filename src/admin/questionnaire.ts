@@ -809,5 +809,19 @@ export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
     </div>
   ` : '';
 
-  return headerBlock + cycleBlock + plansBlock + addonsBlock + commentsBlock;
+  const dangerZone = `
+    <div class="surface-card" style="border-radius: 6px; margin-top: 1.5rem; border-color: var(--rule);">
+      <div class="px-7 py-5 flex items-center justify-between gap-4">
+        <div>
+          <div class="text-[11px] uppercase tracking-[0.1em] font-semibold ink-soft">Eliminar cuestionario</div>
+          <div class="text-xs ink-faint mt-1">Esta acción no se puede deshacer.</div>
+        </div>
+        <form method="post" action="/admin/cuestionarios/${escapeHtml(row.id)}/delete" onsubmit="return confirm('¿Eliminar este cuestionario? La acción no se puede deshacer.');">
+          <button type="submit" style="background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85rem; font-weight: 500; cursor: pointer;">Eliminar</button>
+        </form>
+      </div>
+    </div>
+  `;
+
+  return headerBlock + cycleBlock + plansBlock + addonsBlock + commentsBlock + dangerZone;
 }
