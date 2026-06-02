@@ -234,10 +234,6 @@ function addonFlatBlock(idx: number | string): string {
         <label class="field-label">Monto flat /mes <span class="req">*</span></label>
         <input required type="number" step="0.01" min="0" name="addons_flat[${idx}][amount]" placeholder="0.00" class="field field-mono">
       </div>
-      <div class="sm:col-span-2">
-        <label class="field-label">Item code NetSuite</label>
-        <input name="addons_flat[${idx}][netsuite_code]" placeholder="ADDON-FLAT" class="field field-mono">
-      </div>
     </div>
   </div>
 </div>`;
@@ -265,10 +261,6 @@ function addonUnitBlock(idx: number | string): string {
       <div>
         <label class="field-label">Monto /unidad /mes <span class="req">*</span></label>
         <input required type="number" step="0.01" min="0" name="addons_unit[${idx}][amount]" placeholder="0.00" class="field field-mono">
-      </div>
-      <div>
-        <label class="field-label">Item code NetSuite</label>
-        <input name="addons_unit[${idx}][netsuite_code]" placeholder="ADDON-PERUNIT" class="field field-mono">
       </div>
     </div>
   </div>
@@ -754,7 +746,6 @@ export function renderQuestionnaireDetail(row: QuestionnaireRow): string {
       <div class="text-sm ink">${escapeHtml(a.name ?? '—')}${kind === 'unit' && a.plan_name ? ` <span class="ink-faint">— en plan "${escapeHtml(a.plan_name)}"</span>` : ''}</div>
       <div class="text-xs ink-soft mt-1">
         <span class="font-mono-pro">${escapeHtml(a.amount ?? '0')}</span>${kind === 'flat' ? ' flat/mes' : ' /unidad/mes'}
-        ${a.netsuite_code ? ` · <span class="font-mono-pro">${escapeHtml(a.netsuite_code)}</span>` : ''}
       </div>
     </div>
   `;
