@@ -19,12 +19,15 @@ import {
 
 type CustomerLite = Pick<Customer, 'externalId' | 'name' | 'currency'>;
 
+type TaxEntityOption = { id: string; label: string; isDefault: boolean };
+
 export function renderServiceNewForm(args: {
   customers: CustomerLite[];
+  taxEntitiesByCustomer?: Record<string, TaxEntityOption[]>;
   selectedCustomerExternalId?: string;
   form?: Record<string, string | undefined>;
 }): string {
-  const { customers, form = {} } = args;
+  const { customers, taxEntitiesByCustomer = {}, form = {} } = args;
 
   // Determinar el cliente "activo" en el form (preselected por query param,
   // por valor del form en re-render, o el primero).
@@ -44,6 +47,36 @@ export function renderServiceNewForm(args: {
     const sel = c.externalId === selectedExt ? 'selected' : '';
     return `<option value="${escapeHtml(c.externalId)}" data-currency="${escapeHtml(c.currency)}" ${sel}>${escapeHtml(c.name)} — ${escapeHtml(c.externalId)}</option>`;
   }).join('');
+
+  // v22: razón social del plan. Opciones del cliente seleccionado renderizadas
+  // server-side (funciona sin JS y preserva la elección al re-render); un
+  // script las re-construye si el usuario cambia de cliente.
+  const selectedTaxEntities = taxEntitiesByCustomer[selectedExt] ?? [];
+  const taxEntityOptions = selectedTaxEntities.map((te) => {
+    const sel = form.tax_entity_id ? (te.id === form.tax_entity_id ? 'selected' : '') : (te.isDefault ? 'selected' : '');
+    const label = te.isDefault ? `${te.label} (default)` : te.label;
+    return `<option value="${escapeHtml(te.id)}" ${sel}>${escapeHtml(label)}</option>`;
+  }).join('');
+  const taxEntitiesJson = JSON.stringify(taxEntitiesByCustomer).replace(/</g, '\\u003c');
+  const taxEntityScript = `<script>
+    (function(){
+      var data = ${taxEntitiesJson};
+      var custSel = document.getElementById('customer-select');
+      var teSel = document.getElementById('tax-entity-select');
+      if(!custSel||!teSel) return;
+      custSel.addEventListener('change', function(){
+        var list = data[custSel.value] || [];
+        teSel.innerHTML = '';
+        list.forEach(function(te){
+          var o = document.createElement('option');
+          o.value = te.id;
+          o.textContent = te.isDefault ? (te.label + ' (default)') : te.label;
+          if (te.isDefault) o.selected = true;
+          teSel.appendChild(o);
+        });
+      });
+    })();
+  </script>`;
 
   // Modelo de cobro como radio cards editoriales — la decisión cambia
   // qué campos aplican (setup/baja vs prepaid_months), conviene visualizarlo.
@@ -95,6 +128,12 @@ export function renderServiceNewForm(args: {
           span: 2,
           hint: `La moneda del plan (<code class="font-mono">${escapeHtml(currency)}</code>) se hereda del cliente.`,
           input: `<select required name="customer_external_id" id="customer-select" class="${INPUT_CLASS}">${customerOptions}</select>`,
+        })}
+        ${formField({
+          label: 'Razón social',
+          span: 2,
+          hint: 'Razón social a la que se facturan los ciclos de este plan. Default = la del cliente. Se puede cambiar después.',
+          input: `<select name="tax_entity_id" id="tax-entity-select" class="${INPUT_CLASS}">${taxEntityOptions}</select>`,
         })}
         ${formField({
           label: 'Nombre comercial',
@@ -228,6 +267,7 @@ export function renderServiceNewForm(args: {
       ${netsuiteSection}
       ${actions}
     </form>
+    ${taxEntityScript}
   `;
 
   return pageTitle({

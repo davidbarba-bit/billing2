@@ -51,7 +51,7 @@ export type TaxEntityWithCounts = TaxEntity & {
 };
 
 type CustomerWithRelations = Customer & {
-  services: (Service & { units?: Unit[] })[];
+  services: (Service & { units?: Unit[]; taxEntity?: TaxEntity })[];
   addOns: CustomerAddOn[];
   invoices: Invoice[];
   creditNotes: CreditNote[];
@@ -355,7 +355,7 @@ function renderPlan(customer: CustomerWithRelations): string {
     empty: 'Sin planes/services asignados',
     rowHref: (s) => `/admin/services/${s.code}`,
     columns: [
-      { label: 'Nombre', render: (s) => escapeHtml(s.name) },
+      { label: 'Nombre', render: (s) => `${escapeHtml(s.name)}${s.taxEntity && !s.taxEntity.isDefault ? `<div class="text-xs ink-faint mt-0.5">↳ ${escapeHtml(s.taxEntity.legalName)}</div>` : ''}` },
       { label: 'Tipo', render: (s) => s.pricingModel === 'one_off' ? badge('prepago', 'blue') : badge('recurrente', 'green') },
       { label: 'Status', render: (s) => statusBadge(s.status) },
       { label: 'Renta /unidad', render: (s) => `${fmtMoney(s.monthlyUnitAmountCents, s.currency)} /u` },

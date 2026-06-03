@@ -25,6 +25,8 @@ export function serializeService(service: ServiceWithLinks) {
       name: service.name,
       description: service.description ?? null,
       customer_id: service.customerId,
+      // v22: razón social a la que se factura el plan.
+      tax_entity_id: service.taxEntityId,
       currency: service.currency,
       pricing_model: service.pricingModel,
       monthly_unit_amount_cents: effective.monthlyUnitAmountCents,

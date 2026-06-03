@@ -3,7 +3,7 @@
 // Add-ons / Precio. Las acciones poco frecuentes (terminar el plan,
 // migrar units desde sistema legacy) viven en el tab que les corresponde.
 
-import type { Customer, Service, ServiceAddOn, Unit } from '@prisma/client';
+import type { Customer, Service, ServiceAddOn, TaxEntity, Unit } from '@prisma/client';
 import { adminContextStorage } from './context.js';
 import { DateTime } from 'luxon';
 import {
@@ -32,6 +32,7 @@ import {
 
 type ServiceWithRelations = Service & {
   customer: Customer;
+  taxEntity: TaxEntity;
   units: Unit[];
   addOns: ServiceAddOn[];
 };
@@ -111,7 +112,7 @@ function renderTabsNav(serviceCode: string, active: ServiceTab, counts: { units:
 
 // --- Tab: Resumen --------------------------------------------------------
 
-function renderResumen(service: ServiceWithRelations): string {
+function renderResumen(service: ServiceWithRelations, customerTaxEntities: TaxEntity[]): string {
   const pricing = computeEffectivePricing(service);
   const isOneOff = service.pricingModel === 'one_off';
 
@@ -324,6 +325,60 @@ function renderResumen(service: ServiceWithRelations): string {
     body: netsuiteCodesForm,
   });
 
+  // v22: razón social del plan — receptor fiscal de los ciclos de este plan.
+  const te = service.taxEntity;
+  const teBadges = [
+    te.isDefault ? `<span class="pill pill-info">Default del cliente</span>` : '',
+    te.active ? '' : `<span class="pill pill-warn">Inactiva</span>`,
+  ].filter(Boolean).join(' ');
+  const taxEntityBlock = (() => {
+    const rows = `
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-4 text-sm">
+        <div class="sm:col-span-2">
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">Razón social</div>
+          <div class="ink">${escapeHtml(te.legalName)} ${teBadges}</div>
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-wider ink-faint mb-1">RFC</div>
+          <div class="ink font-mono-pro">${te.taxIdentificationNumber ? escapeHtml(te.taxIdentificationNumber) : '<span class="ink-faint">— sin RFC</span>'}</div>
+        </div>
+      </div>
+    `;
+    const editTrigger = service.status !== 'terminated' && customerTaxEntities.length > 1
+      ? `<div class="mt-5 pt-5" style="border-top: 1px solid var(--rule-soft);">${modalTrigger({ modalId: 'modal-tax-entity', label: 'Cambiar razón social' })}</div>`
+      : (service.status !== 'terminated'
+        ? `<div class="mt-4 text-xs ink-faint">El cliente solo tiene una razón social. Crea otra en <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/customers/${escapeHtml(service.customer.externalId)}?tab=datos">Datos fiscales</a> para poder cambiarla.</div>`
+        : '');
+    return rows + editTrigger;
+  })();
+
+  const taxEntityModal = service.status !== 'terminated' && customerTaxEntities.length > 1
+    ? modal({
+        id: 'modal-tax-entity',
+        title: 'Cambiar razón social del plan',
+        description: 'Aplica a los próximos ciclos. Las facturas ya emitidas conservan su razón social.',
+        body: `
+          <form method="post" action="/admin/services/${escapeHtml(service.code)}/tax-entity" class="space-y-0">
+            <div class="mb-6">
+              ${formField({
+                label: 'Razón social',
+                input: `<select name="tax_entity_id" class="${INPUT_CLASS}">${customerTaxEntities.map((opt) => {
+                  const sel = opt.id === service.taxEntityId ? 'selected' : '';
+                  const label = (opt.isDefault ? `${opt.legalName} (default)` : opt.legalName)
+                    + (opt.taxIdentificationNumber ? ` — ${opt.taxIdentificationNumber}` : '')
+                    + (opt.active ? '' : ' [inactiva]');
+                  return `<option value="${escapeHtml(opt.id)}" ${sel}>${escapeHtml(label)}</option>`;
+                }).join('')}</select>`,
+              })}
+            </div>
+            <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+              ${primaryButton('Guardar razón social')}
+            </div>
+          </form>
+        `,
+      })
+    : '';
+
   // Acciones del plan — terminate + link a invoices del cliente.
   const terminateForm = service.status !== 'terminated'
     ? postButton(`/admin/services/${service.code}/terminate`, 'Terminar plan', 'danger', `¿Terminar ${service.code}? Las unidades activas quedarán dadas de baja a la fecha actual.`)
@@ -337,6 +392,11 @@ function renderResumen(service: ServiceWithRelations): string {
       body: configBlock,
     })
     + panel({
+      title: 'Razón social',
+      description: 'Entidad fiscal a la que se factura este plan.',
+      body: taxEntityBlock,
+    })
+    + panel({
       title: 'NetSuite · códigos de producto',
       description: 'Mapeo de líneas de factura al catálogo de NetSuite.',
       body: netsuiteBlock,
@@ -346,6 +406,7 @@ function renderResumen(service: ServiceWithRelations): string {
       body: `<div class="flex items-center gap-4">${terminateForm}<span>${invoicesLink}</span></div>`,
     })
     + configModal
+    + taxEntityModal
     + netsuiteCodesModal;
 }
 
@@ -649,11 +710,12 @@ function renderPrecio(service: ServiceWithRelations): string {
 export function renderServiceDetail(args: {
   service: ServiceWithRelations;
   tab: ServiceTab;
+  customerTaxEntities: TaxEntity[];
 }): string {
   const counts = { units: args.service.units.length, addOns: args.service.addOns.length };
   const tabContent = (() => {
     switch (args.tab) {
-      case 'resumen': return renderResumen(args.service);
+      case 'resumen': return renderResumen(args.service, args.customerTaxEntities);
       case 'unidades': return renderUnidades(args.service);
       case 'addons': return renderAddons(args.service);
       case 'precio': return renderPrecio(args.service);

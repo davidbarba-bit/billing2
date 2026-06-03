@@ -5,13 +5,15 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { serializeService, type ServiceWithLinks } from '../serializers/service.js';
-import { resolveDefaultTaxEntityId } from '../services/tax-entity.js';
+import { resolveTaxEntityIdForCustomer } from '../services/tax-entity.js';
 
 type ServicePayload = {
   code?: string;
   customer_external_id?: string;
   name?: string;
   description?: string | null;
+  // v22: razón social a la que se factura el plan. Vacío → default del cliente.
+  tax_entity_id?: string | null;
   currency?: string;
   pricing_model?: 'recurring' | 'one_off';
   monthly_unit_amount_cents?: number;
@@ -114,9 +116,9 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
 
       const currency = payload.currency ?? customer.currency;
 
-      // v22: el plan se factura a una razón social. Por ahora hereda la
-      // default del cliente (fase 2 permitirá elegir otra).
-      const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
+      // v22: el plan se factura a una razón social. Si el payload no la
+      // especifica, hereda la default del cliente.
+      const taxEntityId = await resolveTaxEntityIdForCustomer(prisma, customer.id, payload.tax_entity_id);
 
       const created = await prisma.service.create({
         data: {
@@ -214,6 +216,9 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       const body = (request.body ?? {}) as { service?: {
         name?: string;
         description?: string | null;
+        // v22: cambia la razón social del plan (aplica a próximos ciclos;
+        // las facturas ya emitidas conservan la suya).
+        tax_entity_id?: string | null;
         // v17: edición del cargo de baja post-creación (sin tocar otros precios).
         removal_unit_amount_cents?: number;
         // v18: edición del modo de emisión post-creación.
@@ -233,6 +238,11 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
       const data: Prisma.ServiceUpdateInput = {};
       if (payload.name !== undefined) data.name = payload.name;
       if (payload.description !== undefined) data.description = payload.description;
+      if (payload.tax_entity_id !== undefined) {
+        // Cambiar a otra razón social del mismo cliente (validada + activa).
+        const teId = await resolveTaxEntityIdForCustomer(prisma, service.customerId, payload.tax_entity_id);
+        data.taxEntity = { connect: { id: teId } };
+      }
       if (payload.removal_unit_amount_cents !== undefined) {
         if (!Number.isInteger(payload.removal_unit_amount_cents) || payload.removal_unit_amount_cents < 0) {
           throw validation({ removal_unit_amount_cents: ['must_be_non_negative_integer'] });

@@ -7,6 +7,7 @@
 // del cliente — que se resuelve con este helper.
 
 import type { Prisma, PrismaClient } from '@prisma/client';
+import { validation } from '../errors.js';
 
 type TaxEntityDb = PrismaClient | Prisma.TransactionClient;
 
@@ -21,5 +22,26 @@ export async function resolveDefaultTaxEntityId(db: TaxEntityDb, customerId: str
   if (!te) {
     throw new Error(`customer ${customerId} has no default tax entity (v22 invariant violated)`);
   }
+  return te.id;
+}
+
+// Resuelve la razón social a asociar a una fila facturable de un cliente.
+//   - requested vacío/null/undefined → la razón social DEFAULT del cliente.
+//   - requested con id → valida que pertenezca al cliente y esté activa.
+// Lanza validation 422 si el id no pertenece al cliente o está inactiva.
+export async function resolveTaxEntityIdForCustomer(
+  db: TaxEntityDb,
+  customerId: string,
+  requested: string | null | undefined,
+): Promise<string> {
+  if (requested === undefined || requested === null || requested === '') {
+    return resolveDefaultTaxEntityId(db, customerId);
+  }
+  const te = await db.taxEntity.findFirst({
+    where: { id: requested, customerId },
+    select: { id: true, active: true },
+  });
+  if (!te) throw validation({ tax_entity_id: ['not_found_for_customer'] });
+  if (!te.active) throw validation({ tax_entity_id: ['inactive'] });
   return te.id;
 }

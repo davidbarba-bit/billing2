@@ -523,6 +523,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           orderBy: { createdAt: 'desc' },
           include: {
             units: { orderBy: [{ activeTo: 'asc' }, { activeFrom: 'desc' }] },
+            taxEntity: true,
           },
         },
         addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }] },
@@ -670,11 +671,27 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       orderBy: { name: 'asc' },
       select: { externalId: true, name: true, currency: true },
     });
+    // v22: razones sociales activas por cliente para el select del form.
+    const taxEntities = await prisma.taxEntity.findMany({
+      where: { organizationId: org.id, active: true, customer: { status: { not: 'terminated' } } },
+      orderBy: [{ isDefault: 'desc' }, { legalName: 'asc' }],
+      select: { id: true, legalName: true, taxIdentificationNumber: true, isDefault: true, customer: { select: { externalId: true } } },
+    });
+    const taxEntitiesByCustomer: Record<string, Array<{ id: string; label: string; isDefault: boolean }>> = {};
+    for (const te of taxEntities) {
+      const ext = te.customer.externalId;
+      (taxEntitiesByCustomer[ext] ??= []).push({
+        id: te.id,
+        label: te.taxIdentificationNumber ? `${te.legalName} — ${te.taxIdentificationNumber}` : te.legalName,
+        isDefault: te.isDefault,
+      });
+    }
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: 'Nuevo plan', active: '/admin/services', orgSlug: org.slug, flash,
       body: renderServiceNewForm({
         customers,
+        taxEntitiesByCustomer,
         selectedCustomerExternalId: q.customer,
       }),
     }));
@@ -722,6 +739,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           netsuite_monthly_item_code: body.netsuite_monthly_item_code || null,
           netsuite_setup_item_code: body.netsuite_setup_item_code || null,
           netsuite_removal_item_code: body.netsuite_removal_item_code || null,
+          tax_entity_id: body.tax_entity_id || undefined,
         },
       },
     });
@@ -743,6 +761,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       where: { organizationId_code: { organizationId: org.id, code: svcCode } },
       include: {
         customer: true,
+        taxEntity: true,
         units: { orderBy: [{ activeTo: 'asc' }, { activeFrom: 'desc' }] },
         addOns: { orderBy: [{ activeFrom: 'desc' }] },
       },
@@ -754,13 +773,19 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
+    // v22: razones sociales del cliente para el selector de cambio (incluye la
+    // actual aunque esté inactiva, para no perder contexto).
+    const customerTaxEntities = await prisma.taxEntity.findMany({
+      where: { customerId: service.customerId, OR: [{ active: true }, { id: service.taxEntityId }] },
+      orderBy: [{ isDefault: 'desc' }, { legalName: 'asc' }],
+    });
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `${service.name} · Plan`,
       active: '/admin/services',
       orgSlug: org.slug,
       flash,
-      body: renderServiceDetail({ service, tab }),
+      body: renderServiceDetail({ service, tab, customerTaxEntities }),
     }));
     return;
   });
@@ -1609,6 +1634,23 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
     else setFlash(reply, 'success', `Configuración actualizada.`);
+    reply.redirect(`/admin/services/${svcCode}`);
+  });
+
+  // v22: cambia la razón social del plan (aplica a próximos ciclos).
+  app.post('/admin/services/:code/tax-entity', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code: svcCode } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/services/${encodeURIComponent(svcCode)}`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { service: { tax_entity_id: body.tax_entity_id || null } },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', 'Razón social del plan actualizada. Aplica a próximos ciclos.');
     reply.redirect(`/admin/services/${svcCode}`);
   });
 
