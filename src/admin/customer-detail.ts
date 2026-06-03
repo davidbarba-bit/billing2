@@ -4,6 +4,8 @@
 // acciones rápidas y los datos críticos del periodo en curso.
 
 import type {
+  CatalogEvent,
+  CatalogEventOccurrence,
   Customer,
   CustomerAddOn,
   CreditNote,
@@ -55,6 +57,7 @@ export const CUSTOMER_TABS = [
   'plan',
   'unidades',
   'addons',
+  'cargos',
   'facturas',
   'eventos',
   'datos',
@@ -174,6 +177,7 @@ function renderTabsNav(externalId: string, active: CustomerTab, counts: {
   addOns: number;
   invoices: number;
   creditNotes: number;
+  catalogEventOccurrences: number;
 }): string {
   return tabs({
     baseHref: `/admin/customers/${encodeURIComponent(externalId)}`,
@@ -183,6 +187,7 @@ function renderTabsNav(externalId: string, active: CustomerTab, counts: {
       { key: 'plan', label: 'Plan & calendario', count: counts.services },
       { key: 'unidades', label: 'Unidades', count: counts.units },
       { key: 'addons', label: 'Add-ons', count: counts.addOns },
+      { key: 'cargos', label: 'Cargos extras', count: counts.catalogEventOccurrences },
       { key: 'facturas', label: 'Facturas', count: counts.invoices + counts.creditNotes },
       { key: 'eventos', label: 'Eventos' },
       { key: 'datos', label: 'Datos fiscales' },
@@ -738,6 +743,145 @@ function renderFacturas(customer: CustomerWithRelations): string {
     + card(`Notas de crédito (${customer.creditNotes.length})`, cnsTable);
 }
 
+// --- Tab: Cargos extras (ocurrencias del catálogo de eventos) -------------
+
+function renderCargosExtras(args: {
+  customer: CustomerWithRelations;
+  catalogEvents: CatalogEvent[];
+  occurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null }>;
+}): string {
+  const activeCatalog = args.catalogEvents.filter((e) => e.active);
+
+  const newButton = activeCatalog.length > 0 && args.customer.status !== 'terminated'
+    ? modalTrigger({ modalId: 'modal-new-cargo-extra', label: '+ Registrar evento' })
+    : '';
+
+  const occurrencesTable = args.occurrences.length === 0
+    ? `<div class="text-sm ink-faint italic py-6 text-center">Este cliente todavía no tiene cargos extras registrados.</div>`
+    : table({
+        rows: args.occurrences,
+        empty: 'Sin cargos extras',
+        columns: [
+          { label: 'Evento', render: (o) => `<a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos/${encodeURIComponent(o.catalogEvent.code)}">${escapeHtml(o.catalogEvent.name)}</a>` },
+          { label: 'Unidad', render: (o) => o.unitExternalId
+            ? `<code class="font-mono-pro text-xs">${escapeHtml(o.unitExternalId)}</code>`
+            : '<span class="ink-faint text-xs">—</span>' },
+          { label: 'Monto', render: (o) => `<span class="font-mono-pro">${fmtMoney(o.amountCents, args.customer.currency)}</span>` },
+          { label: 'Modo', render: (o) => o.billingMode === 'immediate'
+            ? `<span class="pill pill-info">Inmediato</span>`
+            : `<span class="pill pill-warn">Próximo ciclo</span>` },
+          { label: 'Status', render: (o) => o.feeId
+            ? (o.fee?.invoiceId
+              ? `<a class="text-xs hover:underline" style="color: var(--accent-deep);" href="/admin/invoices/${escapeHtml(o.fee.invoiceId)}">facturado</a>`
+              : `<span class="pill pill-success">facturado</span>`)
+            : `<span class="pill pill-warn">pendiente</span>` },
+          { label: 'Ocurrido', render: (o) => fmtDateOnly(o.occurredAt) },
+          { label: 'Referencia', render: (o) => o.reference
+            ? `<span class="text-xs">${escapeHtml(o.reference)}</span>`
+            : '<span class="ink-faint text-xs">—</span>' },
+        ],
+      });
+
+  const formModal = activeCatalog.length > 0 && args.customer.status !== 'terminated'
+    ? renderCargoExtraModal({ customer: args.customer, catalogEvents: activeCatalog })
+    : '';
+
+  const description = activeCatalog.length === 0
+    ? 'No hay eventos activos en el catálogo. Define al menos uno en <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos">Catálogo de eventos facturables</a> antes de registrar cargos extras.'
+    : 'Cargos puntuales registrados para este cliente, desde el catálogo de eventos. Cada uno se factura inmediato o en el próximo cierre de ciclo según el modo seleccionado al registrarlo.';
+
+  return panel({
+    title: `Cargos extras · ${args.occurrences.length}`,
+    description,
+    actions: newButton,
+    body: occurrencesTable,
+  }) + formModal;
+}
+
+function renderCargoExtraModal(args: {
+  customer: CustomerWithRelations;
+  catalogEvents: CatalogEvent[];
+}): string {
+  // Cada option lleva el default amount como data attribute para que el JS
+  // del modal lo precargue en el campo Monto cuando se selecciona el evento.
+  const eventOptions = args.catalogEvents.map((e) => {
+    const defaultPesos = e.defaultAmountCents !== null
+      ? (e.defaultAmountCents / 100).toFixed(2)
+      : '';
+    return `<option value="${escapeHtml(e.code)}" data-default-amount="${escapeHtml(defaultPesos)}">${escapeHtml(e.name)}${e.defaultAmountCents !== null ? ` — default ${fmtMoney(e.defaultAmountCents, args.customer.currency)}` : ''}</option>`;
+  }).join('');
+
+  const form = `
+    <form method="post" action="/admin/customers/${escapeHtml(args.customer.externalId)}/catalog-events" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+        ${formField({
+          label: 'Evento del catálogo',
+          required: true,
+          span: 2,
+          hint: 'Si necesitas registrar un evento que no aparece aquí, créalo primero en el catálogo.',
+          input: `<select required name="catalog_event_code" id="cargo-extra-event" class="${INPUT_CLASS}"><option value="">— elegir evento —</option>${eventOptions}</select>`,
+        })}
+        ${formField({
+          label: 'Monto',
+          required: true,
+          hint: `En ${escapeHtml(args.customer.currency)}. Se precarga con el default del evento si lo tiene.`,
+          input: `<div class="relative">
+            <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(args.customer.currency)}</span>
+            <input required type="number" step="0.01" min="0" name="amount" id="cargo-extra-amount" placeholder="0.00" class="${INPUT_CLASS_MONO} pl-14 text-right">
+          </div>`,
+        })}
+        ${formField({
+          label: 'Modo de facturación',
+          required: true,
+          hint: '"Inmediato" emite una factura individual al instante. "Próximo ciclo" lo incluye en la cycle invoice del periodo.',
+          input: `<select required name="billing_mode" class="${INPUT_CLASS}">
+            <option value="next_cycle">Próximo cierre de ciclo</option>
+            <option value="immediate">Inmediato (factura individual)</option>
+          </select>`,
+        })}
+        ${formField({
+          label: 'Unidad (opcional)',
+          hint: 'External ID de la unidad afectada, si aplica. Texto libre.',
+          input: `<input name="unit_external_id" placeholder="gps-001" class="${INPUT_CLASS_MONO}">`,
+        })}
+        ${formField({
+          label: 'Referencia (opcional)',
+          hint: 'Ticket, orden de servicio, nota interna.',
+          input: `<input name="reference" placeholder="ticket-3421" class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Fecha y hora del evento',
+          hint: 'Cuándo ocurrió. Si lo dejas vacío usa el momento del registro.',
+          input: `<input type="datetime-local" name="occurred_at" class="${INPUT_CLASS}">`,
+        })}
+      </div>
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton('Registrar evento')}
+      </div>
+    </form>
+    <script>
+    (function() {
+      // Cuando se elige un evento, precarga el monto default si lo tiene.
+      const sel = document.getElementById('cargo-extra-event');
+      const amt = document.getElementById('cargo-extra-amount');
+      if (!sel || !amt) return;
+      sel.addEventListener('change', function() {
+        const opt = sel.options[sel.selectedIndex];
+        const def = opt && opt.getAttribute('data-default-amount');
+        if (def && !amt.value) amt.value = def;
+      });
+    })();
+    </script>
+  `;
+
+  return modal({
+    id: 'modal-new-cargo-extra',
+    title: 'Registrar cargo extra',
+    description: 'Registra un cargo puntual del catálogo de eventos para este cliente (revisión, capacitación, reinstalación, etc.).',
+    body: form,
+  });
+}
+
 // --- Tab: Eventos ---------------------------------------------------------
 
 function renderEventos(events: EventLog[]): string {
@@ -849,6 +993,8 @@ export function renderCustomerDetail(args: {
   events: EventLog[];
   tab: CustomerTab;
   org: Organization;
+  catalogEvents: CatalogEvent[];
+  catalogEventOccurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null }>;
 }): string {
   const tz = adminContextStorage.getStore()?.displayTz ?? args.org.timezone ?? 'UTC';
   const metrics = computeCustomerMetrics({ customer: args.customer, tz });
@@ -860,6 +1006,7 @@ export function renderCustomerDetail(args: {
     addOns: args.customer.addOns.length,
     invoices: args.customer.invoices.length,
     creditNotes: args.customer.creditNotes.length,
+    catalogEventOccurrences: args.catalogEventOccurrences.length,
   };
 
   const tabContent = (() => {
@@ -868,6 +1015,11 @@ export function renderCustomerDetail(args: {
       case 'plan': return renderPlan(args.customer);
       case 'unidades': return renderUnidades(args.customer);
       case 'addons': return renderAddons(args.customer);
+      case 'cargos': return renderCargosExtras({
+        customer: args.customer,
+        catalogEvents: args.catalogEvents,
+        occurrences: args.catalogEventOccurrences,
+      });
       case 'facturas': return renderFacturas(args.customer);
       case 'eventos': return renderEventos(args.events);
       case 'datos': return renderDatos(args.customer);

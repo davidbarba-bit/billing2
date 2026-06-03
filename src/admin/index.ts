@@ -553,13 +553,39 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         })
       : [];
 
+    // Ocurrencias del catálogo de eventos para este customer + el catálogo
+    // activo (para el select del modal de "Registrar evento"). Conteo siempre
+    // se calcula porque alimenta el badge del tab.
+    const [catalogEventOccurrences, catalogEvents] = await Promise.all([
+      prisma.catalogEventOccurrence.findMany({
+        where: { organizationId: org.id, customerId: customer.id },
+        orderBy: { occurredAt: 'desc' },
+        take: 200,
+        include: {
+          catalogEvent: { select: { code: true, name: true } },
+          fee: { select: { invoiceId: true } },
+        },
+      }),
+      prisma.catalogEvent.findMany({
+        where: { organizationId: org.id },
+        orderBy: [{ active: 'desc' }, { name: 'asc' }],
+      }),
+    ]);
+
     const flash = readFlash(request, reply);
     reply.type('text/html').send(layout({
       title: `${customer.name} · Cliente`,
       active: '/admin/customers',
       orgSlug: org.slug,
       flash,
-      body: renderCustomerDetail({ customer, events, tab, org }),
+      body: renderCustomerDetail({
+        customer,
+        events,
+        tab,
+        org,
+        catalogEvents,
+        catalogEventOccurrences,
+      }),
     }));
   });
 
@@ -2494,5 +2520,46 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     await prisma.catalogEvent.delete({ where: { id: evt.id } });
     setFlash(reply, 'success', `Evento "${evt.name}" eliminado.`);
     reply.redirect('/admin/catalogo-eventos');
+  });
+
+  // Registrar una ocurrencia de catálogo desde el detalle del cliente. Reutiliza
+  // la API pública (que ya tiene toda la lógica de validación + immediate dispatch).
+  app.post('/admin/customers/:externalId/catalog-events', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+    const payload: Record<string, unknown> = {
+      catalog_event_code: body.catalog_event_code,
+      customer_external_id: externalId,
+      billing_mode: body.billing_mode,
+    };
+    if (body.amount && body.amount.trim()) {
+      payload.amount_cents = Math.round(Number(body.amount) * 100);
+    }
+    if (body.unit_external_id && body.unit_external_id.trim()) {
+      payload.unit_external_id = body.unit_external_id.trim();
+    }
+    if (body.reference && body.reference.trim()) {
+      payload.reference = body.reference.trim();
+    }
+    if (body.occurred_at && body.occurred_at.trim()) {
+      payload.occurred_at = toUtcIso(body.occurred_at);
+    }
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/v1/catalog-events/occurrences',
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { catalog_event_occurrence: payload },
+    });
+    if (result.statusCode !== 200) {
+      setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
+    } else {
+      const isImmediate = body.billing_mode === 'immediate';
+      setFlash(reply, 'success', isImmediate
+        ? 'Evento registrado y facturado de inmediato.'
+        : 'Evento registrado. Se incluirá en la próxima factura del ciclo.');
+    }
+    reply.redirect(`/admin/customers/${externalId}?tab=cargos`);
   });
 }
