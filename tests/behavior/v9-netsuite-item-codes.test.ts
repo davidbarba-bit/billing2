@@ -287,7 +287,7 @@ describe('v9 — códigos de producto NetSuite', () => {
       method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
       payload: { invoice: { customer_external_id: 'c-ns', period_from: '2026-06-01T06:00:00Z', period_to: '2026-07-01T05:59:59Z' } },
     });
-    const ns = (r.json() as { preview: { netsuite_payload: { lines: Array<{ kind: string; netsuite_item_code: string | null }> } } }).preview.netsuite_payload;
+    const ns = (r.json() as { preview: { invoices: Array<{ netsuite_payload: { lines: Array<{ kind: string; netsuite_item_code: string | null }> } }> } }).preview.invoices[0]!.netsuite_payload;
     expect(ns.lines.find((l) => l.kind === 'monthly')!.netsuite_item_code).toBe('DISP-MON');
   });
 

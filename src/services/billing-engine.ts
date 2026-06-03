@@ -415,6 +415,40 @@ export function splitComputedInvoiceByKind(
   return out;
 }
 
+// v22: parte la ComputedInvoice por razón social receptora. Cada fee declara
+// su origen (serviceId / serviceAddOnId / customerAddOnId /
+// catalogEventOccurrenceId); el caller pasa los mapas id → tax_entity_id
+// para que el engine no necesite hablar con la BD. Si la fee no encaja en
+// ningún lookup es un invariante roto y arrojamos para que el caller lo vea.
+//
+// Se devuelve un array (no un map) para que el orden sea determinístico
+// (ordenado por tax_entity_id) — útil para preview, snapshots y dispatch.
+export function splitComputedInvoiceByTaxEntity(
+  computed: ComputedInvoice,
+  lookups: {
+    serviceToTaxEntity: Map<string, string>;
+    customerAddOnToTaxEntity: Map<string, string>;
+    catalogOccurrenceToTaxEntity: Map<string, string>;
+  },
+): Array<{ taxEntityId: string; invoice: ComputedInvoice }> {
+  const buckets = new Map<string, ComputedFee[]>();
+  for (const fee of computed.fees) {
+    let teId: string | undefined;
+    if (fee.serviceId) teId = lookups.serviceToTaxEntity.get(fee.serviceId);
+    else if (fee.customerAddOnId) teId = lookups.customerAddOnToTaxEntity.get(fee.customerAddOnId);
+    else if (fee.catalogEventOccurrenceId) teId = lookups.catalogOccurrenceToTaxEntity.get(fee.catalogEventOccurrenceId);
+    if (!teId) {
+      throw new Error(`computed fee has no resolvable tax_entity_id (kind=${fee.kind}, serviceId=${fee.serviceId}, customerAddOnId=${fee.customerAddOnId}, catalogEventOccurrenceId=${fee.catalogEventOccurrenceId})`);
+    }
+    let arr = buckets.get(teId);
+    if (!arr) { arr = []; buckets.set(teId, arr); }
+    arr.push(fee);
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([taxEntityId, fees]) => ({ taxEntityId, invoice: finalize(fees) }));
+}
+
 // ---------------------------------------------------------------------------
 // Helpers de prorrateo.
 // ---------------------------------------------------------------------------

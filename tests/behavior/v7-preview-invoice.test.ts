@@ -99,11 +99,13 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
       } },
     });
     expect(r.statusCode).toBe(200);
+    // v22: preview.invoices[] desglosa por razón social. Con una sola razón
+    // (caso típico) hay 1 entrada y su netsuite_payload espeja los agregados.
     const preview = (r.json() as {
       preview: {
         fees: Array<{ kind: string; unit_amount_cents: number; amount_cents: number }>;
         fees_amount_cents: number;
-        netsuite_payload: { lines: Array<{ kind: string }>; totals: { fees_amount_cents: number } };
+        invoices: Array<{ netsuite_payload: { lines: Array<{ kind: string }>; totals: { fees_amount_cents: number } } }>;
       };
     }).preview;
     const monthly = preview.fees.find((f) => f.kind === 'monthly');
@@ -111,8 +113,9 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
     expect(monthly!.unit_amount_cents).toBe(50000);
     expect(setup!.unit_amount_cents).toBe(10000);
     expect(preview.fees_amount_cents).toBe(monthly!.amount_cents + setup!.amount_cents);
-    expect(preview.netsuite_payload.totals.fees_amount_cents).toBe(preview.fees_amount_cents);
-    expect(preview.netsuite_payload.lines.length).toBe(preview.fees.length);
+    expect(preview.invoices).toHaveLength(1);
+    expect(preview.invoices[0]!.netsuite_payload.totals.fees_amount_cents).toBe(preview.fees_amount_cents);
+    expect(preview.invoices[0]!.netsuite_payload.lines.length).toBe(preview.fees.length);
   });
 
   it('preview respeta pending_price_change según el periodStart', async () => {
@@ -199,12 +202,13 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
       method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
       payload: { invoice: { customer_external_id: 'c-prev', period_from: '2026-06-01T00:00:00Z', period_to: '2026-06-30T23:59:59Z' } },
     });
-    const ns = (r.json() as { preview: { netsuite_payload: {
+    // v22: el payload vive bajo invoices[i].netsuite_payload (uno por razón social).
+    const ns = (r.json() as { preview: { invoices: Array<{ netsuite_payload: {
       external_id: null; minilago_invoice_id: null;
       customer: { external_id: string };
       billing_period: { from: string; to: string };
       lines: Array<{ fee_id: null; kind: string }>;
-    } } }).preview.netsuite_payload;
+    } }> } }).preview.invoices[0]!.netsuite_payload;
     expect(ns.external_id).toBeNull();
     expect(ns.minilago_invoice_id).toBeNull();
     expect(ns.customer.external_id).toBe('c-prev');

@@ -23,11 +23,11 @@ import {
   markSetupsBilled,
   persistComputedInvoice,
   splitComputedInvoiceByKind,
+  splitComputedInvoiceByTaxEntity,
   type ComputedInvoice,
   type CycleInvoiceKind,
 } from './billing-engine.js';
 import type { NetSuiteDispatcher } from './netsuite-dispatcher.js';
-import { resolveDefaultTaxEntityId } from './tax-entity.js';
 
 export type EmitCycleInvoiceOptions = {
   prisma: PrismaClient;
@@ -93,11 +93,6 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
   });
   if (!fullCustomer) throw new Error(`customer ${customer.id} not found`);
 
-  // v22: razón social receptora. Hoy se emite una cycle invoice por cliente
-  // facturada a su razón social default; la fase 3 agrupará las fees por
-  // razón social para emitir una invoice por entidad.
-  const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
-
   const customerAddOns = await prisma.customerAddOn.findMany({
     where: {
       customerId: customer.id,
@@ -149,19 +144,37 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     computed.feesAmountCents += occ.amountCents;
   }
 
-  // v19: si el customer está en split_by_kind, partimos en hasta 2 sub-invoices
-  // (recurring + oneoff). Cada una emite por separado con su propio sequential_id,
-  // idempotency_key y dispatch. En 'unified' (default) emitimos 1 sola con todo.
-  const splits = customer.cycleInvoiceMode === 'split_by_kind'
-    ? splitComputedInvoiceByKind(computed)
-    : (computed.fees.length === 0
-      ? []
-      : [{ kind: 'unified' as const, invoice: computed }]);
+  // v22: primero partimos las fees por razón social (una factura por RFC); luego
+  // dentro de cada grupo aplicamos el split_by_kind de v19 si el customer lo pide.
+  // Resultado: hasta N razones × 2 splits invoices por ciclo (siempre con N≥1).
+  const lookups = {
+    serviceToTaxEntity: new Map(fullCustomer.services.map((s) => [s.id, s.taxEntityId])),
+    customerAddOnToTaxEntity: new Map(customerAddOns.map((a) => [a.id, a.taxEntityId])),
+    catalogOccurrenceToTaxEntity: new Map(pendingOccurrences.map((o) => [o.id, o.taxEntityId])),
+  };
+  const taxEntityGroups = computed.fees.length === 0
+    ? []
+    : splitComputedInvoiceByTaxEntity(computed, lookups);
+
+  type CycleSplit = {
+    taxEntityId: string;
+    kind: 'unified' | CycleInvoiceKind;
+    invoice: ComputedInvoice;
+  };
+  const splits: CycleSplit[] = [];
+  for (const group of taxEntityGroups) {
+    if (customer.cycleInvoiceMode === 'split_by_kind') {
+      for (const sub of splitComputedInvoiceByKind(group.invoice)) {
+        splits.push({ taxEntityId: group.taxEntityId, kind: sub.kind, invoice: sub.invoice });
+      }
+    } else {
+      splits.push({ taxEntityId: group.taxEntityId, kind: 'unified', invoice: group.invoice });
+    }
+  }
 
   if (splits.length === 0) {
-    // Nada que cobrar este ciclo (sin fees) — devolvemos array vacío. Mantiene
-    // backward compat porque hoy la invoice 0-fee tampoco aportaba valor.
-    // El cron interpreta esto como "skip", no como "duplicado".
+    // Nada que cobrar este ciclo — devolvemos array vacío. El cron lo interpreta
+    // como "skip" (no como duplicado).
     return { invoices: [], created: false };
   }
 
@@ -170,29 +183,24 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
   const newlyCreatedIds = new Set<string>();
   let anyCreated = false;
 
+  // Multi-razón / multi-kind: cada invoice del ciclo tiene un idempotency key
+  // determinístico. Cuando el caller pasa un key explícito le colgamos sufijo
+  // por razón social y/o por kind para que dos calls del mismo ciclo no
+  // generen >1 invoice por (razón, kind). Si NO pasa key (uso interno del
+  // cron), construimos uno desde (customerId, taxEntityId, periodEnd, kind).
+  const needsTeSuffix = taxEntityGroups.length > 1;
+  const needsKindSuffix = customer.cycleInvoiceMode === 'split_by_kind';
   for (const split of splits) {
-    // Idempotency key por subsplit. Si el caller pasó un key explícito, le
-    // colgamos un sufijo solo si hay split real (preservamos el key tal cual
-    // en 'unified' para no romper handlers que verifican equality estricta).
-    const subKey = splits.length > 1
-      ? `${idempotencyKey ?? `cycle:${customer.id}:${period.end.getTime()}`}:${split.kind}`
-      : (idempotencyKey ?? null);
+    const baseKey = idempotencyKey ?? `cycle:${customer.id}:${period.end.getTime()}`;
+    const subKey = [
+      baseKey,
+      needsTeSuffix ? `te:${split.taxEntityId}` : null,
+      needsKindSuffix ? split.kind : null,
+    ].filter(Boolean).join(':');
 
-    const existing = subKey
-      ? await prisma.invoice.findFirst({
-          where: { organizationId: org.id, idempotencyKey: subKey },
-        })
-      : await prisma.invoice.findFirst({
-          // Fallback legacy: dedupe por (customer, period_from, period_to) cuando
-          // el caller no especifica key. Mantiene comportamiento histórico del cron.
-          where: {
-            customerId: customer.id,
-            periodFrom: period.start,
-            periodTo: period.end,
-            ...(splits.length === 1 ? {} : { idempotencyKey: { contains: `:${split.kind}` } }),
-          },
-        });
-
+    const existing = await prisma.invoice.findFirst({
+      where: { organizationId: org.id, idempotencyKey: subKey },
+    });
     if (existing) {
       emittedInvoices.push(existing);
       continue;
@@ -208,7 +216,7 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
         data: {
           organizationId: org.id,
           customerId: customer.id,
-          taxEntityId,
+          taxEntityId: split.taxEntityId,
           sequentialId: orgUpdate.invoiceCounter,
           currency: customer.currency,
           status: 'calculated',
@@ -222,11 +230,10 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
           unitsAnnex: split.invoice.unitsAnnex as object,
           metadata: {
             ...(metadata ?? {}),
-            // 'unified' significa 1 invoice con todo; 'recurring'/'oneoff' es el
-            // sub-split de v19. Dashboards/NetSuite usan este campo para
-            // clasificar el documento contable.
+            // 'unified' = 1 invoice con todo de esa razón social; 'recurring'/
+            // 'oneoff' = sub-split v19 dentro de la razón social.
             cycle_invoice_kind: split.kind,
-            ...(subKey ? { idempotency_key: subKey } : {}),
+            idempotency_key: subKey,
           } as object,
           idempotencyKey: subKey,
         },
@@ -402,54 +409,79 @@ export type PreviewCycleInvoiceOptions = {
   now?: Date;
 };
 
-export type PreviewCycleInvoiceResult = {
-  period: { from: Date; to: Date; days_in_period: number };
-  reference_now: Date;
-  fees: Array<{
+type PreviewFee = {
+  kind: string;
+  description: string;
+  units: string;
+  unit_amount_cents: number;
+  precise_unit_amount: string;
+  amount_cents: number;
+  service_id: string | null;
+  service_add_on_id: string | null;
+  customer_add_on_id: string | null;
+  netsuite_item_code: string | null;
+  billed_units_detail: unknown;
+};
+
+type PreviewNetSuitePayload = {
+  external_id: null;
+  minilago_invoice_id: null;
+  issued_at: string;
+  currency: string;
+  customer: {
+    external_id: string;
+    name: string;
+    tax_identification_number: string | null;
+    country: string | null;
+    netsuite_internal_id: string | null;
+    netsuite_entity_handle: string;
+  };
+  billing_period: { from: Date; to: Date };
+  lines: Array<{
+    fee_id: null;
+    service_id: string | null;
+    service_add_on_id: string | null;
+    customer_add_on_id: string | null;
     kind: string;
     description: string;
     units: string;
     unit_amount_cents: number;
-    precise_unit_amount: string;
     amount_cents: number;
-    service_id: string | null;
-    service_add_on_id: string | null;
-    customer_add_on_id: string | null;
     netsuite_item_code: string | null;
     billed_units_detail: unknown;
   }>;
+  units_annex: unknown;
+  totals: { fees_amount_cents: number };
+};
+
+// v22: preview de cycle invoice.
+//   - `fees`, `fees_amount_cents`, `units_annex` son los agregados de TODAS las
+//     razones sociales (qué se cobraría en total al cliente este ciclo).
+//   - `invoices[]` desglosa qué factura emitiría el motor por cada razón
+//     social receptora — una entrada por razón social con su propio payload
+//     NetSuite. La fase 3 garantiza que cada invoice tiene UNA razón social.
+//   El split_by_kind de v19 NO se refleja en el preview: separa solo
+//   contablemente, no cambia montos ni dispatch destino.
+export type PreviewCycleInvoiceResult = {
+  period: { from: Date; to: Date; days_in_period: number };
+  reference_now: Date;
+  fees: PreviewFee[];
   fees_amount_cents: number;
   units_annex: unknown;
-  netsuite_payload: {
-    external_id: null;
-    minilago_invoice_id: null;
-    issued_at: string;
-    currency: string;
-    customer: {
-      external_id: string;
-      name: string;
+  invoices: Array<{
+    tax_entity: {
+      id: string;
+      legal_name: string;
       tax_identification_number: string | null;
       country: string | null;
       netsuite_internal_id: string | null;
-      netsuite_entity_handle: string;
+      is_default: boolean;
     };
-    billing_period: { from: Date; to: Date };
-    lines: Array<{
-      fee_id: null;
-      service_id: string | null;
-      service_add_on_id: string | null;
-      customer_add_on_id: string | null;
-      kind: string;
-      description: string;
-      units: string;
-      unit_amount_cents: number;
-      amount_cents: number;
-      netsuite_item_code: string | null;
-      billed_units_detail: unknown;
-    }>;
+    fees: PreviewFee[];
+    fees_amount_cents: number;
     units_annex: unknown;
-    totals: { fees_amount_cents: number };
-  };
+    netsuite_payload: PreviewNetSuitePayload;
+  }>;
 };
 
 export async function previewCycleInvoiceForCustomer(
@@ -472,11 +504,6 @@ export async function previewCycleInvoiceForCustomer(
   });
   if (!fullCustomer) throw new Error(`customer ${customer.id} not found`);
 
-  // v22: datos fiscales del preview salen de la razón social default.
-  const previewTaxEntity = await prisma.taxEntity.findFirst({
-    where: { customerId: customer.id, isDefault: true },
-  });
-
   const customerAddOns = await prisma.customerAddOn.findMany({
     where: {
       customerId: customer.id,
@@ -495,10 +522,56 @@ export async function previewCycleInvoiceForCustomer(
     tz,
   });
 
-  return {
-    period: { from: period.start, to: period.end, days_in_period: period.daysInPeriod },
-    reference_now: now,
-    fees: computed.fees.map((f) => ({
+  // Mismas ocurrencias pendientes que el emit (las anexamos a `computed`).
+  const pendingOccurrences = await prisma.catalogEventOccurrence.findMany({
+    where: {
+      customerId: customer.id,
+      billingMode: 'next_cycle',
+      feeId: null,
+      occurredAt: { lte: period.end },
+    },
+    include: { catalogEvent: true },
+    orderBy: { occurredAt: 'asc' },
+  });
+  for (const occ of pendingOccurrences) {
+    const descParts = [occ.catalogEvent.name];
+    if (occ.unitExternalId) descParts.push(occ.unitExternalId);
+    if (occ.reference) descParts.push(`(${occ.reference})`);
+    computed.fees.push({
+      kind: 'catalog_event',
+      catalogEventOccurrenceId: occ.id,
+      description: descParts.join(' — '),
+      units: '1.0000',
+      unitAmountCents: occ.amountCents,
+      preciseUnitAmount: (occ.amountCents / 100).toFixed(2),
+      amountCents: occ.amountCents,
+      netsuiteItemCode: occ.catalogEvent.netsuiteItemCode,
+      billedUnitsDetail: [],
+      unitIds: [],
+    });
+    computed.feesAmountCents += occ.amountCents;
+  }
+
+  // v22: agrupa por razón social.
+  const lookups = {
+    serviceToTaxEntity: new Map(fullCustomer.services.map((s) => [s.id, s.taxEntityId])),
+    customerAddOnToTaxEntity: new Map(customerAddOns.map((a) => [a.id, a.taxEntityId])),
+    catalogOccurrenceToTaxEntity: new Map(pendingOccurrences.map((o) => [o.id, o.taxEntityId])),
+  };
+  const groups = computed.fees.length === 0
+    ? []
+    : splitComputedInvoiceByTaxEntity(computed, lookups);
+
+  // Hidrata las razones sociales involucradas para armar el customer block del
+  // payload NetSuite. Una query única en vez de N.
+  const taxEntities = groups.length === 0
+    ? []
+    : await prisma.taxEntity.findMany({ where: { id: { in: groups.map((g) => g.taxEntityId) } } });
+  const teById = new Map(taxEntities.map((te) => [te.id, te]));
+
+  const previewInvoices = groups.map((group) => {
+    const te = teById.get(group.taxEntityId)!;
+    const fees: PreviewFee[] = group.invoice.fees.map((f) => ({
       kind: f.kind,
       description: f.description,
       units: f.units,
@@ -510,26 +583,22 @@ export async function previewCycleInvoiceForCustomer(
       customer_add_on_id: f.customerAddOnId ?? null,
       netsuite_item_code: f.netsuiteItemCode,
       billed_units_detail: f.billedUnitsDetail,
-    })),
-    fees_amount_cents: computed.feesAmountCents,
-    units_annex: computed.unitsAnnex,
-    netsuite_payload: {
+    }));
+    const netsuite_payload: PreviewNetSuitePayload = {
       external_id: null,
       minilago_invoice_id: null,
       issued_at: now.toISOString(),
       currency: customer.currency,
       customer: {
         external_id: customer.externalId,
-        name: previewTaxEntity?.legalName ?? customer.name,
-        tax_identification_number: previewTaxEntity?.taxIdentificationNumber ?? null,
-        country: previewTaxEntity?.country ?? null,
-        netsuite_internal_id: previewTaxEntity?.netsuiteInternalId ?? null,
-        netsuite_entity_handle: previewTaxEntity?.netsuiteInternalId
-          ? previewTaxEntity.netsuiteInternalId
-          : `eid:${customer.externalId}`,
+        name: te.legalName,
+        tax_identification_number: te.taxIdentificationNumber,
+        country: te.country,
+        netsuite_internal_id: te.netsuiteInternalId,
+        netsuite_entity_handle: te.netsuiteInternalId ?? `eid:${customer.externalId}`,
       },
       billing_period: { from: period.start, to: period.end },
-      lines: computed.fees.map((f) => ({
+      lines: group.invoice.fees.map((f) => ({
         fee_id: null,
         service_id: f.serviceId ?? null,
         service_add_on_id: f.serviceAddOnId ?? null,
@@ -542,8 +611,47 @@ export async function previewCycleInvoiceForCustomer(
         netsuite_item_code: f.netsuiteItemCode,
         billed_units_detail: f.billedUnitsDetail,
       })),
-      units_annex: computed.unitsAnnex,
-      totals: { fees_amount_cents: computed.feesAmountCents },
-    },
+      units_annex: group.invoice.unitsAnnex,
+      totals: { fees_amount_cents: group.invoice.feesAmountCents },
+    };
+    return {
+      tax_entity: {
+        id: te.id,
+        legal_name: te.legalName,
+        tax_identification_number: te.taxIdentificationNumber,
+        country: te.country,
+        netsuite_internal_id: te.netsuiteInternalId,
+        is_default: te.isDefault,
+      },
+      fees,
+      fees_amount_cents: group.invoice.feesAmountCents,
+      units_annex: group.invoice.unitsAnnex,
+      netsuite_payload,
+    };
+  });
+
+  // Agregados planos: misma forma para clientes con 1 razón (caso común) y
+  // para los nuevos consumers programáticos que solo quieren el total.
+  const aggregateFees: PreviewFee[] = computed.fees.map((f) => ({
+    kind: f.kind,
+    description: f.description,
+    units: f.units,
+    unit_amount_cents: f.unitAmountCents,
+    precise_unit_amount: f.preciseUnitAmount,
+    amount_cents: f.amountCents,
+    service_id: f.serviceId ?? null,
+    service_add_on_id: f.serviceAddOnId ?? null,
+    customer_add_on_id: f.customerAddOnId ?? null,
+    netsuite_item_code: f.netsuiteItemCode,
+    billed_units_detail: f.billedUnitsDetail,
+  }));
+
+  return {
+    period: { from: period.start, to: period.end, days_in_period: period.daysInPeriod },
+    reference_now: now,
+    fees: aggregateFees,
+    fees_amount_cents: computed.feesAmountCents,
+    units_annex: computed.unitsAnnex,
+    invoices: previewInvoices,
   };
 }

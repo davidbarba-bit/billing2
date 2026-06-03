@@ -901,43 +901,69 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (result.statusCode !== 200) {
       body = `<div class="bg-red-50 border border-red-300 rounded p-4 text-red-900 text-sm"><strong>Preview falló (${result.statusCode}):</strong> <pre class="mt-2 whitespace-pre-wrap">${escapeHtml(result.body)}</pre></div>`;
     } else {
+      type PreviewFee = { kind: string; description: string; units: string; unit_amount_cents: number; amount_cents: number; netsuite_item_code: string | null };
       const preview = (result.json() as { preview: {
         period: { from: string; to: string; days_in_period: number };
         reference_now: string;
-        fees: Array<{ kind: string; description: string; units: string; unit_amount_cents: number; amount_cents: number; netsuite_item_code: string | null }>;
+        fees: PreviewFee[];
         fees_amount_cents: number;
         units_annex: unknown;
-        netsuite_payload: unknown;
+        invoices: Array<{
+          tax_entity: { id: string; legal_name: string; tax_identification_number: string | null; is_default: boolean };
+          fees: PreviewFee[];
+          fees_amount_cents: number;
+          units_annex: unknown;
+          netsuite_payload: unknown;
+        }>;
       } }).preview;
 
+      const multiInvoice = preview.invoices.length > 1;
       const totalsBox = `
-        <div class="grid grid-cols-3 gap-3 mb-4 text-sm">
+        <div class="grid grid-cols-${multiInvoice ? '4' : '3'} gap-3 mb-4 text-sm">
           <div class="bg-white border rounded p-3"><div class="text-xs text-gray-500 uppercase">Periodo</div><div class="font-mono">${escapeHtml(fmtDateOnly(preview.period.from))} → ${escapeHtml(fmtDateOnly(preview.period.to))}</div><div class="text-xs text-gray-500 mt-1">${preview.period.days_in_period} días</div></div>
           <div class="bg-white border rounded p-3"><div class="text-xs text-gray-500 uppercase">Reference "now"</div><div class="font-mono">${escapeHtml(fmtDate(preview.reference_now))}</div></div>
-          <div class="bg-indigo-50 border border-indigo-300 rounded p-3"><div class="text-xs text-indigo-700 uppercase">Total a NetSuite (sin IVA)</div><div class="font-mono text-lg">${escapeHtml(fmtMoney(preview.fees_amount_cents, customer.currency))}</div></div>
+          ${multiInvoice ? `<div class="bg-white border rounded p-3"><div class="text-xs text-gray-500 uppercase">Facturas a emitir</div><div class="font-mono text-lg">${preview.invoices.length}</div><div class="text-xs text-gray-500 mt-1">una por razón social</div></div>` : ''}
+          <div class="bg-indigo-50 border border-indigo-300 rounded p-3"><div class="text-xs text-indigo-700 uppercase">Total (sin IVA)</div><div class="font-mono text-lg">${escapeHtml(fmtMoney(preview.fees_amount_cents, customer.currency))}</div></div>
         </div>
       `;
 
-      const feesTable = table({
-        rows: preview.fees,
-        empty: 'No hay fees — el ciclo no generaría invoice',
-        columns: [
-          { label: 'Kind', render: (f) => badge(f.kind === 'one_off' ? 'prepago' : f.kind, f.kind === 'monthly' ? 'blue' : f.kind === 'setup' ? 'yellow' : f.kind === 'one_off' ? 'green' : 'gray') },
-          { label: 'Descripción', render: (f) => escapeHtml(f.description) },
-          { label: 'NS item', render: (f) => f.netsuite_item_code
-            ? `<code class="text-xs">${escapeHtml(f.netsuite_item_code)}</code>`
-            : '<span class="text-red-600 text-xs font-medium" title="línea sin item_code — NetSuite probablemente rechace">⚠ falta</span>' },
-          { label: 'Units', render: (f) => `<code>${escapeHtml(f.units)}</code>` },
-          { label: 'Precio /u', render: (f) => fmtMoney(f.unit_amount_cents, customer.currency) },
-          { label: 'Importe', render: (f) => `<strong>${escapeHtml(fmtMoney(f.amount_cents, customer.currency))}</strong>` },
-        ],
-      });
+      const feeColumns = [
+        { label: 'Kind', render: (f: PreviewFee) => badge(f.kind === 'one_off' ? 'prepago' : f.kind, f.kind === 'monthly' ? 'blue' : f.kind === 'setup' ? 'yellow' : f.kind === 'one_off' ? 'green' : 'gray') },
+        { label: 'Descripción', render: (f: PreviewFee) => escapeHtml(f.description) },
+        { label: 'NS item', render: (f: PreviewFee) => f.netsuite_item_code
+          ? `<code class="text-xs">${escapeHtml(f.netsuite_item_code)}</code>`
+          : '<span class="text-red-600 text-xs font-medium" title="línea sin item_code — NetSuite probablemente rechace">⚠ falta</span>' },
+        { label: 'Units', render: (f: PreviewFee) => `<code>${escapeHtml(f.units)}</code>` },
+        { label: 'Precio /u', render: (f: PreviewFee) => fmtMoney(f.unit_amount_cents, customer.currency) },
+        { label: 'Importe', render: (f: PreviewFee) => `<strong>${escapeHtml(fmtMoney(f.amount_cents, customer.currency))}</strong>` },
+      ];
 
-      body = totalsBox + feesTable
-        + '<details class="mt-6"><summary class="cursor-pointer text-indigo-700 font-medium">units_annex (anexo de unidades)</summary>'
-        + code(preview.units_annex) + '</details>'
-        + '<details class="mt-3" open><summary class="cursor-pointer text-indigo-700 font-medium">Payload completo que se enviaría a NetSuite</summary>'
-        + code(preview.netsuite_payload) + '</details>';
+      if (preview.invoices.length === 0) {
+        body = totalsBox + '<div class="text-sm ink-faint italic py-6 text-center">No hay fees — el ciclo no generaría invoice.</div>';
+      } else if (!multiInvoice) {
+        const inv = preview.invoices[0]!;
+        body = totalsBox
+          + table({ rows: preview.fees, empty: 'Sin fees', columns: feeColumns })
+          + '<details class="mt-6"><summary class="cursor-pointer text-indigo-700 font-medium">units_annex</summary>'
+          + code(preview.units_annex) + '</details>'
+          + '<details class="mt-3" open><summary class="cursor-pointer text-indigo-700 font-medium">Payload NetSuite</summary>'
+          + code(inv.netsuite_payload) + '</details>';
+      } else {
+        const blocks = preview.invoices.map((inv, idx) => {
+          const teLabel = `${escapeHtml(inv.tax_entity.legal_name)}${inv.tax_entity.tax_identification_number ? ` <code class="text-xs ink-faint">${escapeHtml(inv.tax_entity.tax_identification_number)}</code>` : ''}${inv.tax_entity.is_default ? ' <span class="pill pill-info">default</span>' : ''}`;
+          const header = `<div class="mt-6 mb-3 pb-2 border-b border-slate-200 flex items-baseline justify-between">
+            <div><span class="text-[10px] uppercase tracking-wider ink-faint">Factura ${idx + 1} de ${preview.invoices.length} · razón social</span><div class="font-display text-base">${teLabel}</div></div>
+            <div class="font-mono text-base"><strong>${escapeHtml(fmtMoney(inv.fees_amount_cents, customer.currency))}</strong></div>
+          </div>`;
+          return header
+            + table({ rows: inv.fees, empty: 'Sin fees para esta razón social', columns: feeColumns })
+            + '<details class="mt-3"><summary class="cursor-pointer text-indigo-700 font-medium text-sm">units_annex</summary>'
+            + code(inv.units_annex) + '</details>'
+            + '<details class="mt-2"><summary class="cursor-pointer text-indigo-700 font-medium text-sm">Payload NetSuite</summary>'
+            + code(inv.netsuite_payload) + '</details>';
+        }).join('');
+        body = totalsBox + blocks;
+      }
     }
 
     const form = `

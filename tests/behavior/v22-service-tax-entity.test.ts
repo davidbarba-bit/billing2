@@ -54,8 +54,9 @@ describe('v22 — razón social del plan', () => {
     const customer = await createCustomer('c-1');
     const entities = await h.prisma.taxEntity.findMany({ where: { customerId: customer.id } });
     expect(entities).toHaveLength(1);
-    expect(entities[0].isDefault).toBe(true);
-    expect(entities[0].legalName).toBe('c-1');
+    const te = entities[0]!;
+    expect(te.isDefault).toBe(true);
+    expect(te.legalName).toBe('c-1');
   });
 
   it('service sin tax_entity_id hereda la default del cliente', async () => {
