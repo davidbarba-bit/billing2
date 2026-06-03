@@ -13,6 +13,7 @@ import type {
   Invoice,
   Organization,
   Service,
+  TaxEntity,
   Unit,
 } from '@prisma/client';
 import { DateTime } from 'luxon';
@@ -45,11 +46,16 @@ import {
   techOnly,
 } from './views.js';
 
+export type TaxEntityWithCounts = TaxEntity & {
+  _count: { services: number; customerAddOns: number; catalogEventOccurrences: number; invoices: number };
+};
+
 type CustomerWithRelations = Customer & {
   services: (Service & { units?: Unit[] })[];
   addOns: CustomerAddOn[];
   invoices: Invoice[];
   creditNotes: CreditNote[];
+  taxEntities: TaxEntityWithCounts[];
 };
 
 export const CUSTOMER_TABS = [
@@ -903,75 +909,103 @@ function renderEventos(events: EventLog[]): string {
 }
 
 // --- Tab: Datos fiscales --------------------------------------------------
+// v22: separa "Datos comerciales" (del Customer: nombre, contacto, moneda,
+// tz) de "Razones sociales" (TaxEntity: identidad fiscal por la que se
+// emiten los CFDI). Cada plan/add-on/evento se factura a una razón social.
 
 function renderDatos(customer: CustomerWithRelations): string {
-  const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
-  const currencyBlocked = nonVoidedInvoices > 0;
   const terminated = customer.status === 'terminated';
-
   if (terminated) {
-    return `<div class="rounded border border-red-300 bg-red-50 p-4 text-sm text-red-900">Customer <code>terminated</code> — datos no editables.</div>`;
+    return `<div class="rounded p-4 text-sm" style="background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger-soft);">Cliente <code class="font-mono-pro">terminado</code> — datos no editables.</div>`;
   }
 
+  const nonVoidedInvoices = customer.invoices.filter((i) => i.status !== 'voided').length;
+  const currencyBlocked = nonVoidedInvoices > 0;
   const currencyHint = currencyBlocked
-    ? `<span class="text-xs text-amber-700">Bloqueada: hay facturas emitidas en <code>${escapeHtml(customer.currency)}</code>.</span>`
-    : '<span class="text-xs text-gray-500">Puede cambiarse mientras no haya facturas no-voided.</span>';
+    ? `Bloqueada: hay facturas emitidas en <code class="font-mono-pro">${escapeHtml(customer.currency)}</code>.`
+    : 'Puede cambiarse mientras no haya facturas activas.';
 
-  const form = `
-    <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/edit" class="space-y-3">
-      <div class="grid grid-cols-2 gap-3">
-        <label class="block"><span class="text-sm text-gray-700">Nombre</span>
-          <input required name="name" value="${escapeHtml(customer.name)}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Tax ID (RFC)</span>
-          <input name="tax_identification_number" value="${escapeHtml(customer.taxIdentificationNumber ?? '')}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Email</span>
-          <input type="email" name="email" value="${escapeHtml(customer.email ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Teléfono</span>
-          <input name="phone" value="${escapeHtml(customer.phone ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block col-span-2"><span class="text-sm text-gray-700">Dirección línea 1</span>
-          <input name="address_line1" value="${escapeHtml(customer.addressLine1 ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block col-span-2"><span class="text-sm text-gray-700">Dirección línea 2</span>
-          <input name="address_line2" value="${escapeHtml(customer.addressLine2 ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Ciudad</span>
-          <input name="city" value="${escapeHtml(customer.city ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Estado</span>
-          <input name="state" value="${escapeHtml(customer.state ?? '')}" class="mt-1 block w-full rounded border-gray-300 text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">CP</span>
-          <input name="zipcode" value="${escapeHtml(customer.zipcode ?? '')}" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">País (ISO 2 letras)</span>
-          <input name="country" value="${escapeHtml(customer.country ?? '')}" maxlength="2" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Timezone (IANA)</span>
-          <input name="timezone" value="${escapeHtml(customer.timezone ?? '')}" placeholder="America/Mexico_City" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-        </label>
-        <label class="block"><span class="text-sm text-gray-700">Currency</span>
-          <input ${currencyBlocked ? 'readonly' : ''} name="currency" value="${escapeHtml(customer.currency)}" maxlength="3" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm uppercase ${currencyBlocked ? 'bg-gray-100' : ''}">
-          ${currencyHint}
-        </label>
-        ${techOnly(`
-        <label class="block col-span-2"><span class="text-sm text-gray-700">NetSuite internal ID <span class="text-gray-400">(cache)</span></span>
-          <input name="netsuite_internal_id" value="${escapeHtml(customer.netsuiteInternalId ?? '')}" placeholder="ej. 614" class="mt-1 block w-full rounded border-gray-300 font-mono text-sm">
-          <span class="text-xs text-gray-500">Si NetSuite ya creó el customer y conoces su internal id, ponlo aquí para que el dispatch lo use directo. Si queda vacío, el dispatch envía <code>eid:${escapeHtml(customer.externalId)}</code>.</span>
-        </label>
-        <div class="block col-span-2 bg-indigo-50 border border-indigo-200 rounded p-3 text-sm">
-          <div class="text-xs text-indigo-700 uppercase font-semibold">Entity handle al dispatch</div>
-          <code class="font-mono text-indigo-900">${escapeHtml(customer.netsuiteInternalId ? customer.netsuiteInternalId : `eid:${customer.externalId}`)}</code>
-          <div class="text-xs text-indigo-700 mt-1">${customer.netsuiteInternalId ? 'Internal id directo (faster path).' : 'Fallback por external id — NetSuite hará lookup.'}</div>
-        </div>
-        `)}
+  // --- Panel 1: datos comerciales (del Customer) ---------------------------
+  const comercialForm = `
+    <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/edit" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+        ${formField({ label: 'Nombre comercial', required: true, span: 2,
+          input: `<input required name="name" value="${escapeHtml(customer.name)}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Email de contacto',
+          input: `<input type="email" name="email" value="${escapeHtml(customer.email ?? '')}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Teléfono',
+          input: `<input name="phone" value="${escapeHtml(customer.phone ?? '')}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Moneda', hint: currencyHint,
+          input: `<input ${currencyBlocked ? 'readonly' : ''} name="currency" value="${escapeHtml(customer.currency)}" maxlength="3" class="${INPUT_CLASS_MONO} uppercase ${currencyBlocked ? 'opacity-60' : ''}">` })}
+        ${formField({ label: 'Timezone (IANA)', hint: 'Para definir el corte del ciclo. Vacío usa la de la organización.',
+          input: `<input name="timezone" value="${escapeHtml(customer.timezone ?? '')}" placeholder="America/Mexico_City" class="${INPUT_CLASS_MONO}">` })}
       </div>
-      <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm">Guardar datos</button>
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton('Guardar datos comerciales')}
+      </div>
     </form>
   `;
+
+  // --- Panel 2: razones sociales (TaxEntity) -------------------------------
+  const entities = customer.taxEntities ?? [];
+  const newButton = modalTrigger({ modalId: 'modal-new-tax-entity', label: '+ Nueva razón social' });
+
+  const entityCard = (e: TaxEntityWithCounts): string => {
+    const refs = e._count.services + e._count.customerAddOns + e._count.catalogEventOccurrences + e._count.invoices;
+    const badges = [
+      e.isDefault ? `<span class="pill pill-info">Default</span>` : '',
+      e.active ? '' : `<span class="pill pill-warn">Inactiva</span>`,
+    ].filter(Boolean).join(' ');
+    const actions = [
+      modalTrigger({ modalId: `modal-edit-tax-entity-${e.id}`, label: 'Editar' }),
+      !e.isDefault && e.active
+        ? postButton(`/admin/customers/${escapeHtml(customer.externalId)}/tax-entities/${e.id}/default`, 'Marcar default', 'secondary')
+        : '',
+      !e.isDefault
+        ? postButton(`/admin/customers/${escapeHtml(customer.externalId)}/tax-entities/${e.id}/toggle`, e.active ? 'Desactivar' : 'Activar', 'secondary')
+        : '',
+      !e.isDefault && refs === 0
+        ? postButton(`/admin/customers/${escapeHtml(customer.externalId)}/tax-entities/${e.id}/delete`, 'Eliminar', 'danger', `¿Eliminar la razón social "${e.legalName}"?`)
+        : '',
+    ].filter(Boolean).join('');
+    return `
+      <div class="surface-card" style="border-radius: 6px; padding: 1.25rem 1.5rem;">
+        <div class="flex items-start justify-between gap-4 mb-3">
+          <div>
+            <div class="font-display text-base font-medium ink">${escapeHtml(e.legalName)} ${badges}</div>
+            <div class="font-mono-pro text-xs ink-faint mt-1">${e.taxIdentificationNumber ? escapeHtml(e.taxIdentificationNumber) : '— sin RFC —'}</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
+          <div><span class="text-[10px] uppercase tracking-wider ink-faint">Régimen</span><div class="ink">${e.taxRegime ? escapeHtml(e.taxRegime) : '<span class="ink-faint">—</span>'}</div></div>
+          <div><span class="text-[10px] uppercase tracking-wider ink-faint">Uso CFDI</span><div class="ink">${e.cfdiUse ? escapeHtml(e.cfdiUse) : '<span class="ink-faint">—</span>'}</div></div>
+          <div><span class="text-[10px] uppercase tracking-wider ink-faint">CP</span><div class="ink font-mono-pro">${e.zipcode ? escapeHtml(e.zipcode) : '<span class="ink-faint">—</span>'}</div></div>
+          <div class="sm:col-span-3"><span class="text-[10px] uppercase tracking-wider ink-faint">Correo fiscal</span><div class="ink">${e.email ? escapeHtml(e.email) : '<span class="ink-faint">—</span>'}</div></div>
+        </div>
+        <div class="mt-4 pt-4 flex items-center gap-3 flex-wrap" style="border-top: 1px solid var(--rule-soft);">
+          ${actions}
+          <span class="ml-auto text-xs ink-faint">${refs} ${refs === 1 ? 'referencia' : 'referencias'}</span>
+        </div>
+      </div>
+    `;
+  };
+
+  const entitiesList = entities.length === 0
+    ? `<div class="text-sm ink-faint italic py-6 text-center">Sin razones sociales. Crea la primera con el botón de arriba.</div>`
+    : `<div class="space-y-4">${entities.map(entityCard).join('')}</div>`;
+
+  const newModal = modal({
+    id: 'modal-new-tax-entity',
+    title: 'Nueva razón social',
+    description: 'Identidad fiscal a la que se pueden facturar planes de este cliente. Cada CFDI se emite a una sola razón social.',
+    body: renderTaxEntityForm(customer, null),
+  });
+  const editModals = entities.map((e) => modal({
+    id: `modal-edit-tax-entity-${e.id}`,
+    title: 'Editar razón social',
+    description: e.isDefault ? 'Esta es la razón social default del cliente.' : undefined,
+    body: renderTaxEntityForm(customer, e),
+  })).join('');
 
   // Identidad técnica — sólo en modo técnico.
   const identity = techOnly(card('Identidad técnica', kv([
@@ -983,7 +1017,65 @@ function renderDatos(customer: CustomerWithRelations): string {
     ['Actualizado', fmtDate(customer.updatedAt)],
   ])));
 
-  return card('Datos del cliente', form) + identity;
+  return panel({
+      title: 'Datos comerciales',
+      description: 'Información de la cuenta comercial. La identidad fiscal vive en las razones sociales (abajo).',
+      body: comercialForm,
+    })
+    + panel({
+      title: `Razones sociales · ${entities.length}`,
+      description: 'Entidades fiscales (RFC) a las que se facturan los planes de este cliente. Una está marcada como default y la heredan los planes nuevos.',
+      actions: newButton,
+      body: entitiesList,
+    })
+    + newModal
+    + editModals
+    + identity;
+}
+
+function renderTaxEntityForm(customer: CustomerWithRelations, e: TaxEntityWithCounts | null): string {
+  const action = e
+    ? `/admin/customers/${escapeHtml(customer.externalId)}/tax-entities/${e.id}`
+    : `/admin/customers/${escapeHtml(customer.externalId)}/tax-entities`;
+  const v = (val: string | null | undefined): string => escapeHtml(val ?? '');
+  return `
+    <form method="post" action="${action}" class="space-y-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+        ${formField({ label: 'Razón social', required: true, span: 2,
+          hint: 'Como aparece en la Constancia de Situación Fiscal.',
+          input: `<input required name="legal_name" value="${v(e?.legalName)}" placeholder="Transportes Pilot SA de CV" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'RFC',
+          input: `<input name="tax_identification_number" value="${v(e?.taxIdentificationNumber)}" class="${INPUT_CLASS_MONO} uppercase">` })}
+        ${formField({ label: 'Régimen fiscal (código SAT)', hint: 'Ej. 601, 626.',
+          input: `<input name="tax_regime" value="${v(e?.taxRegime)}" placeholder="601" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'Uso CFDI default', hint: 'Ej. G03, P01.',
+          input: `<input name="cfdi_use" value="${v(e?.cfdiUse)}" placeholder="G03" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'Correo fiscal', hint: 'A donde se envían los CFDI.',
+          input: `<input type="email" name="email" value="${v(e?.email)}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Dirección línea 1', span: 2,
+          input: `<input name="address_line1" value="${v(e?.addressLine1)}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Dirección línea 2', span: 2,
+          input: `<input name="address_line2" value="${v(e?.addressLine2)}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Ciudad',
+          input: `<input name="city" value="${v(e?.city)}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Estado',
+          input: `<input name="state" value="${v(e?.state)}" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'CP',
+          input: `<input name="zipcode" value="${v(e?.zipcode)}" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'País (ISO 2 letras)',
+          input: `<input name="country" value="${v(e?.country)}" maxlength="2" placeholder="MX" class="${INPUT_CLASS_MONO} uppercase">` })}
+        ${techOnly(formField({ label: 'NetSuite internal ID', span: 2,
+          hint: 'Internal id del customer en NetSuite para esta razón social. Vacío = dispatch por external id.',
+          input: `<input name="netsuite_internal_id" value="${v(e?.netsuiteInternalId)}" placeholder="ej. 614" class="${INPUT_CLASS_MONO}">` }))}
+        ${!e ? formField({ label: 'Marcar como default', span: 2,
+          hint: 'La razón social default la heredan los planes nuevos. Si es la primera del cliente, se marca default automáticamente.',
+          input: `<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" name="is_default" value="1"> <span class="text-sm ink-soft">Usar como razón social default del cliente</span></label>` }) : ''}
+      </div>
+      <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+        ${primaryButton(e ? 'Guardar razón social' : 'Crear razón social')}
+      </div>
+    </form>
+  `;
 }
 
 // --- Punto de entrada -----------------------------------------------------

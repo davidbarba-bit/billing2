@@ -67,6 +67,24 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
     });
   }
 
+  // v22: razón social default del cliente (la identidad fiscal vive aquí).
+  const existingTaxEntity = await prisma.taxEntity.findFirst({
+    where: { customerId: customer.id, isDefault: true },
+  });
+  if (!existingTaxEntity) {
+    await prisma.taxEntity.create({
+      data: {
+        organizationId: org.id,
+        customerId: customer.id,
+        legalName: 'Carga Express MX SA de CV',
+        taxIdentificationNumber: 'CEM250101AAA',
+        country: 'MX',
+        isDefault: true,
+        active: true,
+      },
+    });
+  }
+
   // Customer-level flat add-on.
   await prisma.customerAddOn.upsert({
     where: { customerId_code: { customerId: customer.id, code: 'reglas-10' } },

@@ -475,6 +475,24 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       const result = response.json() as { customer: { external_id: string; name: string } };
+      // v22: todo cliente arranca con una razón social default (legal_name =
+      // nombre comercial, RFC en blanco que el admin completa en Datos fiscales).
+      const created = await prisma.customer.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId: result.customer.external_id } },
+        include: { _count: { select: { taxEntities: true } } },
+      });
+      if (created && created._count.taxEntities === 0) {
+        await prisma.taxEntity.create({
+          data: {
+            organizationId: org.id,
+            customerId: created.id,
+            legalName: created.name,
+            country: created.country,
+            isDefault: true,
+            active: true,
+          },
+        });
+      }
       setFlash(reply, 'success', `Cliente "${result.customer.name}" creado.`);
       return reply.redirect(`/admin/customers/${result.customer.external_id}`);
     }
@@ -529,6 +547,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }] },
         invoices: { orderBy: { createdAt: 'desc' } },
         creditNotes: { orderBy: { createdAt: 'desc' } },
+        taxEntities: {
+          orderBy: [{ isDefault: 'desc' }, { active: 'desc' }, { legalName: 'asc' }],
+          include: { _count: { select: { services: true, customerAddOns: true, catalogEventOccurrences: true, invoices: true } } },
+        },
       },
     });
     if (!customer) {
@@ -974,6 +996,163 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
     else setFlash(reply, 'success', 'Datos del cliente actualizados.');
     reply.redirect(`/admin/customers/${externalId}`);
+  });
+
+  // ------------------------------------------------------------------
+  // v22: CRUD de razones sociales (TaxEntity) por cliente.
+  // ------------------------------------------------------------------
+
+  // Bridge temporal (hasta Fase 5): cuando la razón social DEFAULT cambia,
+  // espejea sus datos fiscales al Customer, porque el dispatch a NetSuite
+  // todavía lee customer.taxIdentificationNumber / address / netsuiteInternalId.
+  const mirrorDefaultEntityToCustomer = async (customerId: string): Promise<void> => {
+    const def = await prisma.taxEntity.findFirst({
+      where: { customerId, isDefault: true },
+    });
+    if (!def) return;
+    await prisma.customer.update({
+      where: { id: customerId },
+      data: {
+        taxIdentificationNumber: def.taxIdentificationNumber,
+        addressLine1: def.addressLine1,
+        addressLine2: def.addressLine2,
+        state: def.state,
+        zipcode: def.zipcode,
+        city: def.city,
+        country: def.country,
+        netsuiteInternalId: def.netsuiteInternalId,
+      },
+    });
+  };
+
+  const taxEntityDataFromBody = (body: Record<string, string>): Record<string, unknown> => ({
+    legalName: (body.legal_name ?? '').trim(),
+    taxIdentificationNumber: body.tax_identification_number?.trim().toUpperCase() || null,
+    taxRegime: body.tax_regime?.trim() || null,
+    cfdiUse: body.cfdi_use?.trim().toUpperCase() || null,
+    email: body.email?.trim() || null,
+    addressLine1: body.address_line1?.trim() || null,
+    addressLine2: body.address_line2?.trim() || null,
+    state: body.state?.trim() || null,
+    zipcode: body.zipcode?.trim() || null,
+    city: body.city?.trim() || null,
+    country: body.country?.trim().toUpperCase() || null,
+    netsuiteInternalId: body.netsuite_internal_id?.trim() || null,
+  });
+
+  // Crear razón social.
+  app.post('/admin/customers/:externalId/tax-entities', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+    const customer = await prisma.customer.findUnique({
+      where: { organizationId_externalId: { organizationId: org.id, externalId } },
+      include: { _count: { select: { taxEntities: true } } },
+    });
+    if (!customer) { setFlash(reply, 'error', 'Cliente no encontrado'); return reply.redirect('/admin/customers'); }
+    const data = taxEntityDataFromBody(body);
+    if (!data.legalName) {
+      setFlash(reply, 'error', 'La razón social es obligatoria.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    }
+    // Primera razón social del cliente → default forzoso. Si el usuario marcó
+    // default, también.
+    const makeDefault = customer._count.taxEntities === 0 || body.is_default === '1';
+    if (makeDefault) {
+      await prisma.taxEntity.updateMany({ where: { customerId: customer.id, isDefault: true }, data: { isDefault: false } });
+    }
+    await prisma.taxEntity.create({
+      data: {
+        organizationId: org.id,
+        customerId: customer.id,
+        isDefault: makeDefault,
+        active: true,
+        ...(data as object),
+      } as import('@prisma/client').Prisma.TaxEntityUncheckedCreateInput,
+    });
+    if (makeDefault) await mirrorDefaultEntityToCustomer(customer.id);
+    setFlash(reply, 'success', `Razón social "${String(data.legalName)}" creada.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+  });
+
+  // Editar razón social.
+  app.post('/admin/customers/:externalId/tax-entities/:id', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId, id } = request.params as { externalId: string; id: string };
+    const body = request.body as Record<string, string>;
+    const entity = await prisma.taxEntity.findFirst({ where: { id, organizationId: org.id } });
+    if (!entity) { setFlash(reply, 'error', 'Razón social no encontrada'); return reply.redirect(`/admin/customers/${externalId}?tab=datos`); }
+    const data = taxEntityDataFromBody(body);
+    if (!data.legalName) {
+      setFlash(reply, 'error', 'La razón social es obligatoria.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    }
+    await prisma.taxEntity.update({ where: { id: entity.id }, data: data as object });
+    if (entity.isDefault) await mirrorDefaultEntityToCustomer(entity.customerId);
+    setFlash(reply, 'success', `Razón social "${String(data.legalName)}" actualizada.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+  });
+
+  // Marcar default.
+  app.post('/admin/customers/:externalId/tax-entities/:id/default', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId, id } = request.params as { externalId: string; id: string };
+    const entity = await prisma.taxEntity.findFirst({ where: { id, organizationId: org.id } });
+    if (!entity) { setFlash(reply, 'error', 'Razón social no encontrada'); return reply.redirect(`/admin/customers/${externalId}?tab=datos`); }
+    if (!entity.active) {
+      setFlash(reply, 'error', 'No se puede marcar default una razón social inactiva.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    }
+    await prisma.$transaction([
+      prisma.taxEntity.updateMany({ where: { customerId: entity.customerId, isDefault: true }, data: { isDefault: false } }),
+      prisma.taxEntity.update({ where: { id: entity.id }, data: { isDefault: true } }),
+    ]);
+    await mirrorDefaultEntityToCustomer(entity.customerId);
+    setFlash(reply, 'success', `"${entity.legalName}" es ahora la razón social default.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+  });
+
+  // Activar / desactivar.
+  app.post('/admin/customers/:externalId/tax-entities/:id/toggle', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId, id } = request.params as { externalId: string; id: string };
+    const entity = await prisma.taxEntity.findFirst({ where: { id, organizationId: org.id } });
+    if (!entity) { setFlash(reply, 'error', 'Razón social no encontrada'); return reply.redirect(`/admin/customers/${externalId}?tab=datos`); }
+    if (entity.isDefault) {
+      setFlash(reply, 'error', 'No se puede desactivar la razón social default. Marca otra como default primero.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    }
+    await prisma.taxEntity.update({ where: { id: entity.id }, data: { active: !entity.active } });
+    setFlash(reply, 'success', `Razón social "${entity.legalName}" ${entity.active ? 'desactivada' : 'reactivada'}.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+  });
+
+  // Eliminar (solo si no tiene referencias y no es default).
+  app.post('/admin/customers/:externalId/tax-entities/:id/delete', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId, id } = request.params as { externalId: string; id: string };
+    const entity = await prisma.taxEntity.findFirst({
+      where: { id, organizationId: org.id },
+      include: { _count: { select: { services: true, customerAddOns: true, catalogEventOccurrences: true, invoices: true } } },
+    });
+    if (!entity) { setFlash(reply, 'error', 'Razón social no encontrada'); return reply.redirect(`/admin/customers/${externalId}?tab=datos`); }
+    if (entity.isDefault) {
+      setFlash(reply, 'error', 'No se puede eliminar la razón social default.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    }
+    const refs = entity._count.services + entity._count.customerAddOns + entity._count.catalogEventOccurrences + entity._count.invoices;
+    if (refs > 0) {
+      setFlash(reply, 'error', 'No se puede eliminar — tiene referencias. Desactívala en su lugar.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    }
+    await prisma.taxEntity.delete({ where: { id: entity.id } });
+    setFlash(reply, 'success', `Razón social "${entity.legalName}" eliminada.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
   });
 
   // v11: edita el calendario de facturación del customer (form admin → API).

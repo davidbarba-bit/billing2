@@ -31,6 +31,7 @@ const TABLES = [
   'units',
   'service_add_ons',
   'customer_add_ons',
+  'tax_entities',
   'services',
   'customers',
   'organizations',

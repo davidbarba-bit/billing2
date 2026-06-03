@@ -46,6 +46,7 @@ model Organization {
   idempotencyKeys IdempotencyRecord[]
   catalogEvents   CatalogEvent[]
   catalogEventOccurrences CatalogEventOccurrence[]
+  taxEntities     TaxEntity[]
 
   @@map("organizations")
 }
@@ -119,6 +120,7 @@ model Customer {
   invoices     Invoice[]
   creditNotes  CreditNote[]
   catalogEventOccurrences CatalogEventOccurrence[]
+  taxEntities  TaxEntity[]
 
   @@unique([organizationId, externalId])
   @@map("customers")
@@ -202,12 +204,17 @@ model Service {
   prepaidMonthsDefault   Int?      @map("prepaid_months_default")
   status                 String    @default("active") // active | terminated
   terminatedAt           DateTime? @map("terminated_at")
+  // v22: razón social a la que se factura este plan. Nullable durante el
+  // rollout; tras backfill apunta al default del cliente. El motor usa
+  // `taxEntityId ?? defaultTaxEntity(customer)`.
+  taxEntityId            String?   @map("tax_entity_id")
   metadata               Json      @default("{}")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
   organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taxEntity    TaxEntity?     @relation(fields: [taxEntityId], references: [id])
   units        Unit[]
   addOns       ServiceAddOn[]
   events       EventLog[]
@@ -263,12 +270,15 @@ model CustomerAddOn {
   netsuiteItemCode String? @map("netsuite_item_code")
   activeFrom  DateTime  @map("active_from")
   activeTo    DateTime? @map("active_to")
+  // v22: razón social a la que se factura este add-on flat.
+  taxEntityId String?   @map("tax_entity_id")
   metadata    Json      @default("{}")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  fees     Fee[]
+  customer  Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taxEntity TaxEntity? @relation(fields: [taxEntityId], references: [id])
+  fees      Fee[]
 
   @@unique([customerId, code])
   @@index([customerId, activeTo])
@@ -389,11 +399,15 @@ model Invoice {
   externalInvoiceConfirmedAt        DateTime? @map("external_invoice_confirmed_at")
   externalInvoiceDueDate            DateTime? @map("external_invoice_due_date") @db.Date
   netsuiteDispatchId                String?   @map("netsuite_dispatch_id")
+  // v22: razón social receptora de esta factura. Una factura = una razón
+  // social (un RFC). Nullable para facturas históricas previas al rollout.
+  taxEntityId                       String?   @map("tax_entity_id")
   createdAt                         DateTime  @default(now()) @map("created_at")
   updatedAt                         DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
+  taxEntity    TaxEntity?   @relation(fields: [taxEntityId], references: [id])
   fees         Fee[]
   creditNotes  CreditNote[]
 
@@ -542,6 +556,52 @@ model MigrationQuestionnaire {
 }
 
 // ---------------------------------------------------------------------------
+// v22: Razón social (entidad fiscal). Un cliente comercial (Customer) puede
+// facturar a varias razones sociales — cada una es el receptor fiscal de un
+// CFDI (un RFC por factura). La identidad fiscal vive aquí, NO en el Customer:
+// el Customer es la cuenta comercial dueña de la relación, el ciclo y la
+// moneda; cada plan/add-on/evento se factura a una de sus razones sociales.
+// Todas las razones sociales de un cliente comparten el ciclo del Customer.
+// ---------------------------------------------------------------------------
+
+model TaxEntity {
+  id                      String   @id @default(uuid())
+  organizationId          String   @map("organization_id")
+  customerId              String   @map("customer_id")
+  // Razón social oficial (como aparece en la Constancia de Situación Fiscal).
+  legalName               String   @map("legal_name")
+  taxIdentificationNumber String?  @map("tax_identification_number") // RFC
+  taxRegime               String?  @map("tax_regime")                // código SAT régimen
+  cfdiUse                 String?  @map("cfdi_use")                   // uso CFDI default
+  email                   String?                                    // correo fiscal
+  addressLine1            String?  @map("address_line1")
+  addressLine2            String?  @map("address_line2")
+  state                   String?
+  zipcode                 String?
+  city                    String?
+  country                 String?
+  // v13/v22: internal id de NetSuite — cada razón social = un customer en
+  // NetSuite. Si está vacío el dispatch usa "eid:<external_id-derivado>".
+  netsuiteInternalId      String?  @map("netsuite_internal_id")
+  // Una (y solo una) razón social del cliente es la default — la que heredan
+  // los planes/add-ons al crearse si no se especifica otra.
+  isDefault               Boolean  @default(false) @map("is_default")
+  active                  Boolean  @default(true)
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  organization            Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer                Customer                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  services                Service[]
+  customerAddOns          CustomerAddOn[]
+  catalogEventOccurrences CatalogEventOccurrence[]
+  invoices                Invoice[]
+
+  @@index([organizationId, customerId])
+  @@map("tax_entities")
+}
+
+// ---------------------------------------------------------------------------
 // v21: catálogo de eventos únicos facturables (revisión de dispositivo,
 // capacitación, reinstalación, etc.). El catálogo lo gestiona el admin de la
 // organización; las ocurrencias se crean por API y se materializan como una
@@ -584,6 +644,8 @@ model CatalogEventOccurrence {
   billingMode     String   @map("billing_mode")
   reference       String?
   occurredAt      DateTime @map("occurred_at")
+  // v22: razón social a la que se factura esta ocurrencia.
+  taxEntityId     String?  @map("tax_entity_id")
   // Se setea cuando la ocurrencia se materializa en una fee dentro de una
   // invoice. null = aún pendiente de facturar (sólo aplica a billing_mode
   // 'next_cycle'; 'immediate' siempre se materializa de inmediato).
@@ -593,6 +655,7 @@ model CatalogEventOccurrence {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   catalogEvent CatalogEvent @relation(fields: [catalogEventId], references: [id])
   customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taxEntity    TaxEntity?   @relation(fields: [taxEntityId], references: [id])
   fee          Fee?         @relation(fields: [feeId], references: [id])
 
   @@index([organizationId, customerId, billingMode])
