@@ -370,7 +370,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             return badge('activo', 'green');
           } },
           { label: 'Currency', render: (c) => escapeHtml(c.currency) },
-          { label: 'País', render: (c) => escapeHtml(c.country ?? '—') },
           { label: 'Timezone', render: (c) => escapeHtml(c.timezone ?? '—') },
           { label: 'Creado', render: (c) => fmtDate(c.createdAt) },
         ],
@@ -438,8 +437,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (cycleMode) customerPayload.cycle_invoice_mode = cycleMode;
     const tz = get('timezone');
     if (tz) customerPayload.timezone = tz;
-    const country = get('country');
-    if (country) customerPayload.country = country.toUpperCase();
 
     // El endpoint /api/v1/customers hace upsert por external_id; desde la
     // UI eso confunde — si el operador escribe un id que ya existe quiere
@@ -475,24 +472,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       const result = response.json() as { customer: { external_id: string; name: string } };
-      // v22: todo cliente arranca con una razón social default (legal_name =
-      // nombre comercial, RFC en blanco que el admin completa en Datos fiscales).
-      const created = await prisma.customer.findUnique({
-        where: { organizationId_externalId: { organizationId: org.id, externalId: result.customer.external_id } },
-        include: { _count: { select: { taxEntities: true } } },
-      });
-      if (created && created._count.taxEntities === 0) {
-        await prisma.taxEntity.create({
-          data: {
-            organizationId: org.id,
-            customerId: created.id,
-            legalName: created.name,
-            country: created.country,
-            isDefault: true,
-            active: true,
-          },
-        });
-      }
+      // v22: la razón social default la crea el API de customers en la misma
+      // transacción del alta — el admin no necesita hacer nada extra acá.
       setFlash(reply, 'success', `Cliente "${result.customer.name}" creado.`);
       return reply.redirect(`/admin/customers/${result.customer.external_id}`);
     }
@@ -974,19 +955,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     // Solo mandar campos que vinieron con valor (los vacíos del form los
     // tratamos como "no cambiar"). Para limpiar a null, mejor usar el API
     // directo — el admin form mantiene el valor previo.
+    // v22: el form de "datos comerciales" solo edita campos del Customer; la
+    // identidad fiscal se administra vía el CRUD de razones sociales.
     if (body.name !== undefined) payload.name = body.name;
     if (body.email !== undefined) payload.email = body.email || null;
     if (body.phone !== undefined) payload.phone = body.phone || null;
-    if (body.tax_identification_number !== undefined) payload.tax_identification_number = body.tax_identification_number || null;
-    if (body.address_line1 !== undefined) payload.address_line1 = body.address_line1 || null;
-    if (body.address_line2 !== undefined) payload.address_line2 = body.address_line2 || null;
-    if (body.city !== undefined) payload.city = body.city || null;
-    if (body.state !== undefined) payload.state = body.state || null;
-    if (body.zipcode !== undefined) payload.zipcode = body.zipcode || null;
-    if (body.country !== undefined) payload.country = body.country ? body.country.toUpperCase() : null;
     if (body.timezone !== undefined) payload.timezone = body.timezone || null;
     if (body.currency !== undefined) payload.currency = body.currency ? body.currency.toUpperCase() : undefined;
-    if (body.netsuite_internal_id !== undefined) payload.netsuite_internal_id = body.netsuite_internal_id || null;
     const result = await app.inject({
       method: 'PATCH',
       url: `/api/v1/customers/${encodeURIComponent(externalId)}`,
@@ -1001,29 +976,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   // ------------------------------------------------------------------
   // v22: CRUD de razones sociales (TaxEntity) por cliente.
   // ------------------------------------------------------------------
-
-  // Bridge temporal (hasta Fase 5): cuando la razón social DEFAULT cambia,
-  // espejea sus datos fiscales al Customer, porque el dispatch a NetSuite
-  // todavía lee customer.taxIdentificationNumber / address / netsuiteInternalId.
-  const mirrorDefaultEntityToCustomer = async (customerId: string): Promise<void> => {
-    const def = await prisma.taxEntity.findFirst({
-      where: { customerId, isDefault: true },
-    });
-    if (!def) return;
-    await prisma.customer.update({
-      where: { id: customerId },
-      data: {
-        taxIdentificationNumber: def.taxIdentificationNumber,
-        addressLine1: def.addressLine1,
-        addressLine2: def.addressLine2,
-        state: def.state,
-        zipcode: def.zipcode,
-        city: def.city,
-        country: def.country,
-        netsuiteInternalId: def.netsuiteInternalId,
-      },
-    });
-  };
 
   const taxEntityDataFromBody = (body: Record<string, string>): Record<string, unknown> => ({
     legalName: (body.legal_name ?? '').trim(),
@@ -1071,7 +1023,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         ...(data as object),
       } as import('@prisma/client').Prisma.TaxEntityUncheckedCreateInput,
     });
-    if (makeDefault) await mirrorDefaultEntityToCustomer(customer.id);
     setFlash(reply, 'success', `Razón social "${String(data.legalName)}" creada.`);
     reply.redirect(`/admin/customers/${externalId}?tab=datos`);
   });
@@ -1090,7 +1041,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
     }
     await prisma.taxEntity.update({ where: { id: entity.id }, data: data as object });
-    if (entity.isDefault) await mirrorDefaultEntityToCustomer(entity.customerId);
     setFlash(reply, 'success', `Razón social "${String(data.legalName)}" actualizada.`);
     reply.redirect(`/admin/customers/${externalId}?tab=datos`);
   });
@@ -1110,7 +1060,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       prisma.taxEntity.updateMany({ where: { customerId: entity.customerId, isDefault: true }, data: { isDefault: false } }),
       prisma.taxEntity.update({ where: { id: entity.id }, data: { isDefault: true } }),
     ]);
-    await mirrorDefaultEntityToCustomer(entity.customerId);
     setFlash(reply, 'success', `"${entity.legalName}" es ahora la razón social default.`);
     reply.redirect(`/admin/customers/${externalId}?tab=datos`);
   });

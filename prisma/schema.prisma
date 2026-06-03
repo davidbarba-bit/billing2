@@ -64,13 +64,6 @@ model Customer {
   name                          String
   email                         String?
   phone                         String?
-  taxIdentificationNumber       String?   @map("tax_identification_number")
-  addressLine1                  String?   @map("address_line1")
-  addressLine2                  String?   @map("address_line2")
-  state                         String?
-  zipcode                       String?
-  city                          String?
-  country                       String?
   currency                      String
   timezone                      String?
   // v4: billing cycle anclado a día N + intervalo configurable. Eliminamos
@@ -102,13 +95,8 @@ model Customer {
   terminatedAt                  DateTime? @map("terminated_at")
   currentBillingPeriodStartedAt DateTime? @map("current_billing_period_started_at")
   currentBillingPeriodEndingAt  DateTime? @map("current_billing_period_ending_at")
-  // v13: contrato con NetSuite — customer.externalId es el handle estable
-  // (se envía como `externalId` cuando se crea el customer en NetSuite).
-  // Cuando NetSuite responde con su internal id, lo cacheamos acá para que
-  // el dispatch de invoices pueda referenciar al customer directamente por
-  // id (más rápido que `eid:` lookup). null = todavía no sincronizado;
-  // el payload de dispatch usa "eid:<external_id>" como fallback.
-  netsuiteInternalId            String?   @map("netsuite_internal_id")
+  // v22: la identidad fiscal (RFC, dirección, netsuite_internal_id) vive en
+  // TaxEntity (razones sociales). El Customer es solo la cuenta comercial.
   status                        String    @default("active") // pending | active | terminated
   metadata                      Json      @default("{}")
   createdAt                     DateTime  @default(now()) @map("created_at")
@@ -204,17 +192,16 @@ model Service {
   prepaidMonthsDefault   Int?      @map("prepaid_months_default")
   status                 String    @default("active") // active | terminated
   terminatedAt           DateTime? @map("terminated_at")
-  // v22: razón social a la que se factura este plan. Nullable durante el
-  // rollout; tras backfill apunta al default del cliente. El motor usa
-  // `taxEntityId ?? defaultTaxEntity(customer)`.
-  taxEntityId            String?   @map("tax_entity_id")
+  // v22: razón social a la que se factura este plan. Hereda la default del
+  // cliente al crearse; la fase 2 permite elegir otra.
+  taxEntityId            String    @map("tax_entity_id")
   metadata               Json      @default("{}")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
   organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  taxEntity    TaxEntity?     @relation(fields: [taxEntityId], references: [id])
+  taxEntity    TaxEntity      @relation(fields: [taxEntityId], references: [id])
   units        Unit[]
   addOns       ServiceAddOn[]
   events       EventLog[]
@@ -271,13 +258,13 @@ model CustomerAddOn {
   activeFrom  DateTime  @map("active_from")
   activeTo    DateTime? @map("active_to")
   // v22: razón social a la que se factura este add-on flat.
-  taxEntityId String?   @map("tax_entity_id")
+  taxEntityId String    @map("tax_entity_id")
   metadata    Json      @default("{}")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  customer  Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  taxEntity TaxEntity? @relation(fields: [taxEntityId], references: [id])
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taxEntity TaxEntity @relation(fields: [taxEntityId], references: [id])
   fees      Fee[]
 
   @@unique([customerId, code])
@@ -400,14 +387,15 @@ model Invoice {
   externalInvoiceDueDate            DateTime? @map("external_invoice_due_date") @db.Date
   netsuiteDispatchId                String?   @map("netsuite_dispatch_id")
   // v22: razón social receptora de esta factura. Una factura = una razón
-  // social (un RFC). Nullable para facturas históricas previas al rollout.
-  taxEntityId                       String?   @map("tax_entity_id")
+  // social (un RFC). La fase 3 agrupa las fees por razón social para emitir
+  // una factura por entidad; hoy hereda la default del cliente.
+  taxEntityId                       String    @map("tax_entity_id")
   createdAt                         DateTime  @default(now()) @map("created_at")
   updatedAt                         DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
-  taxEntity    TaxEntity?   @relation(fields: [taxEntityId], references: [id])
+  taxEntity    TaxEntity    @relation(fields: [taxEntityId], references: [id])
   fees         Fee[]
   creditNotes  CreditNote[]
 
@@ -645,7 +633,7 @@ model CatalogEventOccurrence {
   reference       String?
   occurredAt      DateTime @map("occurred_at")
   // v22: razón social a la que se factura esta ocurrencia.
-  taxEntityId     String?  @map("tax_entity_id")
+  taxEntityId     String   @map("tax_entity_id")
   // Se setea cuando la ocurrencia se materializa en una fee dentro de una
   // invoice. null = aún pendiente de facturar (sólo aplica a billing_mode
   // 'next_cycle'; 'immediate' siempre se materializa de inmediato).
@@ -655,7 +643,7 @@ model CatalogEventOccurrence {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   catalogEvent CatalogEvent @relation(fields: [catalogEventId], references: [id])
   customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  taxEntity    TaxEntity?   @relation(fields: [taxEntityId], references: [id])
+  taxEntity    TaxEntity    @relation(fields: [taxEntityId], references: [id])
   fee          Fee?         @relation(fields: [feeId], references: [id])
 
   @@index([organizationId, customerId, billingMode])

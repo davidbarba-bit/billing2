@@ -14,6 +14,7 @@ import {
 } from '../services/immediate-invoice.js';
 import type { ComputedInvoice } from '../services/billing-engine.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
+import { resolveDefaultTaxEntityId } from '../services/tax-entity.js';
 
 type OccurrencePayload = {
   catalog_event_code?: string;
@@ -157,11 +158,16 @@ export function registerCatalogEventRoutes(
         throw validation({ occurred_at: ['invalid_iso_datetime'] });
       }
 
+      // v22: la ocurrencia (y la invoice inmediata, si aplica) se factura a la
+      // razón social default del cliente (fase 4 permitirá elegir otra).
+      const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
+
       const occurrence = await prisma.catalogEventOccurrence.create({
         data: {
           organizationId: org.id,
           catalogEventId: event.id,
           customerId: customer.id,
+          taxEntityId,
           unitExternalId: payload.unit_external_id ?? null,
           amountCents: amount,
           billingMode: payload.billing_mode,
@@ -198,6 +204,7 @@ export function registerCatalogEventRoutes(
           prisma,
           organization: org,
           customer: customer as Customer,
+          taxEntityId,
           computed,
           trigger: 'catalog_event_immediate',
           idempotencyKey: `catalog_event_immediate:${occurrence.id}`,

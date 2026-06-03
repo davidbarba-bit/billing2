@@ -227,6 +227,7 @@ export function registerEventRoutes(
               data: {
                 organizationId: org.id,
                 customerId: service.customer.id,
+                taxEntityId: service.taxEntityId,
                 sequentialId: orgUpdate.invoiceCounter,
                 currency: service.customer.currency,
                 status: 'calculated',
@@ -336,13 +337,14 @@ function dispatchInBackground(
     try {
       const invoice = await prisma.invoice.findUnique({
         where: { id: invoiceId },
-        include: { customer: true, fees: true },
+        include: { customer: true, fees: true, taxEntity: true },
       });
       if (!invoice) return;
       const orgRow = await prisma.organization.findUnique({ where: { id: org.id } });
       if (!orgRow) return;
       // Payload a NetSuite: SOLO montos netos. NetSuite calcula los
-      // impuestos según la configuración fiscal del cliente.
+      // impuestos según la configuración fiscal de la razón social.
+      const te = invoice.taxEntity;
       const dispatchPayload = {
         external_id: invoice.id,
         minilago_invoice_id: invoice.id,
@@ -350,9 +352,9 @@ function dispatchInBackground(
         currency: invoice.currency,
         customer: {
           external_id: invoice.customer.externalId,
-          name: invoice.customer.name,
-          tax_identification_number: invoice.customer.taxIdentificationNumber,
-          country: invoice.customer.country,
+          name: te.legalName,
+          tax_identification_number: te.taxIdentificationNumber,
+          country: te.country,
         },
         billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
         lines: invoice.fees.map((f) => ({

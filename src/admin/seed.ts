@@ -52,9 +52,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
         slug: `${orgUpdated.slug}-${orgUpdated.customerCounter.toString().padStart(3, '0')}`,
         name: 'Carga Express MX',
         currency: 'MXN',
-        country: 'MX',
         timezone: tz,
-        taxIdentificationNumber: 'CEM250101AAA',
         billingPeriodMonths: 1,
         billingAnchorDay: 1,
         nonrecurringTrigger: 'next_cycle',
@@ -68,11 +66,11 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
   }
 
   // v22: razón social default del cliente (la identidad fiscal vive aquí).
-  const existingTaxEntity = await prisma.taxEntity.findFirst({
+  let taxEntity = await prisma.taxEntity.findFirst({
     where: { customerId: customer.id, isDefault: true },
   });
-  if (!existingTaxEntity) {
-    await prisma.taxEntity.create({
+  if (!taxEntity) {
+    taxEntity = await prisma.taxEntity.create({
       data: {
         organizationId: org.id,
         customerId: customer.id,
@@ -84,12 +82,14 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       },
     });
   }
+  const taxEntityId = taxEntity.id;
 
   // Customer-level flat add-on.
   await prisma.customerAddOn.upsert({
     where: { customerId_code: { customerId: customer.id, code: 'reglas-10' } },
     create: {
       customerId: customer.id,
+      taxEntityId,
       code: 'reglas-10',
       name: 'Reglas de evento 5→10',
       description: 'MX$1000 flat / mes — feature de plataforma, independiente de services o units',
@@ -108,6 +108,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       data: {
         organizationId: org.id,
         customerId: customer.id,
+        taxEntityId,
         code: 'combustible-carga-express-mx',
         name: 'Servicio Combustible',
         description: 'MX$450/u/mes + setup MX$1200 por instalación. IVA lo calcula NetSuite.',
@@ -133,6 +134,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       data: {
         organizationId: org.id,
         customerId: customer.id,
+        taxEntityId,
         code: 'instalacion-gps',
         name: 'Servicio Combustible (prepago)',
         description: 'Modelo prepago: cliente paga setup + 48 meses de mensualidad por adelantado al instalar cada unidad nueva.',

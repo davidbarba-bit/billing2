@@ -14,13 +14,8 @@ type CustomerPayload = {
   name?: string;
   email?: string | null;
   phone?: string | null;
-  tax_identification_number?: string | null;
-  address_line1?: string | null;
-  address_line2?: string | null;
-  state?: string | null;
-  zipcode?: string | null;
-  city?: string | null;
-  country?: string | null;
+  // v22: los campos fiscales (RFC, dirección, NetSuite) se administran vía
+  // razones sociales (TaxEntity), no en el Customer.
   currency?: string;
   timezone?: string | null;
   billing_period_months?: number; // 1 | 3 | 6 | 12
@@ -138,6 +133,18 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
               status,
               currentBillingPeriodStartedAt: isFuture ? null : startedAt,
               currentBillingPeriodEndingAt: period?.end ?? null,
+            },
+          });
+          // v22: todo cliente arranca con una razón social default. La
+          // identidad fiscal se completa después vía el CRUD de razones
+          // sociales (legal_name parte del nombre comercial).
+          await tx.taxEntity.create({
+            data: {
+              organizationId: org.id,
+              customerId: created.id,
+              legalName: created.name,
+              isDefault: true,
+              active: true,
             },
           });
           return created;
@@ -318,16 +325,8 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         softPayload.name !== undefined
         || softPayload.email !== undefined
         || softPayload.phone !== undefined
-        || softPayload.tax_identification_number !== undefined
-        || softPayload.address_line1 !== undefined
-        || softPayload.address_line2 !== undefined
-        || softPayload.state !== undefined
-        || softPayload.zipcode !== undefined
-        || softPayload.city !== undefined
-        || softPayload.country !== undefined
         || softPayload.currency !== undefined
         || softPayload.timezone !== undefined
-        || softPayload.netsuite_internal_id !== undefined
         || softPayload.metadata !== undefined;
       if (!anySoftField) {
         throw validation({ customer: ['at_least_one_field_required'] });
@@ -337,22 +336,8 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       if (softPayload.name !== undefined) data.name = softPayload.name;
       if (softPayload.email !== undefined) data.email = softPayload.email;
       if (softPayload.phone !== undefined) data.phone = softPayload.phone;
-      if (softPayload.tax_identification_number !== undefined) data.taxIdentificationNumber = softPayload.tax_identification_number;
-      if (softPayload.address_line1 !== undefined) data.addressLine1 = softPayload.address_line1;
-      if (softPayload.address_line2 !== undefined) data.addressLine2 = softPayload.address_line2;
-      if (softPayload.state !== undefined) data.state = softPayload.state;
-      if (softPayload.zipcode !== undefined) data.zipcode = softPayload.zipcode;
-      if (softPayload.city !== undefined) data.city = softPayload.city;
-      if (softPayload.country !== undefined) data.country = softPayload.country;
       if (softPayload.currency !== undefined) data.currency = softPayload.currency;
       if (softPayload.timezone !== undefined) data.timezone = softPayload.timezone;
-      if (softPayload.netsuite_internal_id !== undefined) {
-        // Normaliza string vacío / whitespace a null.
-        const v = softPayload.netsuite_internal_id;
-        data.netsuiteInternalId = v === null || (typeof v === 'string' && v.trim().length === 0)
-          ? null
-          : v.trim();
-      }
       if (softPayload.metadata !== undefined) data.metadata = (softPayload.metadata ?? {}) as Prisma.InputJsonValue;
 
       const updated = await prisma.customer.update({
@@ -578,13 +563,6 @@ function buildCreateData(payload: CustomerPayload): Prisma.CustomerUncheckedCrea
     subscriptionAt: new Date(),
     email: payload.email ?? null,
     phone: payload.phone ?? null,
-    taxIdentificationNumber: payload.tax_identification_number ?? null,
-    addressLine1: payload.address_line1 ?? null,
-    addressLine2: payload.address_line2 ?? null,
-    state: payload.state ?? null,
-    zipcode: payload.zipcode ?? null,
-    city: payload.city ?? null,
-    country: payload.country ?? null,
     timezone: payload.timezone ?? null,
     metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
   };
@@ -595,13 +573,6 @@ function buildUpdateData(payload: CustomerPayload): Prisma.CustomerUpdateInput {
   if (payload.name !== undefined) updates.name = payload.name ?? '';
   if (payload.email !== undefined) updates.email = payload.email;
   if (payload.phone !== undefined) updates.phone = payload.phone;
-  if (payload.tax_identification_number !== undefined) updates.taxIdentificationNumber = payload.tax_identification_number;
-  if (payload.address_line1 !== undefined) updates.addressLine1 = payload.address_line1;
-  if (payload.address_line2 !== undefined) updates.addressLine2 = payload.address_line2;
-  if (payload.state !== undefined) updates.state = payload.state;
-  if (payload.zipcode !== undefined) updates.zipcode = payload.zipcode;
-  if (payload.city !== undefined) updates.city = payload.city;
-  if (payload.country !== undefined) updates.country = payload.country;
   if (payload.currency !== undefined) updates.currency = payload.currency;
   if (payload.timezone !== undefined) updates.timezone = payload.timezone;
   if (payload.billing_period_months !== undefined) updates.billingPeriodMonths = payload.billing_period_months;

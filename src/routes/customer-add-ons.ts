@@ -5,6 +5,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { notFound, validation } from '../errors.js';
 import { serializeCustomerAddOn } from '../serializers/customer-add-on.js';
+import { resolveDefaultTaxEntityId } from '../services/tax-entity.js';
 
 type Payload = {
   code?: string;
@@ -57,9 +58,13 @@ export function registerCustomerAddOnRoutes(app: FastifyInstance, prisma: Prisma
       const activeFrom = payload.active_from ? new Date(payload.active_from) : new Date();
       if (Number.isNaN(activeFrom.getTime())) throw validation({ active_from: ['invalid_iso_datetime'] });
 
+      // v22: hereda la razón social default del cliente (fase 4 permitirá elegir).
+      const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
+
       const addOn = await prisma.customerAddOn.create({
         data: {
           customerId: customer.id,
+          taxEntityId,
           code: payload.code,
           name: payload.name,
           description: payload.description ?? null,

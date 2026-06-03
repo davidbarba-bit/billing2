@@ -21,6 +21,8 @@ export type EmitImmediateInvoiceOptions = {
   prisma: PrismaClient;
   organization: Organization;
   customer: Customer;
+  // v22: razón social receptora de esta invoice (NOT NULL en el modelo).
+  taxEntityId: string;
   computed: ComputedInvoice;
   trigger: ImmediateTrigger;
   idempotencyKey: string;
@@ -41,7 +43,7 @@ export type EmitImmediateInvoiceResult = {
 export async function emitImmediateInvoice(
   opts: EmitImmediateInvoiceOptions,
 ): Promise<EmitImmediateInvoiceResult> {
-  const { prisma, organization, customer, computed, trigger, idempotencyKey, markBilled, metadata, now } = opts;
+  const { prisma, organization, customer, taxEntityId, computed, trigger, idempotencyKey, markBilled, metadata, now } = opts;
   const issued = now ?? new Date();
 
   // Pre-flight idempotency: si ya hay invoice con este key, devolverlo.
@@ -70,6 +72,7 @@ export async function emitImmediateInvoice(
       data: {
         organizationId: organization.id,
         customerId: customer.id,
+        taxEntityId,
         sequentialId: orgUpdate.invoiceCounter,
         currency: customer.currency,
         status: 'calculated',
@@ -109,11 +112,12 @@ export function dispatchInvoiceInBackground(
     try {
       const invoice = await prisma.invoice.findUnique({
         where: { id: invoiceId },
-        include: { customer: true, fees: true },
+        include: { customer: true, fees: true, taxEntity: true },
       });
       if (!invoice) return;
       const orgRow = await prisma.organization.findUnique({ where: { id: organizationId } });
       if (!orgRow) return;
+      const te = invoice.taxEntity;
       const dispatchPayload = {
         external_id: invoice.id,
         minilago_invoice_id: invoice.id,
@@ -121,9 +125,9 @@ export function dispatchInvoiceInBackground(
         currency: invoice.currency,
         customer: {
           external_id: invoice.customer.externalId,
-          name: invoice.customer.name,
-          tax_identification_number: invoice.customer.taxIdentificationNumber,
-          country: invoice.customer.country,
+          name: te.legalName,
+          tax_identification_number: te.taxIdentificationNumber,
+          country: te.country,
         },
         billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
         lines: invoice.fees.map((f) => ({

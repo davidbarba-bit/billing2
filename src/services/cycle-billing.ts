@@ -27,6 +27,7 @@ import {
   type CycleInvoiceKind,
 } from './billing-engine.js';
 import type { NetSuiteDispatcher } from './netsuite-dispatcher.js';
+import { resolveDefaultTaxEntityId } from './tax-entity.js';
 
 export type EmitCycleInvoiceOptions = {
   prisma: PrismaClient;
@@ -91,6 +92,11 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     },
   });
   if (!fullCustomer) throw new Error(`customer ${customer.id} not found`);
+
+  // v22: razón social receptora. Hoy se emite una cycle invoice por cliente
+  // facturada a su razón social default; la fase 3 agrupará las fees por
+  // razón social para emitir una invoice por entidad.
+  const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
 
   const customerAddOns = await prisma.customerAddOn.findMany({
     where: {
@@ -202,6 +208,7 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
         data: {
           organizationId: org.id,
           customerId: customer.id,
+          taxEntityId,
           sequentialId: orgUpdate.invoiceCounter,
           currency: customer.currency,
           status: 'calculated',
@@ -269,9 +276,10 @@ async function dispatchCycleInvoice(
   try {
     const hydrated = await prisma.invoice.findUnique({
       where: { id: invoiceId },
-      include: { customer: true, fees: true },
+      include: { customer: true, fees: true, taxEntity: true },
     });
     if (!hydrated) return;
+    const te = hydrated.taxEntity;
     const dispatchPayload = {
       external_id: hydrated.id,
       minilago_invoice_id: hydrated.id,
@@ -279,12 +287,12 @@ async function dispatchCycleInvoice(
       currency: hydrated.currency,
       customer: {
         external_id: hydrated.customer.externalId,
-        name: hydrated.customer.name,
-        tax_identification_number: hydrated.customer.taxIdentificationNumber,
-        country: hydrated.customer.country,
-        netsuite_internal_id: hydrated.customer.netsuiteInternalId,
-        netsuite_entity_handle: hydrated.customer.netsuiteInternalId
-          ? hydrated.customer.netsuiteInternalId
+        name: te.legalName,
+        tax_identification_number: te.taxIdentificationNumber,
+        country: te.country,
+        netsuite_internal_id: te.netsuiteInternalId,
+        netsuite_entity_handle: te.netsuiteInternalId
+          ? te.netsuiteInternalId
           : `eid:${hydrated.customer.externalId}`,
       },
       billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
@@ -464,6 +472,11 @@ export async function previewCycleInvoiceForCustomer(
   });
   if (!fullCustomer) throw new Error(`customer ${customer.id} not found`);
 
+  // v22: datos fiscales del preview salen de la razón social default.
+  const previewTaxEntity = await prisma.taxEntity.findFirst({
+    where: { customerId: customer.id, isDefault: true },
+  });
+
   const customerAddOns = await prisma.customerAddOn.findMany({
     where: {
       customerId: customer.id,
@@ -507,12 +520,12 @@ export async function previewCycleInvoiceForCustomer(
       currency: customer.currency,
       customer: {
         external_id: customer.externalId,
-        name: customer.name,
-        tax_identification_number: customer.taxIdentificationNumber,
-        country: customer.country,
-        netsuite_internal_id: customer.netsuiteInternalId,
-        netsuite_entity_handle: customer.netsuiteInternalId
-          ? customer.netsuiteInternalId
+        name: previewTaxEntity?.legalName ?? customer.name,
+        tax_identification_number: previewTaxEntity?.taxIdentificationNumber ?? null,
+        country: previewTaxEntity?.country ?? null,
+        netsuite_internal_id: previewTaxEntity?.netsuiteInternalId ?? null,
+        netsuite_entity_handle: previewTaxEntity?.netsuiteInternalId
+          ? previewTaxEntity.netsuiteInternalId
           : `eid:${customer.externalId}`,
       },
       billing_period: { from: period.start, to: period.end },

@@ -2,9 +2,9 @@
 //
 // PATCH /api/v1/customers/:external_id
 //   Permite cambiar campos NO billing-impacting:
-//     name, email, phone, tax_identification_number,
-//     address_line1, address_line2, state, zipcode, city, country,
-//     timezone, currency (con gate), metadata.
+//     name, email, phone, timezone, currency (con gate), metadata.
+//   v22: los campos fiscales (RFC, dirección, NetSuite) ya no viven en el
+//   Customer — se administran como razones sociales (TaxEntity).
 //
 // Reglas:
 //   - Hard fields (subscription_at, anchor_day, period_months, trigger) →
@@ -34,7 +34,7 @@ describe('v12 — editar soft fields del customer', () => {
     expect(r.statusCode).toBe(200);
   }
 
-  it('A) edita name, email, phone, tax_id', async () => {
+  it('A) edita name, email, phone', async () => {
     await seedCustomer('c-A');
     const r = await h.app.inject({
       method: 'PATCH', url: '/api/v1/customers/c-A', headers: h.authHeader(),
@@ -42,35 +42,13 @@ describe('v12 — editar soft fields del customer', () => {
         name: 'Nuevo Nombre',
         email: 'nuevo@example.com',
         phone: '+52 55 1234 5678',
-        tax_identification_number: 'XAXX010101000',
       } },
     });
     expect(r.statusCode).toBe(200);
-    const c = (r.json() as { customer: { name: string; email: string; phone: string; tax_identification_number: string } }).customer;
+    const c = (r.json() as { customer: { name: string; email: string; phone: string } }).customer;
     expect(c.name).toBe('Nuevo Nombre');
     expect(c.email).toBe('nuevo@example.com');
     expect(c.phone).toBe('+52 55 1234 5678');
-    expect(c.tax_identification_number).toBe('XAXX010101000');
-  });
-
-  it('B) edita dirección completa', async () => {
-    await seedCustomer('c-B');
-    const r = await h.app.inject({
-      method: 'PATCH', url: '/api/v1/customers/c-B', headers: h.authHeader(),
-      payload: { customer: {
-        address_line1: 'Av Reforma 100',
-        address_line2: 'Piso 5',
-        city: 'CDMX',
-        state: 'Ciudad de México',
-        zipcode: '06600',
-        country: 'MX',
-      } },
-    });
-    expect(r.statusCode).toBe(200);
-    const c = (r.json() as { customer: { address_line1: string; city: string; country: string } }).customer;
-    expect(c.address_line1).toBe('Av Reforma 100');
-    expect(c.city).toBe('CDMX');
-    expect(c.country).toBe('MX');
   });
 
   it('C) campos individuales: solo metadata no toca el resto', async () => {

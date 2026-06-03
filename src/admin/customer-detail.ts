@@ -1194,14 +1194,9 @@ export function renderNewCustomerForm(
           input: `<input required name="currency" value="${escapeHtml(form.currency ?? 'MXN')}" maxlength="3" class="${INPUT_CLASS_MONO} uppercase">`,
         })}
         ${formField({
-          label: 'País',
-          hint: 'ISO 3166-1 alpha-2.',
-          input: `<input name="country" value="${v('country')}" maxlength="2" placeholder="MX" class="${INPUT_CLASS_MONO} uppercase">`,
-        })}
-        ${formField({
           label: 'Timezone (IANA)',
           span: 2,
-          hint: 'Determina cómo se interpreta el día de corte.',
+          hint: 'Determina cómo se interpreta el día de corte. Los datos fiscales (RFC, dirección) se configuran después en Datos fiscales.',
           input: `<input name="timezone" value="${v('timezone')}" placeholder="${escapeHtml(orgTimezone)} (default de la organización)" class="${INPUT_CLASS_MONO}">`,
         })}
       </div>

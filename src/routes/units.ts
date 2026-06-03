@@ -127,6 +127,7 @@ export function registerUnitRoutes(
         const computed = computeSetupImmediateInvoice({ service, unit });
         const result = await emitImmediateInvoice({
           prisma, organization, customer: service.customer,
+          taxEntityId: service.taxEntityId,
           computed, trigger: 'setup_immediate',
           idempotencyKey: `setup-immediate:${unit.id}`,
           markBilled: async (tx) => {
@@ -273,6 +274,7 @@ export function registerUnitRoutes(
           const computed = computeRemovalImmediateInvoice({ service, unit: updated });
           const result = await emitImmediateInvoice({
             prisma, organization, customer: service.customer,
+            taxEntityId: service.taxEntityId,
             computed, trigger: 'removal_immediate',
             idempotencyKey: `removal-immediate:${updated.id}`,
             markBilled: async (tx) => {
@@ -466,6 +468,7 @@ export function registerUnitRoutes(
         });
         const result = await emitImmediateInvoice({
           prisma, organization, customer: toServiceWithCustomer.customer,
+          taxEntityId: toServiceWithCustomer.taxEntityId,
           computed, trigger: 'setup_immediate',
           idempotencyKey: `setup-immediate:${tx.newUnit.id}`,
           markBilled: async (innerTx) => {

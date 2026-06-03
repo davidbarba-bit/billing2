@@ -5,6 +5,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { ApiError, notFound, validation } from '../errors.js';
 import { serializeService, type ServiceWithLinks } from '../serializers/service.js';
+import { resolveDefaultTaxEntityId } from '../services/tax-entity.js';
 
 type ServicePayload = {
   code?: string;
@@ -113,10 +114,15 @@ export function registerServiceRoutes(app: FastifyInstance, prisma: PrismaClient
 
       const currency = payload.currency ?? customer.currency;
 
+      // v22: el plan se factura a una razón social. Por ahora hereda la
+      // default del cliente (fase 2 permitirá elegir otra).
+      const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
+
       const created = await prisma.service.create({
         data: {
           organizationId: org.id,
           customerId: customer.id,
+          taxEntityId,
           code: payload.code!,
           name: payload.name!,
           description: payload.description ?? null,
