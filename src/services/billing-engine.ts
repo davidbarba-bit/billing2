@@ -27,7 +27,7 @@ import { DateTime } from 'luxon';
 import { applyFraction, bankersRound, fraction4 } from './rounding.js';
 import { isoUtc } from './tz.js';
 
-export type FeeKind = 'monthly' | 'setup' | 'removal' | 'service_addon' | 'customer_addon' | 'one_off';
+export type FeeKind = 'monthly' | 'setup' | 'removal' | 'service_addon' | 'customer_addon' | 'one_off' | 'catalog_event';
 
 export type BilledUnitDetail = {
   external_id: string;
@@ -43,6 +43,10 @@ export type ComputedFee = {
   serviceId?: string;
   serviceAddOnId?: string;
   customerAddOnId?: string;
+  // v21: si la fee proviene de una ocurrencia del catálogo de eventos, su id
+  // queda registrado aquí para que persistComputedInvoice pueda enlazar la
+  // ocurrencia con la fee creada (cierra el flujo de pending → billed).
+  catalogEventOccurrenceId?: string;
   description: string;
   units: string;
   unitAmountCents: number;
@@ -392,7 +396,7 @@ function finalize(fees: ComputedFee[]): ComputedInvoice {
 export type CycleInvoiceKind = 'recurring' | 'oneoff';
 
 export function classifyFee(kind: FeeKind): CycleInvoiceKind {
-  if (kind === 'setup' || kind === 'removal') return 'oneoff';
+  if (kind === 'setup' || kind === 'removal' || kind === 'catalog_event') return 'oneoff';
   return 'recurring';
 }
 
@@ -748,7 +752,7 @@ export async function persistComputedInvoice(
 ): Promise<void> {
   for (let i = 0; i < computed.fees.length; i++) {
     const fee = computed.fees[i]!;
-    await tx.fee.create({
+    const created = await tx.fee.create({
       data: {
         invoiceId,
         serviceId: fee.serviceId ?? null,
@@ -765,5 +769,13 @@ export async function persistComputedInvoice(
         position: i,
       },
     });
+    // v21: si la fee proviene del catálogo de eventos, atamos la ocurrencia
+    // a la fee creada para que la ocurrencia quede marcada como facturada.
+    if (fee.catalogEventOccurrenceId) {
+      await tx.catalogEventOccurrence.update({
+        where: { id: fee.catalogEventOccurrenceId },
+        data: { feeId: created.id },
+      });
+    }
   }
 }

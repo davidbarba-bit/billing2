@@ -66,6 +66,10 @@ import {
   renderQuestionnaireList,
   renderQuestionnaireThanks,
 } from './questionnaire.js';
+import {
+  renderCatalogEventDetail,
+  renderCatalogEventList,
+} from './catalog-events.js';
 
 type Deps = {
   config: AppConfig;
@@ -2282,5 +2286,213 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     await prisma.migrationQuestionnaire.delete({ where: { id } });
     setFlash(reply, 'success', `Cuestionario de "${row.customerLabel}" eliminado.`);
     reply.redirect('/admin/cuestionarios');
+  });
+
+  // ------------------------------------------------------------------
+  // v21: Catálogo de eventos únicos facturables.
+  // ------------------------------------------------------------------
+
+  // Helper: deriva un código tipo "rev-disp-001" a partir del nombre.
+  const slugifyEventName = async (orgId: string, name: string): Promise<string> => {
+    const base = name.toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 30) || 'evento';
+    // Si ya existe, agrega sufijo numérico.
+    let candidate = base;
+    let i = 2;
+    // eslint-disable-next-line no-await-in-loop
+    while (await prisma.catalogEvent.findUnique({ where: { organizationId_code: { organizationId: orgId, code: candidate } } })) {
+      candidate = `${base}-${i}`;
+      i += 1;
+      if (i > 1000) throw new Error('slug_collision');
+    }
+    return candidate;
+  };
+
+  app.get('/admin/catalogo-eventos', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const events = await prisma.catalogEvent.findMany({
+      where: { organizationId: org.id },
+      orderBy: [{ active: 'desc' }, { name: 'asc' }],
+      include: { _count: { select: { occurrences: true } } },
+    });
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: 'Catálogo de eventos',
+      active: '/admin/catalogo-eventos',
+      orgSlug: org.slug,
+      flash,
+      body: pageTitle({
+        eyebrow: 'Catálogos',
+        title: 'Eventos únicos facturables',
+        description: 'Registra eventos como revisión de dispositivo, capacitación, reinstalación, etc. Cada ocurrencia se factura inmediato o en el próximo ciclo.',
+      }) + renderCatalogEventList(events.map((e) => ({
+        id: e.id,
+        code: e.code,
+        name: e.name,
+        description: e.description,
+        defaultAmountCents: e.defaultAmountCents,
+        netsuiteItemCode: e.netsuiteItemCode,
+        active: e.active,
+        occurrenceCount: e._count.occurrences,
+      }))),
+    }));
+  });
+
+  app.post('/admin/catalogo-eventos', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const body = request.body as Record<string, string>;
+    const name = (body.name ?? '').trim();
+    if (!name) {
+      setFlash(reply, 'error', 'El nombre es obligatorio.');
+      return reply.redirect('/admin/catalogo-eventos');
+    }
+    const code = await slugifyEventName(org.id, name);
+    const defaultAmountCents = body.default_amount && body.default_amount.trim()
+      ? Math.round(Number(body.default_amount) * 100)
+      : null;
+    await prisma.catalogEvent.create({
+      data: {
+        organizationId: org.id,
+        code,
+        name,
+        description: body.description?.trim() || null,
+        defaultAmountCents,
+        netsuiteItemCode: body.netsuite_item_code?.trim() || null,
+        active: true,
+      },
+    });
+    setFlash(reply, 'success', `Evento "${name}" creado.`);
+    reply.redirect(`/admin/catalogo-eventos/${encodeURIComponent(code)}`);
+  });
+
+  app.get('/admin/catalogo-eventos/:code', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code } = request.params as { code: string };
+    const evt = await prisma.catalogEvent.findUnique({
+      where: { organizationId_code: { organizationId: org.id, code } },
+      include: {
+        _count: { select: { occurrences: true } },
+        occurrences: {
+          take: 200,
+          orderBy: { occurredAt: 'desc' },
+          include: {
+            customer: { select: { name: true, externalId: true, currency: true } },
+            fee: { select: { invoiceId: true } },
+          },
+        },
+      },
+    });
+    if (!evt) {
+      setFlash(reply, 'error', 'Evento no encontrado');
+      return reply.redirect('/admin/catalogo-eventos');
+    }
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: evt.name,
+      active: '/admin/catalogo-eventos',
+      orgSlug: org.slug,
+      flash,
+      body: renderCatalogEventDetail({
+        event: {
+          id: evt.id,
+          code: evt.code,
+          name: evt.name,
+          description: evt.description,
+          defaultAmountCents: evt.defaultAmountCents,
+          netsuiteItemCode: evt.netsuiteItemCode,
+          active: evt.active,
+          occurrenceCount: evt._count.occurrences,
+        },
+        occurrences: evt.occurrences.map((o) => ({
+          id: o.id,
+          customerName: o.customer.name,
+          customerExternalId: o.customer.externalId,
+          unitExternalId: o.unitExternalId,
+          amountCents: o.amountCents,
+          currency: o.customer.currency,
+          billingMode: o.billingMode,
+          reference: o.reference,
+          occurredAt: o.occurredAt,
+          feeId: o.feeId,
+          invoiceId: o.fee?.invoiceId ?? null,
+        })),
+      }),
+    }));
+  });
+
+  app.post('/admin/catalogo-eventos/:code', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code } = request.params as { code: string };
+    const body = request.body as Record<string, string>;
+    const name = (body.name ?? '').trim();
+    if (!name) {
+      setFlash(reply, 'error', 'El nombre es obligatorio.');
+      return reply.redirect(`/admin/catalogo-eventos/${encodeURIComponent(code)}`);
+    }
+    const defaultAmountCents = body.default_amount && body.default_amount.trim()
+      ? Math.round(Number(body.default_amount) * 100)
+      : null;
+    const evt = await prisma.catalogEvent.findUnique({
+      where: { organizationId_code: { organizationId: org.id, code } },
+    });
+    if (!evt) {
+      setFlash(reply, 'error', 'Evento no encontrado');
+      return reply.redirect('/admin/catalogo-eventos');
+    }
+    await prisma.catalogEvent.update({
+      where: { id: evt.id },
+      data: {
+        name,
+        description: body.description?.trim() || null,
+        defaultAmountCents,
+        netsuiteItemCode: body.netsuite_item_code?.trim() || null,
+      },
+    });
+    setFlash(reply, 'success', `Evento "${name}" actualizado.`);
+    reply.redirect(`/admin/catalogo-eventos/${encodeURIComponent(code)}`);
+  });
+
+  app.post('/admin/catalogo-eventos/:code/toggle', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code } = request.params as { code: string };
+    const evt = await prisma.catalogEvent.findUnique({
+      where: { organizationId_code: { organizationId: org.id, code } },
+    });
+    if (!evt) {
+      setFlash(reply, 'error', 'Evento no encontrado');
+      return reply.redirect('/admin/catalogo-eventos');
+    }
+    await prisma.catalogEvent.update({ where: { id: evt.id }, data: { active: !evt.active } });
+    setFlash(reply, 'success', `Evento "${evt.name}" ${evt.active ? 'desactivado' : 'reactivado'}.`);
+    reply.redirect(`/admin/catalogo-eventos/${encodeURIComponent(code)}`);
+  });
+
+  app.post('/admin/catalogo-eventos/:code/delete', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { code } = request.params as { code: string };
+    const evt = await prisma.catalogEvent.findUnique({
+      where: { organizationId_code: { organizationId: org.id, code } },
+      include: { _count: { select: { occurrences: true } } },
+    });
+    if (!evt) {
+      setFlash(reply, 'error', 'Evento no encontrado');
+      return reply.redirect('/admin/catalogo-eventos');
+    }
+    if (evt._count.occurrences > 0) {
+      setFlash(reply, 'error', 'No se puede eliminar — tiene ocurrencias registradas. Desactívalo en su lugar.');
+      return reply.redirect(`/admin/catalogo-eventos/${encodeURIComponent(code)}`);
+    }
+    await prisma.catalogEvent.delete({ where: { id: evt.id } });
+    setFlash(reply, 'success', `Evento "${evt.name}" eliminado.`);
+    reply.redirect('/admin/catalogo-eventos');
   });
 }

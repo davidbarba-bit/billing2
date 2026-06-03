@@ -110,6 +110,39 @@ export async function emitCycleInvoiceForCustomer(opts: EmitCycleInvoiceOptions)
     tz,
   });
 
+  // v21: agrega ocurrencias del catálogo de eventos pendientes (billing_mode=
+  // 'next_cycle') que cayeron dentro o antes del fin de periodo. Se anexan
+  // como fees kind='catalog_event'; classifyFee() las clasifica como 'oneoff'
+  // para el modo split_by_kind.
+  const pendingOccurrences = await prisma.catalogEventOccurrence.findMany({
+    where: {
+      customerId: customer.id,
+      billingMode: 'next_cycle',
+      feeId: null,
+      occurredAt: { lte: period.end },
+    },
+    include: { catalogEvent: true },
+    orderBy: { occurredAt: 'asc' },
+  });
+  for (const occ of pendingOccurrences) {
+    const descParts = [occ.catalogEvent.name];
+    if (occ.unitExternalId) descParts.push(occ.unitExternalId);
+    if (occ.reference) descParts.push(`(${occ.reference})`);
+    computed.fees.push({
+      kind: 'catalog_event',
+      catalogEventOccurrenceId: occ.id,
+      description: descParts.join(' — '),
+      units: '1.0000',
+      unitAmountCents: occ.amountCents,
+      preciseUnitAmount: (occ.amountCents / 100).toFixed(2),
+      amountCents: occ.amountCents,
+      netsuiteItemCode: occ.catalogEvent.netsuiteItemCode,
+      billedUnitsDetail: [],
+      unitIds: [],
+    });
+    computed.feesAmountCents += occ.amountCents;
+  }
+
   // v19: si el customer está en split_by_kind, partimos en hasta 2 sub-invoices
   // (recurring + oneoff). Cada una emite por separado con su propio sequential_id,
   // idempotency_key y dispatch. En 'unified' (default) emitimos 1 sola con todo.

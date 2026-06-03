@@ -23,6 +23,8 @@ const TABLES = [
   'idempotency_records',
   'credit_note_items',
   'credit_notes',
+  'catalog_event_occurrences',
+  'catalog_events',
   'fees',
   'invoices',
   'event_log',

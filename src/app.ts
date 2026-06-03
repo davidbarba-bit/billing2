@@ -11,6 +11,7 @@ import { registerServiceRoutes } from './routes/services.js';
 import { registerUnitRoutes } from './routes/units.js';
 import { registerServiceAddOnRoutes } from './routes/service-add-ons.js';
 import { registerCustomerAddOnRoutes } from './routes/customer-add-ons.js';
+import { registerCatalogEventRoutes } from './routes/catalog-events.js';
 import { registerEventRoutes } from './routes/events.js';
 import { registerInvoiceRoutes } from './routes/invoices.js';
 import { registerCreditNoteRoutes } from './routes/credit-notes.js';
@@ -111,6 +112,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   registerUnitRoutes(app, prisma, { dispatcher, callbackBaseUrl });
   registerServiceAddOnRoutes(app, prisma);
   registerCustomerAddOnRoutes(app, prisma);
+  registerCatalogEventRoutes(app, prisma, { dispatcher, callbackBaseUrl });
   registerEventRoutes(app, prisma, { dispatcher, callbackBaseUrl });
   registerInvoiceRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });
   registerCreditNoteRoutes(app, prisma, { config: deps.config, dispatcher, callbackBaseUrl });

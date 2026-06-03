@@ -30,6 +30,12 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    heading: 'Catálogos',
+    items: [
+      { href: '/admin/catalogo-eventos', label: 'Eventos facturables' },
+    ],
+  },
+  {
     heading: 'Migración',
     items: [
       { href: '/admin/cuestionarios', label: 'Cuestionarios' },

@@ -15,7 +15,7 @@ import type { ComputedInvoice } from './billing-engine.js';
 import { persistComputedInvoice } from './billing-engine.js';
 import type { NetSuiteDispatcher } from './netsuite-dispatcher.js';
 
-export type ImmediateTrigger = 'setup_immediate' | 'removal_immediate';
+export type ImmediateTrigger = 'setup_immediate' | 'removal_immediate' | 'catalog_event_immediate';
 
 export type EmitImmediateInvoiceOptions = {
   prisma: PrismaClient;

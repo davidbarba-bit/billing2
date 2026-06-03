@@ -44,6 +44,8 @@ model Organization {
   creditNotes     CreditNote[]
   events          EventLog[]
   idempotencyKeys IdempotencyRecord[]
+  catalogEvents   CatalogEvent[]
+  catalogEventOccurrences CatalogEventOccurrence[]
 
   @@map("organizations")
 }
@@ -116,6 +118,7 @@ model Customer {
   addOns       CustomerAddOn[]
   invoices     Invoice[]
   creditNotes  CreditNote[]
+  catalogEventOccurrences CatalogEventOccurrence[]
 
   @@unique([organizationId, externalId])
   @@map("customers")
@@ -434,6 +437,7 @@ model Fee {
   serviceAddOn    ServiceAddOn?    @relation(fields: [serviceAddOnId], references: [id])
   customerAddOn   CustomerAddOn?   @relation(fields: [customerAddOnId], references: [id])
   cnItems         CreditNoteItem[]
+  catalogEventOccurrence CatalogEventOccurrence?
 
   @@index([invoiceId])
   @@map("fees")
@@ -535,4 +539,62 @@ model MigrationQuestionnaire {
   createdAt     DateTime @default(now()) @map("created_at")
 
   @@map("migration_questionnaire")
+}
+
+// ---------------------------------------------------------------------------
+// v21: catálogo de eventos únicos facturables (revisión de dispositivo,
+// capacitación, reinstalación, etc.). El catálogo lo gestiona el admin de la
+// organización; las ocurrencias se crean por API y se materializan como una
+// fee kind='catalog_event' en una invoice — inmediata o en el próximo ciclo.
+// ---------------------------------------------------------------------------
+
+model CatalogEvent {
+  id                 String   @id @default(uuid())
+  organizationId     String   @map("organization_id")
+  code               String
+  name               String
+  description        String?
+  defaultAmountCents Int?     @map("default_amount_cents")
+  netsuiteItemCode   String?  @map("netsuite_item_code")
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  occurrences  CatalogEventOccurrence[]
+
+  @@unique([organizationId, code])
+  @@map("catalog_events")
+}
+
+model CatalogEventOccurrence {
+  id              String   @id @default(uuid())
+  organizationId  String   @map("organization_id")
+  catalogEventId  String   @map("catalog_event_id")
+  customerId      String   @map("customer_id")
+  // Texto libre — referencia a una unidad por external_id si la ocurrencia
+  // está asociada a una unidad específica (ej. "reinstalación de gps-001").
+  // No es FK porque el evento puede aplicar a un dispositivo de un sistema
+  // externo que aún no esté como Unit en Numaris Billing.
+  unitExternalId  String?  @map("unit_external_id")
+  amountCents     Int      @map("amount_cents")
+  // 'immediate' → invoice individual al crear la ocurrencia (igual que setup
+  // immediate). 'next_cycle' → queda pendiente y se incluye en la cycle
+  // invoice del cliente al cierre del periodo, respetando cycleInvoiceMode.
+  billingMode     String   @map("billing_mode")
+  reference       String?
+  occurredAt      DateTime @map("occurred_at")
+  // Se setea cuando la ocurrencia se materializa en una fee dentro de una
+  // invoice. null = aún pendiente de facturar (sólo aplica a billing_mode
+  // 'next_cycle'; 'immediate' siempre se materializa de inmediato).
+  feeId           String?  @unique @map("fee_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  catalogEvent CatalogEvent @relation(fields: [catalogEventId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  fee          Fee?         @relation(fields: [feeId], references: [id])
+
+  @@index([organizationId, customerId, billingMode])
+  @@map("catalog_event_occurrences")
 }
