@@ -145,10 +145,13 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
           // v22: todo cliente arranca con una razón social default. La
           // identidad fiscal se completa después vía el CRUD de razones
           // sociales (legal_name parte del nombre comercial).
+          // Fase 5: el external_id de la default copia el del cliente para
+          // que NetSuite siga mapeando el mismo handle estable.
           await tx.taxEntity.create({
             data: {
               organizationId: org.id,
               customerId: created.id,
+              externalId: created.externalId,
               legalName: created.name,
               isDefault: true,
               active: true,

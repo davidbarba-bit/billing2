@@ -1029,6 +1029,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   // v22: CRUD de razones sociales (TaxEntity) por cliente.
   // ------------------------------------------------------------------
 
+  const TAX_ENTITY_EXTERNAL_ID_RE = /^[A-Za-z0-9._-]+$/;
   const taxEntityDataFromBody = (body: Record<string, string>): Record<string, unknown> => ({
     legalName: (body.legal_name ?? '').trim(),
     taxIdentificationNumber: body.tax_identification_number?.trim().toUpperCase() || null,
@@ -1058,7 +1059,28 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const data = taxEntityDataFromBody(body);
     if (!data.legalName) {
       setFlash(reply, 'error', 'La razón social es obligatoria.');
-      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+      return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
+    }
+    // Fase 5: external_id es el handle estable para NetSuite. Si el usuario
+    // no lo provee, autogeneramos <customer.externalId>-<n> probando hasta
+    // que no choque con otro de la organización.
+    let extId = body.external_id?.trim();
+    if (extId && !TAX_ENTITY_EXTERNAL_ID_RE.test(extId)) {
+      setFlash(reply, 'error', 'El identificador externo de la razón social debe ser slug ASCII (letras, números, - _ .).');
+      return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
+    }
+    if (!extId) {
+      // Busca el primer sufijo libre: -2, -3, ... (la default usa el slug
+      // del cliente; las adicionales arrancan en -2 por convención).
+      let n = 2;
+      while (true) {
+        const candidate = `${customer.externalId}-${n}`;
+        const clash = await prisma.taxEntity.findFirst({
+          where: { organizationId: org.id, externalId: candidate },
+        });
+        if (!clash) { extId = candidate; break; }
+        n++;
+      }
     }
     // Primera razón social del cliente → default forzoso. Si el usuario marcó
     // default, también.
@@ -1066,17 +1088,26 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (makeDefault) {
       await prisma.taxEntity.updateMany({ where: { customerId: customer.id, isDefault: true }, data: { isDefault: false } });
     }
-    await prisma.taxEntity.create({
-      data: {
-        organizationId: org.id,
-        customerId: customer.id,
-        isDefault: makeDefault,
-        active: true,
-        ...(data as object),
-      } as import('@prisma/client').Prisma.TaxEntityUncheckedCreateInput,
-    });
+    try {
+      await prisma.taxEntity.create({
+        data: {
+          organizationId: org.id,
+          customerId: customer.id,
+          externalId: extId,
+          isDefault: makeDefault,
+          active: true,
+          ...(data as object),
+        } as import('@prisma/client').Prisma.TaxEntityUncheckedCreateInput,
+      });
+    } catch (e) {
+      const msg = e instanceof Error && e.message.includes('Unique')
+        ? `El identificador externo "${extId}" ya está en uso en esta organización.`
+        : 'No se pudo crear la razón social.';
+      setFlash(reply, 'error', msg);
+      return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
+    }
     setFlash(reply, 'success', `Razón social "${String(data.legalName)}" creada.`);
-    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
   });
 
   // Editar razón social.
@@ -1086,15 +1117,39 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const { externalId, id } = request.params as { externalId: string; id: string };
     const body = request.body as Record<string, string>;
     const entity = await prisma.taxEntity.findFirst({ where: { id, organizationId: org.id } });
-    if (!entity) { setFlash(reply, 'error', 'Razón social no encontrada'); return reply.redirect(`/admin/customers/${externalId}?tab=datos`); }
+    if (!entity) { setFlash(reply, 'error', 'Razón social no encontrada'); return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`); }
     const data = taxEntityDataFromBody(body);
     if (!data.legalName) {
       setFlash(reply, 'error', 'La razón social es obligatoria.');
-      return reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+      return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
     }
-    await prisma.taxEntity.update({ where: { id: entity.id }, data: data as object });
+    // Fase 5: permite cambiar external_id (con validación). Cambiarlo después
+    // de que NetSuite ya creó el customer rompería el mapeo — el operador
+    // debe actualizar también el netsuiteInternalId si aplica.
+    const updateData: Record<string, unknown> = { ...(data as object) };
+    if (body.external_id !== undefined) {
+      const extId = body.external_id.trim();
+      if (!extId) {
+        setFlash(reply, 'error', 'El identificador externo no puede quedar vacío.');
+        return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
+      }
+      if (!TAX_ENTITY_EXTERNAL_ID_RE.test(extId)) {
+        setFlash(reply, 'error', 'El identificador externo debe ser slug ASCII (letras, números, - _ .).');
+        return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
+      }
+      if (extId !== entity.externalId) updateData.externalId = extId;
+    }
+    try {
+      await prisma.taxEntity.update({ where: { id: entity.id }, data: updateData });
+    } catch (e) {
+      const msg = e instanceof Error && e.message.includes('Unique')
+        ? `El identificador externo ya está en uso en esta organización.`
+        : 'No se pudo actualizar la razón social.';
+      setFlash(reply, 'error', msg);
+      return reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
+    }
     setFlash(reply, 'success', `Razón social "${String(data.legalName)}" actualizada.`);
-    reply.redirect(`/admin/customers/${externalId}?tab=datos`);
+    reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=datos`);
   });
 
   // Marcar default.

@@ -30,6 +30,7 @@ describe('v22 — cycle invoice por razón social', () => {
       data: {
         organizationId: h.organization.id,
         customerId: customer.id,
+        externalId: `${externalId}-filial`,
         legalName: `${externalId} Filial`,
         taxIdentificationNumber: 'FIL010101AAA',
         isDefault: false,

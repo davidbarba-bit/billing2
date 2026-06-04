@@ -556,6 +556,12 @@ model TaxEntity {
   id                      String   @id @default(uuid())
   organizationId          String   @map("organization_id")
   customerId              String   @map("customer_id")
+  // v22/fase5: identificador externo estable de ESTA razón social (no del
+  // cliente comercial). Es el handle que se envía a NetSuite como external
+  // id del customer (NetSuite ve cada razón social como un customer
+  // distinto). Default = el external_id del cliente; las razones sociales
+  // adicionales reciben uno explícito (slug ASCII único por organization).
+  externalId              String   @map("external_id")
   // Razón social oficial (como aparece en la Constancia de Situación Fiscal).
   legalName               String   @map("legal_name")
   taxIdentificationNumber String?  @map("tax_identification_number") // RFC
@@ -569,7 +575,8 @@ model TaxEntity {
   city                    String?
   country                 String?
   // v13/v22: internal id de NetSuite — cada razón social = un customer en
-  // NetSuite. Si está vacío el dispatch usa "eid:<external_id-derivado>".
+  // NetSuite. Si está vacío el dispatch usa "eid:<external_id>" (el de la
+  // razón social, no el del cliente comercial).
   netsuiteInternalId      String?  @map("netsuite_internal_id")
   // Una (y solo una) razón social del cliente es la default — la que heredan
   // los planes/add-ons al crearse si no se especifica otra.
@@ -585,6 +592,7 @@ model TaxEntity {
   catalogEventOccurrences CatalogEventOccurrence[]
   invoices                Invoice[]
 
+  @@unique([organizationId, externalId])
   @@index([organizationId, customerId])
   @@map("tax_entities")
 }

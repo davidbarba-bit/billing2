@@ -74,6 +74,7 @@ export async function seedNumaris(prisma: PrismaClient, org: Organization): Prom
       data: {
         organizationId: org.id,
         customerId: customer.id,
+        externalId: customer.externalId,
         legalName: 'Carga Express MX SA de CV',
         taxIdentificationNumber: 'CEM250101AAA',
         country: 'MX',

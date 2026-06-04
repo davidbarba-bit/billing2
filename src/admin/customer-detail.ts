@@ -1040,6 +1040,7 @@ function renderDatos(customer: CustomerWithRelations): string {
         ? postButton(`/admin/customers/${escapeHtml(customer.externalId)}/tax-entities/${e.id}/delete`, 'Eliminar', 'danger', `¿Eliminar la razón social "${e.legalName}"?`)
         : '',
     ].filter(Boolean).join('');
+    const handle = e.netsuiteInternalId ? e.netsuiteInternalId : `eid:${e.externalId}`;
     return `
       <div class="surface-card" style="border-radius: 6px; padding: 1.25rem 1.5rem;">
         <div class="flex items-start justify-between gap-4 mb-3">
@@ -1049,10 +1050,12 @@ function renderDatos(customer: CustomerWithRelations): string {
           </div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
+          <div><span class="text-[10px] uppercase tracking-wider ink-faint">Identificador externo</span><div class="ink font-mono-pro">${escapeHtml(e.externalId)}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Régimen</span><div class="ink">${e.taxRegime ? escapeHtml(e.taxRegime) : '<span class="ink-faint">—</span>'}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Uso CFDI</span><div class="ink">${e.cfdiUse ? escapeHtml(e.cfdiUse) : '<span class="ink-faint">—</span>'}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">CP</span><div class="ink font-mono-pro">${e.zipcode ? escapeHtml(e.zipcode) : '<span class="ink-faint">—</span>'}</div></div>
-          <div class="sm:col-span-3"><span class="text-[10px] uppercase tracking-wider ink-faint">Correo fiscal</span><div class="ink">${e.email ? escapeHtml(e.email) : '<span class="ink-faint">—</span>'}</div></div>
+          <div class="sm:col-span-2"><span class="text-[10px] uppercase tracking-wider ink-faint">Correo fiscal</span><div class="ink">${e.email ? escapeHtml(e.email) : '<span class="ink-faint">—</span>'}</div></div>
+          ${techOnly(`<div class="sm:col-span-3"><span class="text-[10px] uppercase tracking-wider ink-faint">Handle a NetSuite</span><div class="ink font-mono-pro">${escapeHtml(handle)}</div></div>`)}
         </div>
         <div class="mt-4 pt-4 flex items-center gap-3 flex-wrap" style="border-top: 1px solid var(--rule-soft);">
           ${actions}
@@ -1116,6 +1119,11 @@ function renderTaxEntityForm(customer: CustomerWithRelations, e: TaxEntityWithCo
         ${formField({ label: 'Razón social', required: true, span: 2,
           hint: 'Como aparece en la Constancia de Situación Fiscal.',
           input: `<input required name="legal_name" value="${v(e?.legalName)}" placeholder="Transportes Pilot SA de CV" class="${INPUT_CLASS}">` })}
+        ${formField({ label: 'Identificador externo', span: 2,
+          hint: e
+            ? 'Slug ASCII estable que se envía a NetSuite como external_id del customer. Cambiarlo después de que NetSuite ya lo creó rompe el mapeo.'
+            : 'Slug ASCII estable para NetSuite (letras, números, <code>-</code>, <code>_</code>, <code>.</code>). Si lo dejas vacío se autogenera como <code>' + escapeHtml(customer.externalId) + '-N</code>.',
+          input: `<input name="external_id" value="${v(e?.externalId)}" pattern="[A-Za-z0-9._-]+" placeholder="${escapeHtml(customer.externalId)}-filial" class="${INPUT_CLASS_MONO}">` })}
         ${formField({ label: 'RFC',
           input: `<input name="tax_identification_number" value="${v(e?.taxIdentificationNumber)}" class="${INPUT_CLASS_MONO} uppercase">` })}
         ${formField({ label: 'Régimen fiscal (código SAT)', hint: 'Ej. 601, 626.',

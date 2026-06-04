@@ -292,15 +292,20 @@ async function dispatchCycleInvoice(
       minilago_invoice_id: hydrated.id,
       issued_at: hydrated.createdAt.toISOString(),
       currency: hydrated.currency,
+      // v22/fase5: el "customer" del payload es la RAZÓN SOCIAL (NetSuite ve
+      // cada razón social como un customer). El external_id estable y el
+      // handle (eid:/internal) son los de la TaxEntity, no los del Customer
+      // comercial. customer_external_id queda como referencia interna.
       customer: {
-        external_id: hydrated.customer.externalId,
+        external_id: te.externalId,
         name: te.legalName,
         tax_identification_number: te.taxIdentificationNumber,
         country: te.country,
         netsuite_internal_id: te.netsuiteInternalId,
         netsuite_entity_handle: te.netsuiteInternalId
           ? te.netsuiteInternalId
-          : `eid:${hydrated.customer.externalId}`,
+          : `eid:${te.externalId}`,
+        customer_external_id: hydrated.customer.externalId,
       },
       billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
       lines: hydrated.fees.map((f) => ({
@@ -435,6 +440,7 @@ type PreviewNetSuitePayload = {
     country: string | null;
     netsuite_internal_id: string | null;
     netsuite_entity_handle: string;
+    customer_external_id: string;
   };
   billing_period: { from: Date; to: Date };
   lines: Array<{
@@ -589,13 +595,16 @@ export async function previewCycleInvoiceForCustomer(
       minilago_invoice_id: null,
       issued_at: now.toISOString(),
       currency: customer.currency,
+      // v22/fase5: el customer del payload es la razón social (cada una es
+      // un customer en NetSuite).
       customer: {
-        external_id: customer.externalId,
+        external_id: te.externalId,
         name: te.legalName,
         tax_identification_number: te.taxIdentificationNumber,
         country: te.country,
         netsuite_internal_id: te.netsuiteInternalId,
-        netsuite_entity_handle: te.netsuiteInternalId ?? `eid:${customer.externalId}`,
+        netsuite_entity_handle: te.netsuiteInternalId ?? `eid:${te.externalId}`,
+        customer_external_id: customer.externalId,
       },
       billing_period: { from: period.start, to: period.end },
       lines: group.invoice.fees.map((f) => ({

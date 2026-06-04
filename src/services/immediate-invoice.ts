@@ -123,11 +123,15 @@ export function dispatchInvoiceInBackground(
         minilago_invoice_id: invoice.id,
         issued_at: invoice.createdAt.toISOString(),
         currency: invoice.currency,
+        // v22/fase5: customer del payload = razón social (igual que cycle).
         customer: {
-          external_id: invoice.customer.externalId,
+          external_id: te.externalId,
           name: te.legalName,
           tax_identification_number: te.taxIdentificationNumber,
           country: te.country,
+          netsuite_internal_id: te.netsuiteInternalId,
+          netsuite_entity_handle: te.netsuiteInternalId ?? `eid:${te.externalId}`,
+          customer_external_id: invoice.customer.externalId,
         },
         billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
         lines: invoice.fees.map((f) => ({

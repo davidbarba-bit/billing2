@@ -28,10 +28,14 @@ describe('v22 — razón social del plan', () => {
   }
 
   async function addTaxEntity(customerId: string, legalName: string, opts: { active?: boolean } = {}) {
+    // External id estable derivado del legal name para que cada test cree
+    // razones sociales con handles únicos por organization.
+    const slug = legalName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+|-$/g, '');
     return h.prisma.taxEntity.create({
       data: {
         organizationId: h.organization.id,
         customerId,
+        externalId: `te-${customerId.slice(0, 8)}-${slug}`,
         legalName,
         isDefault: false,
         active: opts.active ?? true,
