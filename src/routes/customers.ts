@@ -49,6 +49,13 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       const body = request.body as { customer?: CustomerPayload } | null;
       const payload = body?.customer;
       if (!payload?.external_id) throw validation({ external_id: ['value_is_mandatory'] });
+      // El external_id viaja en la URL de todos los endpoints del customer
+      // y en NetSuite como identificador estable; lo restringimos a un slug
+      // ASCII para que no necesite encoding ni se confunda con el nombre
+      // comercial (los acentos/espacios delatan ese error humano).
+      if (!/^[A-Za-z0-9._-]+$/.test(payload.external_id)) {
+        throw validation({ external_id: ['must_be_ascii_slug'] });
+      }
       if (payload.timezone && !isValidIanaTimezone(payload.timezone)) {
         throw validation({ timezone: ['invalid_iana'] });
       }

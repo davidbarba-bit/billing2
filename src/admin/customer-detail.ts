@@ -1178,8 +1178,8 @@ export function renderNewCustomerForm(
           label: 'Identificador externo',
           required: true,
           span: 2,
-          hint: 'ID estable para mapear con sistemas externos (Numaris, NetSuite). Único por organización; no se puede cambiar.',
-          input: `<input required name="external_id" value="${v('external_id')}" placeholder="ej. transportes-marva o cust-001" class="${INPUT_CLASS_MONO}">`,
+          hint: 'Slug ASCII (letras, números, <code>-</code>, <code>_</code>, <code>.</code>) — sin espacios ni acentos. Es el ID estable para mapear con sistemas externos (Numaris, NetSuite); único por organización y no se puede cambiar.',
+          input: `<input required name="external_id" value="${v('external_id')}" pattern="[A-Za-z0-9._-]+" placeholder="ej. transportes-marva o cust-001" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
         })}
         ${formField({
           label: 'Nombre comercial',

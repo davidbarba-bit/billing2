@@ -475,7 +475,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       // v22: la razón social default la crea el API de customers en la misma
       // transacción del alta — el admin no necesita hacer nada extra acá.
       setFlash(reply, 'success', `Cliente "${result.customer.name}" creado.`);
-      return reply.redirect(`/admin/customers/${result.customer.external_id}`);
+      return reply.redirect(`/admin/customers/${encodeURIComponent(result.customer.external_id)}`);
     }
 
     // Error: re-renderizar el form con los valores capturados y el
