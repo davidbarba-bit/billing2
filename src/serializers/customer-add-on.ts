@@ -8,6 +8,8 @@ export function serializeCustomerAddOn(addOn: CustomerAddOn) {
     customer_add_on: {
       id: addOn.id,
       customer_id: addOn.customerId,
+      // v22: razón social a la que se factura este add-on flat.
+      tax_entity_id: addOn.taxEntityId,
       code: addOn.code,
       name: addOn.name,
       description: addOn.description ?? null,

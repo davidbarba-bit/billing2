@@ -14,7 +14,7 @@ import {
 } from '../services/immediate-invoice.js';
 import type { ComputedInvoice } from '../services/billing-engine.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
-import { resolveDefaultTaxEntityId } from '../services/tax-entity.js';
+import { resolveTaxEntityIdForCustomer } from '../services/tax-entity.js';
 
 type OccurrencePayload = {
   catalog_event_code?: string;
@@ -24,6 +24,8 @@ type OccurrencePayload = {
   billing_mode?: 'immediate' | 'next_cycle';
   reference?: string | null;
   occurred_at?: string;
+  // v22: razón social receptora. Vacío → default del cliente.
+  tax_entity_id?: string | null;
 };
 
 type Deps = {
@@ -57,6 +59,7 @@ function serializeOccurrence(o: {
   id: string;
   catalogEventId: string;
   customerId: string;
+  taxEntityId: string;
   unitExternalId: string | null;
   amountCents: number;
   billingMode: string;
@@ -70,6 +73,8 @@ function serializeOccurrence(o: {
       id: o.id,
       catalog_event_id: o.catalogEventId,
       customer_id: o.customerId,
+      // v22: razón social a la que se factura esta ocurrencia.
+      tax_entity_id: o.taxEntityId,
       unit_external_id: o.unitExternalId,
       amount_cents: o.amountCents,
       billing_mode: o.billingMode,
@@ -158,9 +163,10 @@ export function registerCatalogEventRoutes(
         throw validation({ occurred_at: ['invalid_iso_datetime'] });
       }
 
-      // v22: la ocurrencia (y la invoice inmediata, si aplica) se factura a la
-      // razón social default del cliente (fase 4 permitirá elegir otra).
-      const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
+      // v22: razón social receptora de la ocurrencia (y de la invoice inmediata
+      // si billing_mode=immediate). Si el payload no la especifica, hereda
+      // la default del cliente.
+      const taxEntityId = await resolveTaxEntityIdForCustomer(prisma, customer.id, payload.tax_entity_id);
 
       const occurrence = await prisma.catalogEventOccurrence.create({
         data: {

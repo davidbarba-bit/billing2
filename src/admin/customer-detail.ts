@@ -52,7 +52,7 @@ export type TaxEntityWithCounts = TaxEntity & {
 
 type CustomerWithRelations = Customer & {
   services: (Service & { units?: Unit[]; taxEntity?: TaxEntity })[];
-  addOns: CustomerAddOn[];
+  addOns: (CustomerAddOn & { taxEntity?: TaxEntity })[];
   invoices: Invoice[];
   creditNotes: CreditNote[];
   taxEntities: TaxEntityWithCounts[];
@@ -643,6 +643,11 @@ function renderUnidades(customer: CustomerWithRelations): string {
 // --- Tab: Add-ons ---------------------------------------------------------
 
 function renderAddons(customer: CustomerWithRelations): string {
+  // v22: razones sociales activas del cliente para el select (incluye también
+  // la actual en modales de edición — se filtra ahí).
+  const activeTaxEntities = customer.taxEntities.filter((te) => te.active);
+  const defaultTe = customer.taxEntities.find((te) => te.isDefault);
+
   const tableHtml = customer.addOns.length === 0
     ? `<div class="text-sm ink-faint italic py-6 text-center">Sin add-ons flat. Los add-ons flat son cargos fijos mensuales independientes de unidades.</div>`
     : table({
@@ -650,16 +655,35 @@ function renderAddons(customer: CustomerWithRelations): string {
         empty: 'Sin add-ons flat',
         columns: [
           { label: 'Código', render: (a) => `<code class="font-mono-pro text-xs">${escapeHtml(a.code)}</code>` },
-          { label: 'Nombre', render: (a) => escapeHtml(a.name) },
+          { label: 'Nombre', render: (a) => `${escapeHtml(a.name)}${a.taxEntity && !a.taxEntity.isDefault ? `<div class="text-xs ink-faint mt-0.5">↳ ${escapeHtml(a.taxEntity.legalName)}</div>` : ''}` },
           { label: 'Monto /mes', render: (a) => `<span class="font-mono-pro">${fmtMoney(a.amountCents, customer.currency)}</span> <span class="ink-faint text-xs">flat/mes</span>` },
           { label: 'Status', render: (a) => statusBadge(a.activeTo === null ? 'active' : 'terminated') },
           { label: 'Vigente desde', render: (a) => fmtDateOnly(a.activeFrom) },
           { label: 'Vigente hasta', render: (a) => fmtDateOnly(a.activeTo) },
-          { label: '', render: (a) => a.activeTo === null
-            ? postButton(`/admin/customer-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`)
-            : '<span class="ink-faint text-xs">terminado</span>' },
+          { label: '', render: (a) => {
+            if (a.activeTo !== null) return '<span class="ink-faint text-xs">terminado</span>';
+            const editBtn = activeTaxEntities.length > 1 ? modalTrigger({ modalId: `modal-edit-addon-${a.id}`, label: 'Razón social' }) : '';
+            const termBtn = postButton(`/admin/customer-add-ons/${a.id}/terminate`, 'Terminar', 'danger', `¿Terminar add-on ${a.code}?`);
+            return `<div class="flex items-center gap-2 justify-end">${editBtn}${termBtn}</div>`;
+          } },
         ],
       });
+
+  // v22: select de razón social para el form. Se muestra solo si hay más de
+  // una activa; con una sola, el add-on hereda la default sin preguntar.
+  const taxEntitySelect = activeTaxEntities.length > 1
+    ? formField({
+        label: 'Razón social',
+        span: 2,
+        hint: 'Razón social a la que se factura este add-on. Default = la del cliente.',
+        input: `<select name="tax_entity_id" class="${INPUT_CLASS}">${activeTaxEntities.map((te) => {
+          const sel = te.isDefault ? 'selected' : '';
+          const label = (te.isDefault ? `${te.legalName} (default)` : te.legalName)
+            + (te.taxIdentificationNumber ? ` — ${te.taxIdentificationNumber}` : '');
+          return `<option value="${escapeHtml(te.id)}" ${sel}>${escapeHtml(label)}</option>`;
+        }).join('')}</select>`,
+      })
+    : '';
 
   const addonForm = `
     <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/add-ons" class="space-y-0">
@@ -689,6 +713,7 @@ function renderAddons(customer: CustomerWithRelations): string {
           span: 2,
           input: `<input name="description" class="${INPUT_CLASS}">`,
         })}
+        ${taxEntitySelect}
       </div>
       <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
         ${primaryButton('Crear add-on')}
@@ -703,14 +728,44 @@ function renderAddons(customer: CustomerWithRelations): string {
     body: addonForm,
   });
 
+  // Modales de "editar razón social" por add-on activo (solo cuando hay >1
+  // razón social activa, condición ya manejada en la columna de acciones).
+  const editTaxEntityModals = activeTaxEntities.length > 1
+    ? customer.addOns.filter((a) => a.activeTo === null).map((a) => modal({
+        id: `modal-edit-addon-${a.id}`,
+        title: `Razón social — ${a.name}`,
+        description: 'Aplica a próximos ciclos. Las facturas ya emitidas conservan su razón social.',
+        body: `
+          <form method="post" action="/admin/customer-add-ons/${a.id}/tax-entity" class="space-y-0">
+            <div class="mb-6">
+              ${formField({
+                label: 'Razón social',
+                input: `<select name="tax_entity_id" class="${INPUT_CLASS}">${customer.taxEntities.filter((te) => te.active || te.id === a.taxEntityId).map((te) => {
+                  const sel = te.id === a.taxEntityId ? 'selected' : '';
+                  const label = (te.isDefault ? `${te.legalName} (default)` : te.legalName)
+                    + (te.taxIdentificationNumber ? ` — ${te.taxIdentificationNumber}` : '')
+                    + (te.active ? '' : ' [inactiva]');
+                  return `<option value="${escapeHtml(te.id)}" ${sel}>${escapeHtml(label)}</option>`;
+                }).join('')}</select>`,
+              })}
+            </div>
+            <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+              ${primaryButton('Guardar razón social')}
+            </div>
+          </form>
+        `,
+      })).join('')
+    : '';
+
   const addButton = modalTrigger({ modalId: 'modal-new-customer-addon', label: '+ Agregar add-on flat' });
+  void defaultTe; // reservado para futuras pistas en UI
 
   return panel({
     title: `Add-ons flat · ${customer.addOns.length}`,
     description: 'Cargos fijos mensuales independientes de unidades o servicios.',
     actions: addButton,
     body: tableHtml,
-  }) + addonModal;
+  }) + addonModal + editTaxEntityModals;
 }
 
 // --- Tab: Facturas --------------------------------------------------------
@@ -754,7 +809,7 @@ function renderFacturas(customer: CustomerWithRelations): string {
 function renderCargosExtras(args: {
   customer: CustomerWithRelations;
   catalogEvents: CatalogEvent[];
-  occurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null }>;
+  occurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null; taxEntity?: { legalName: string; isDefault: boolean } | null }>;
 }): string {
   const activeCatalog = args.catalogEvents.filter((e) => e.active);
 
@@ -768,7 +823,7 @@ function renderCargosExtras(args: {
         rows: args.occurrences,
         empty: 'Sin cargos extras',
         columns: [
-          { label: 'Evento', render: (o) => `<a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos/${encodeURIComponent(o.catalogEvent.code)}">${escapeHtml(o.catalogEvent.name)}</a>` },
+          { label: 'Evento', render: (o) => `<a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos/${encodeURIComponent(o.catalogEvent.code)}">${escapeHtml(o.catalogEvent.name)}</a>${o.taxEntity && !o.taxEntity.isDefault ? `<div class="text-xs ink-faint mt-0.5">↳ ${escapeHtml(o.taxEntity.legalName)}</div>` : ''}` },
           { label: 'Unidad', render: (o) => o.unitExternalId
             ? `<code class="font-mono-pro text-xs">${escapeHtml(o.unitExternalId)}</code>`
             : '<span class="ink-faint text-xs">—</span>' },
@@ -860,6 +915,23 @@ function renderCargoExtraModal(args: {
           hint: 'Cuándo ocurrió. Si lo dejas vacío usa el momento del registro.',
           input: `<input type="datetime-local" name="occurred_at" class="${INPUT_CLASS}">`,
         })}
+        ${(() => {
+          // v22: select de razón social — solo aparece si el cliente tiene
+          // más de una activa. Con una sola, hereda la default sin preguntar.
+          const activeTes = args.customer.taxEntities.filter((te) => te.active);
+          if (activeTes.length <= 1) return '';
+          return formField({
+            label: 'Razón social',
+            span: 2,
+            hint: 'Razón social a la que se factura este evento. Default = la del cliente.',
+            input: `<select name="tax_entity_id" class="${INPUT_CLASS}">${activeTes.map((te) => {
+              const sel = te.isDefault ? 'selected' : '';
+              const label = (te.isDefault ? `${te.legalName} (default)` : te.legalName)
+                + (te.taxIdentificationNumber ? ` — ${te.taxIdentificationNumber}` : '');
+              return `<option value="${escapeHtml(te.id)}" ${sel}>${escapeHtml(label)}</option>`;
+            }).join('')}</select>`,
+          });
+        })()}
       </div>
       <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
         ${primaryButton('Registrar evento')}
@@ -1086,7 +1158,7 @@ export function renderCustomerDetail(args: {
   tab: CustomerTab;
   org: Organization;
   catalogEvents: CatalogEvent[];
-  catalogEventOccurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null }>;
+  catalogEventOccurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null; taxEntity?: { legalName: string; isDefault: boolean } | null }>;
 }): string {
   const tz = adminContextStorage.getStore()?.displayTz ?? args.org.timezone ?? 'UTC';
   const metrics = computeCustomerMetrics({ customer: args.customer, tz });

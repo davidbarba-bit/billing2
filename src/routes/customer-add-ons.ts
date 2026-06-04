@@ -5,13 +5,15 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { buildAuthHook, requireOrg } from '../auth.js';
 import { notFound, validation } from '../errors.js';
 import { serializeCustomerAddOn } from '../serializers/customer-add-on.js';
-import { resolveDefaultTaxEntityId } from '../services/tax-entity.js';
+import { resolveTaxEntityIdForCustomer } from '../services/tax-entity.js';
 
 type Payload = {
   code?: string;
   name?: string;
   description?: string | null;
   amount_cents?: number;
+  // v22: razón social del add-on flat. Vacío → default del cliente.
+  tax_entity_id?: string | null;
   // v9: código NetSuite del item asociado a este customer add-on flat.
   netsuite_item_code?: string | null;
   active_from?: string;
@@ -58,8 +60,9 @@ export function registerCustomerAddOnRoutes(app: FastifyInstance, prisma: Prisma
       const activeFrom = payload.active_from ? new Date(payload.active_from) : new Date();
       if (Number.isNaN(activeFrom.getTime())) throw validation({ active_from: ['invalid_iso_datetime'] });
 
-      // v22: hereda la razón social default del cliente (fase 4 permitirá elegir).
-      const taxEntityId = await resolveDefaultTaxEntityId(prisma, customer.id);
+      // v22: razón social receptora. Si el payload no la especifica, hereda
+      // la default del cliente.
+      const taxEntityId = await resolveTaxEntityIdForCustomer(prisma, customer.id, payload.tax_entity_id);
 
       const addOn = await prisma.customerAddOn.create({
         data: {
@@ -154,6 +157,10 @@ export function registerCustomerAddOnRoutes(app: FastifyInstance, prisma: Prisma
       const data: Prisma.CustomerAddOnUpdateInput = {};
       if (payload.name !== undefined) data.name = payload.name ?? '';
       if (payload.description !== undefined) data.description = payload.description;
+      if (payload.tax_entity_id !== undefined) {
+        const teId = await resolveTaxEntityIdForCustomer(prisma, addOn.customerId, payload.tax_entity_id);
+        data.taxEntity = { connect: { id: teId } };
+      }
       if (payload.amount_cents !== undefined) {
         if (!Number.isInteger(payload.amount_cents) || payload.amount_cents < 0) {
           throw validation({ amount_cents: ['must_be_non_negative_integer'] });

@@ -526,7 +526,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             taxEntity: true,
           },
         },
-        addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }] },
+        addOns: { orderBy: [{ activeFrom: 'desc' }, { code: 'asc' }], include: { taxEntity: true } },
         invoices: { orderBy: { createdAt: 'desc' } },
         creditNotes: { orderBy: { createdAt: 'desc' } },
         taxEntities: {
@@ -568,6 +568,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         include: {
           catalogEvent: { select: { code: true, name: true } },
           fee: { select: { invoiceId: true } },
+          taxEntity: { select: { legalName: true, isDefault: true } },
         },
       }),
       prisma.catalogEvent.findMany({
@@ -1230,12 +1231,35 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
           description: (body.description as string) || undefined,
           amount_cents: amountCents,
           netsuite_item_code: body.netsuite_item_code || null,
+          tax_entity_id: body.tax_entity_id || undefined,
         },
       },
     });
     if (result.statusCode !== 200) setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
     else setFlash(reply, 'success', `Add-on "${body.name}" creado`);
-    reply.redirect(`/admin/customers/${externalId}?tab=addons`);
+    reply.redirect(`/admin/customers/${encodeURIComponent(externalId)}?tab=addons`);
+  });
+
+  // v22: cambia la razón social de un customer add-on flat (aplica a próximos ciclos).
+  app.post('/admin/customer-add-ons/:id/tax-entity', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { id } = request.params as { id: string };
+    const body = request.body as Record<string, string>;
+    const addOn = await prisma.customerAddOn.findFirst({
+      where: { id, customer: { organizationId: org.id } },
+      include: { customer: true },
+    });
+    if (!addOn) { setFlash(reply, 'error', 'Add-on no encontrado'); return reply.redirect('/admin/customers'); }
+    const result = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/customer-add-ons/${id}`,
+      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
+      payload: { customer_add_on: { tax_entity_id: body.tax_entity_id || null } },
+    });
+    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    else setFlash(reply, 'success', 'Razón social del add-on actualizada. Aplica a próximos ciclos.');
+    reply.redirect(`/admin/customers/${encodeURIComponent(addOn.customer.externalId)}?tab=addons`);
   });
 
   app.post('/admin/customer-add-ons/:id/terminate', async (request, reply) => {
@@ -2741,6 +2765,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     }
     if (body.occurred_at && body.occurred_at.trim()) {
       payload.occurred_at = toUtcIso(body.occurred_at);
+    }
+    if (body.tax_entity_id && body.tax_entity_id.trim()) {
+      payload.tax_entity_id = body.tax_entity_id.trim();
     }
     const result = await app.inject({
       method: 'POST',
