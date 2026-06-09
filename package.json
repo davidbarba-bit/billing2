@@ -17,6 +17,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:reset": "prisma migrate reset --force",
     "prisma:push": "prisma db push --force-reset --skip-generate",
+    "bootstrap-org": "tsx scripts/bootstrap-org.ts",
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
     "test:watch": "vitest",
