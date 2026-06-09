@@ -2,400 +2,1991 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Numaris Billing API",
-    "version": "6.0.0",
-    "description": "Motor de facturación domain-specific para Numaris.\n\n**Modelo:**\n- `Customer` posee el ciclo de facturación: `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), `billing_anchor_month` (v15, opcional 1..12 para alinear ciclos multi-mes a meses calendario específicos), y `nonrecurring_trigger` (immediate | next_cycle).\n- `Service.pricing_model`:\n  - `recurring`: renta per_unit cada periodo del customer + setup opcional una vez por unit.\n  - `one_off` (prepago): cuando una unit hace su primer ping, se cobra **1 vez** setup (si aplica) + **N mensualidades por adelantado** (N = `unit.prepaid_months` ?? `service.prepaid_months_default`). La unit queda marcada y no vuelve a aparecer en facturas.\n- `Unit` materializada. `setup_billed_at` (recurring) y `oneoff_billed_at` (one_off) gating.\n- `Invoice`:\n  - Cycle invoice (cron auto-billing + POST /invoices manual): agrega fees de todos los services recurring (+ one_offs nuevos si trigger=next_cycle) + customer add-ons.\n  - One-off immediate invoice: POST /events emite automáticamente 1 invoice con 2 líneas (setup + N mensualidades) por la unit que acaba de aparecer.\n- `Fee.kind ∈ {monthly, setup, service_addon, customer_addon, one_off}`. En el modelo prepago: `setup` es 1 renglón por unit nueva, `one_off` es 1 renglón por unit nueva con `units=N` meses.\n\n**Impuestos**: Numaris Billing **NO calcula impuestos**. Los invoices exponen solo `fees_amount_cents` (monto neto). NetSuite calcula IVA/IEPS/retenciones y emite el CFDI. El folio fiscal llega de vuelta vía `/external-confirm`.\n\n**Contrato con NetSuite**: `customer.external_id` de Numaris Billing se usa como `externalId` en NetSuite. Al crear el customer en NetSuite, manda ese mismo string en el campo `externalId`. Cuando NetSuite responda con su `internalId`, persistirlo en Numaris Billing vía `PATCH /api/v1/customers/:external_id` con `netsuite_internal_id`. El payload de dispatch construye automáticamente `customer.netsuite_entity_handle` = `<internal_id>` si existe, o `eid:<external_id>` como fallback (NetSuite resuelve por externalId). El consumidor del dispatch usa este campo directamente como `entity: { id: <handle> }` en el POST a NetSuite REST.\n\n**Auth**: Bearer en `/api/v1/*` (excepto health/openapi/discovery). Callbacks NetSuite con HMAC-SHA256.\n\n**Idempotency** en POST /invoices y /credit_notes. POST /events ya es idempotente por `transaction_id`."
+    "version": "22.0.0",
+    "description": "Motor de facturación domain-specific para Numaris.\n\n# Modelo de dominio\n\n**Organization** — el tenant. Toda autenticación es por API key y aísla los datos al nivel de organización.\n\n**Customer** — la cuenta comercial. Es dueña del **ciclo de facturación** (`billing_period_months` ∈ {1,3,6,12}; `billing_anchor_day` ∈ 1..28; `billing_anchor_month` opcional para ciclos multi-mes; `nonrecurring_trigger` ∈ {`immediate`, `next_cycle`}; `cycle_invoice_mode` ∈ {`unified`, `split_by_kind`}).\n\n**TaxEntity (razón social)** — identidad fiscal receptora del CFDI. Un Customer puede facturar a **varias razones sociales** (multi-RFC). Cada razón social es **un customer en NetSuite**, con su propio `external_id` estable. Toda fila facturable (service, customer_add_on, catalog_event_occurrence, invoice) referencia exactamente una razón social. El admin UI las administra; la API pública aún no expone CRUD de razones sociales (se planea para una versión próxima).\n\n**Service (plan)** — define cómo se cobra:\n- `pricing_model: 'recurring'` — renta `monthly_unit_amount_cents` per_unit cada periodo del customer, + setup opcional una vez por unit, + baja opcional al desinstalar.\n- `pricing_model: 'one_off'` (prepago) — al primer evento de cada unit se cobra **1 vez** el setup (si aplica) + **N mensualidades por adelantado** (N = `unit.prepaid_months ?? service.prepaid_months_default`). La unit queda marcada (`oneoff_billed_at`) y no vuelve a aparecer en facturas.\n- Setup y baja tienen `setup_billing_mode` y `removal_billing_mode` ∈ {`next_cycle`, `immediate`}. En modo `immediate` se emite una factura individual al crear/dar de baja la unit en lugar de esperar al cierre del ciclo.\n- Cambio de precio programado: `PUT /services/:code/price` deja un `pending_price_change` con `effective_from` futuro; el motor usa el precio nuevo a partir de ese instante.\n\n**Unit** — instancia materializada del plan (típicamente una unidad GPS, sensor, etc.). `setup_billed_at` (recurring) y `oneoff_billed_at` (one_off) son los gates de facturación inicial. `billing_starts_at` sobrescribe `active_from` solo para cálculos de facturación (útil para migración legacy).\n\n**ServiceAddOn** — recargo per_unit recurrente sobre un plan (ej. \"+$50/unidad/mes por historial 12 meses\"). Se cobra en `monthly` por cada unit activa del service.\n\n**CustomerAddOn** — cargo fijo mensual a nivel de cliente, independiente de unidades (ej. \"+$1,000/mes por reglas de evento\"). Cobra cada periodo del cliente.\n\n**CatalogEvent / CatalogEventOccurrence** — catálogo de eventos únicos facturables (revisión, capacitación, reinstalación, etc.) por organización + registro de ocurrencias por cliente, cada una con su propio `billing_mode`.\n\n**Invoice** — emitida en dos contextos:\n1. **Cycle invoice** (cron + `POST /invoices` manual): al cierre del periodo del cliente. Agrupa fees por razón social y emite **una factura por cada razón social** receptora (× 2 si `cycle_invoice_mode = 'split_by_kind'`).\n2. **Immediate invoice**: emitida en el acto cuando dispara `setup_immediate`, `removal_immediate`, `one_off + immediate trigger`, o `catalog_event_immediate`. Una sola factura, a la razón social del plan/ocurrencia.\n\n**Fee** — línea de invoice. `kind` ∈ {`monthly`, `setup`, `removal`, `service_addon`, `customer_addon`, `one_off`, `catalog_event`}. En el modelo prepago: `setup` es 1 renglón por unit nueva, `one_off` es 1 renglón por unit nueva con `units = N` meses.\n\n**CreditNote** — solo aplicable a invoices `status: finalized` y `external_dispatch_status: confirmed` (es decir, ya emitidas en NetSuite con folio).\n\n# Autenticación\n\nTodas las rutas `/api/v1/*` requieren `Authorization: Bearer <API_KEY>`. La API key se asigna por organización; un mismo `external_id` puede repetirse en organizaciones distintas pero es único por `(organization, external_id)`. Las rutas de descubrimiento (`/openapi.json`, `/api/v1`, `/docs`, `/health`) NO requieren auth.\n\nLas rutas `/api/v1/*/external-confirm` usan HMAC-SHA256 sobre el body crudo (`X-NetSuite-Signature`) en vez de Bearer; ver sección de callbacks abajo.\n\n# Identificadores\n\n- **`external_id`**: identificador opaco controlado por el cliente. Debe ser **slug ASCII** (`[A-Za-z0-9._-]+`, sin espacios ni acentos). Aplica a `Customer.external_id` y `TaxEntity.external_id`. Stable: una vez creado no debería cambiar (rompería el mapeo con NetSuite).\n- **`sequential_id`**: contador autoincremental por organización (solo lectura). Útil para humanos al referenciar invoices/credit notes/customers.\n- **`id`** (UUID v4): identificador interno generado por el sistema, estable.\n\n# Idempotencia\n\n- **`POST /api/v1/invoices`** acepta `Idempotency-Key` (header) o `metadata.idempotency_key` (body); si ambos están presentes deben coincidir o se devuelve `422 idempotency_key_mismatch`. Si no se especifica, se autogenera un hash del body. Una segunda llamada con el mismo key y el mismo body devuelve la respuesta cacheada (200); con body distinto: `422 idempotency_key_reused_with_different_body`.\n- **`POST /api/v1/events`** es idempotente por `transaction_id` (unique constraint).\n- **`POST /api/v1/credit_notes`** usa el marker `[idem:<token>]` dentro de `description` para idempotencia opcional.\n- **Cycle invoices**: el motor genera idempotency keys determinísticos por `(customer, period_end, [tax_entity_id si hay >1 razón], [split_kind si split_by_kind])`. Re-emitir el mismo periodo del mismo cliente NO duplica facturas.\n\n# Multi-razón social y NetSuite\n\nCada `TaxEntity` es un customer en NetSuite. El payload de dispatch lleva como `customer.external_id` el de la razón social (no del Customer comercial), y `customer.netsuite_entity_handle` = `netsuite_internal_id` (si está cacheado) o `eid:<taxEntity.external_id>` (NetSuite lo resuelve por externalId). El handle es la identidad que el consumidor del dispatch envía a NetSuite como `entity: { id: <handle> }`.\n\nCuando una factura tiene fees de varias razones sociales (cliente con multi-RFC), el cierre de ciclo emite **N facturas separadas** — una por razón social — cada una con su propio `tax_entity_id`, dispatch independiente y folio CFDI distinto.\n\n# Impuestos\n\nMini-Lago **NO calcula impuestos**. Las invoices exponen solo `fees_amount_cents` (monto neto). NetSuite calcula IVA/IEPS/retenciones y emite el CFDI. El folio fiscal regresa vía `POST /api/v1/invoices/:id/external-confirm` (HMAC).\n\n# Errores\n\nFormato uniforme:\n```\n{ \"status\": 422, \"error\": \"Unprocessable Entity\", \"code\": \"validation_errors\", \"error_details\": { \"field\": [\"reason1\", \"reason2\"] } }\n```\n\nCódigos comunes:\n- `401 unauthorized` — falta o es inválido el Bearer token.\n- `403 admin_reset_disabled` / `secret_not_configured` / `invalid_signature` — auth gates.\n- `404 <resource>_not_found` — customer_not_found, service_not_found, invoice_not_found, unit_not_found, catalog_event_not_found, etc.\n- `409 <resource>_<reason>` — conflictos de estado: customer_has_invoices (currency lock), customer_has_active_services (delete lock), unit_already_migrated, service_terminated, conflict_folio_changed, pending_price_already_in_effect, etc.\n- `422 validation_errors` — el body no pasó validación; `error_details` lista los campos.\n- `422 idempotency_key_*` — conflicto de idempotencia.\n"
   },
   "servers": [
-    { "url": "https://billing2-production.up.railway.app", "description": "Railway prod" },
-    { "url": "http://localhost:3000", "description": "Local dev" }
+    { "url": "https://billing.numaris.com", "description": "Producción Numaris" },
+    { "url": "https://billing2-production.up.railway.app", "description": "Railway (legacy URL, redirige al dominio Numaris)" },
+    { "url": "http://localhost:3000", "description": "Desarrollo local" }
+  ],
+  "tags": [
+    { "name": "discovery", "description": "Endpoints públicos para descubrir el contrato (sin auth)" },
+    { "name": "customers", "description": "Clientes — cuenta comercial dueña del ciclo de facturación" },
+    { "name": "services", "description": "Planes — definen cómo se cobra (recurring / prepago, setup, baja, item codes NetSuite)" },
+    { "name": "service-add-ons", "description": "Recargos per_unit recurrentes sobre un plan" },
+    { "name": "customer-add-ons", "description": "Cargos flat mensuales a nivel cliente" },
+    { "name": "units", "description": "Unidades materializadas (dispositivos / suscriptores) del plan" },
+    { "name": "events", "description": "Bitácora de eventos `add`/`remove` con efectos en units (idempotente por transaction_id)" },
+    { "name": "catalog-events", "description": "Eventos únicos facturables (revisión, capacitación, etc.) — catálogo + ocurrencias" },
+    { "name": "invoices", "description": "Facturas: cycle (cierre de ciclo) e immediate (puntuales)" },
+    { "name": "credit-notes", "description": "Notas de crédito sobre invoices ya emitidas (status=finalized, dispatch=confirmed)" },
+    { "name": "external-confirm", "description": "Callbacks de NetSuite (HMAC) con folio CFDI" },
+    { "name": "admin", "description": "Operaciones de mantenimiento — defensa en profundidad (token extra)" }
   ],
   "components": {
     "securitySchemes": {
-      "BearerAuth": { "type": "http", "scheme": "bearer" },
-      "NetSuiteSignature": { "type": "apiKey", "in": "header", "name": "X-NetSuite-Signature" }
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key por organización: `Authorization: Bearer <API_KEY>`"
+      },
+      "NetSuiteSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-NetSuite-Signature",
+        "description": "HMAC-SHA256 sobre el body crudo, firmado con `netsuite_callback_secret` de la organización. Comparación timing-safe."
+      },
+      "AdminResetToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Admin-Reset-Token",
+        "description": "Token extra (env var `ADMIN_RESET_TOKEN`) para operaciones destructivas. Si la env var no está set, el endpoint devuelve 403 admin_reset_disabled."
+      }
     },
     "schemas": {
-      "Error": { "type": "object", "properties": { "status": { "type": "integer" }, "error": { "type": "string" }, "code": { "type": "string" }, "error_details": { "type": "object" } } },
-      "Meta": { "type": "object", "properties": { "current_page": { "type": "integer" }, "next_page": { "type": ["integer", "null"] }, "prev_page": { "type": ["integer", "null"] }, "total_pages": { "type": "integer" }, "total_count": { "type": "integer" } } },
+      "Error": {
+        "type": "object",
+        "required": ["status", "error", "code"],
+        "properties": {
+          "status": { "type": "integer", "description": "HTTP status code" },
+          "error": { "type": "string", "description": "HTTP status text", "example": "Unprocessable Entity" },
+          "code": { "type": "string", "description": "Machine-readable code (snake_case) — estable para que el cliente lo matchee", "example": "validation_errors" },
+          "error_details": {
+            "type": "object",
+            "description": "Mapa `field → razones[]` (solo en 422). Las razones son tokens snake_case (`value_is_mandatory`, `must_be_iso_datetime`, etc.).",
+            "additionalProperties": { "type": "array", "items": { "type": "string" } },
+            "example": { "external_id": ["must_be_ascii_slug"], "amount_cents": ["must_be_non_negative_integer"] }
+          }
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "description": "Paginación. `next_page` / `prev_page` son null en los extremos.",
+        "properties": {
+          "current_page": { "type": "integer" },
+          "next_page": { "type": ["integer", "null"] },
+          "prev_page": { "type": ["integer", "null"] },
+          "total_pages": { "type": "integer" },
+          "total_count": { "type": "integer" }
+        }
+      },
       "Customer": {
         "type": "object",
-        "description": "Owns the billing cycle. Has N services and N customer-level flat add-ons.",
+        "description": "Cuenta comercial. La identidad fiscal (RFC, dirección, NetSuite handle) vive en las razones sociales — el Customer es solo cuenta comercial y ciclo de facturación.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "external_id": { "type": "string", "description": "Slug ASCII (`[A-Za-z0-9._-]+`), único por organización. Identificador estable que el cliente controla.", "example": "transportes-marva" },
+          "sequential_id": { "type": "integer", "description": "Contador autoincremental por organización. Solo lectura." },
+          "slug": { "type": "string", "description": "Slug derivado (`<org_slug>-NNN`). Solo lectura." },
+          "name": { "type": "string", "description": "Nombre comercial." },
+          "email": { "type": ["string", "null"] },
+          "phone": { "type": ["string", "null"] },
+          "currency": { "type": "string", "description": "ISO 4217. Solo se permite cambiar si no hay invoices no-voided.", "example": "MXN" },
+          "timezone": { "type": ["string", "null"], "description": "IANA. Si null, se hereda de la organización. Determina el día de corte del ciclo." },
+          "applicable_timezone": { "type": "string", "description": "Timezone efectivo (customer.timezone ?? organization.timezone). Solo lectura." },
+          "status": { "type": "string", "enum": ["pending", "active", "terminated"] },
+          "billing_period_months": { "type": "integer", "enum": [1, 3, 6, 12], "description": "Longitud del ciclo." },
+          "billing_anchor_day": { "type": "integer", "minimum": 1, "maximum": 28, "description": "Día del mes en que arranca/cierra cada ciclo." },
+          "billing_anchor_month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "Mes ancla (1..12) — alinea ciclos multi-mes a meses calendario específicos. Solo aplica si `billing_period_months > 1`. NULL → anclado al mes de subscription_at (legacy)." },
+          "nonrecurring_trigger": { "type": "string", "enum": ["immediate", "next_cycle"], "description": "Cuándo cobrar one_off cuando entran units nuevas." },
+          "cycle_invoice_mode": { "type": "string", "enum": ["unified", "split_by_kind"], "description": "Estructura del cierre de ciclo. `unified`: una factura con todo. `split_by_kind`: separa fees recurrentes vs únicos en hasta 2 facturas (DENTRO de cada razón social)." },
+          "subscription_at": { "type": "string", "format": "date-time", "description": "Inicio nominal de la suscripción. Si está en el futuro, customer queda en `pending`." },
+          "started_at": { "type": ["string", "null"], "format": "date-time" },
+          "terminated_at": { "type": ["string", "null"], "format": "date-time" },
+          "current_billing_period_started_at": { "type": ["string", "null"], "format": "date-time" },
+          "current_billing_period_ending_at": { "type": ["string", "null"], "format": "date-time" },
+          "metadata": { "type": "object", "additionalProperties": true, "description": "Bag libre. La API guarda `schedule_history` aquí (últimos 50 cambios de calendario)." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CustomerEmbedded": {
+        "type": "object",
+        "description": "Forma reducida del cliente que se embebe en invoices/credit_notes.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "external_id": { "type": "string" },
           "name": { "type": "string" },
           "currency": { "type": "string" },
-          "country": { "type": ["string", "null"] },
           "timezone": { "type": ["string", "null"] },
-          "applicable_timezone": { "type": "string" },
-          "tax_identification_number": { "type": ["string", "null"] },
-          "status": { "type": "string", "enum": ["pending", "active", "terminated"] },
-          "billing_period_months": { "type": "integer", "enum": [1, 3, 6, 12], "description": "Largo del ciclo de facturación en meses." },
-          "billing_anchor_day": { "type": "integer", "minimum": 1, "maximum": 28, "description": "Día del mes en que cierra el periodo." },
-          "billing_anchor_month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "v15 — Mes calendario en el que arranca un ciclo. Solo aplica si billing_period_months > 1. NULL → comportamiento legacy (ciclos anclados al mes de subscription_at). Ej: trimestral con anchor_month=1 → ciclos Ene-Mar, Abr-Jun, Jul-Sep, Oct-Dic." },
-          "nonrecurring_trigger": { "type": "string", "enum": ["immediate", "next_cycle"], "description": "Cómo se facturan units de services one_off: immediate=1 invoice por ping, next_cycle=acumular hasta el cierre del ciclo." },
-          "subscription_at": { "type": "string", "format": "date-time" },
-          "current_billing_period_started_at": { "type": ["string", "null"], "format": "date-time" },
-          "current_billing_period_ending_at": { "type": ["string", "null"], "format": "date-time" },
-          "netsuite_internal_id": { "type": ["string", "null"], "description": "v13 — Internal id que NetSuite asignó al customer. Cache opcional. null = Numaris Billing no lo conoce; el dispatch usa eid:<external_id> como fallback." },
-          "netsuite_entity_handle": { "type": "string", "description": "v13 — Computed. String listo para usar como `entity: { id: <handle> }` en el POST REST de NetSuite. Es `<netsuite_internal_id>` si existe, o `eid:<external_id>` si no. Lo expone tanto el GET del customer como el dispatch payload de invoices." },
-          "tax_identification_number_note": { "type": "string", "description": "El RFC del cliente se envía a NetSuite con cada invoice. Numaris Billing no calcula impuestos." }
+          "applicable_timezone": { "type": "string" }
         }
       },
       "CustomerWriteable": {
         "type": "object",
-        "required": ["external_id", "name", "currency"],
+        "description": "Cuerpo de `POST /api/v1/customers`. `external_id`, `name` y `currency` son obligatorios en alta. POST con un `external_id` existente hace UPDATE (idempotente).",
+        "required": ["external_id"],
         "properties": {
-          "external_id": { "type": "string" },
+          "external_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$", "description": "Slug ASCII — sin espacios ni acentos." },
           "name": { "type": "string" },
-          "currency": { "type": "string" },
-          "country": { "type": "string" },
-          "timezone": { "type": "string" },
-          "tax_identification_number": { "type": "string" },
+          "email": { "type": ["string", "null"] },
+          "phone": { "type": ["string", "null"] },
+          "currency": { "type": "string", "description": "ISO 4217" },
+          "timezone": { "type": ["string", "null"], "description": "IANA — validada (`invalid_iana` si no se reconoce)." },
           "billing_period_months": { "type": "integer", "enum": [1, 3, 6, 12], "default": 1 },
           "billing_anchor_day": { "type": "integer", "minimum": 1, "maximum": 28, "default": 1 },
-          "billing_anchor_month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12 },
+          "billing_anchor_month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "Solo válido si billing_period_months > 1." },
           "nonrecurring_trigger": { "type": "string", "enum": ["immediate", "next_cycle"], "default": "next_cycle" },
-          "subscription_at": { "type": "string", "format": "date-time" }
+          "cycle_invoice_mode": { "type": "string", "enum": ["unified", "split_by_kind"], "default": "unified" },
+          "subscription_at": { "type": "string", "format": "date-time", "description": "Default = ahora. Si está en el futuro, customer arranca en `pending`." },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "CustomerPatchSoft": {
+        "type": "object",
+        "description": "Cuerpo del PATCH soft (`PATCH /api/v1/customers/:externalId`). Campos NO billing-impacting. Mandar `subscription_at`, `billing_anchor_day`, `billing_period_months` o `nonrecurring_trigger` aquí devuelve 422 `use_billing_schedule_endpoint`. Currency tiene gate: 409 si hay invoices no-voided.",
+        "minProperties": 1,
+        "properties": {
+          "name": { "type": "string" },
+          "email": { "type": ["string", "null"] },
+          "phone": { "type": ["string", "null"] },
+          "currency": { "type": "string" },
+          "timezone": { "type": ["string", "null"] },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "BillingScheduleWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `PATCH /api/v1/customers/:externalId/billing-schedule`. Cambia el calendario. Los 4 campos billing-impacting (`subscription_at`, `billing_anchor_day`, `billing_period_months`, `billing_anchor_month`) requieren que el customer NO tenga invoices no-voided (409 `customer_has_invoices` si las tiene). `nonrecurring_trigger` y `cycle_invoice_mode` no tienen ese gate.",
+        "minProperties": 1,
+        "properties": {
+          "subscription_at": { "type": "string", "format": "date-time" },
+          "billing_anchor_day": { "type": "integer", "minimum": 1, "maximum": 28 },
+          "billing_period_months": { "type": "integer", "enum": [1, 3, 6, 12] },
+          "billing_anchor_month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12 },
+          "nonrecurring_trigger": { "type": "string", "enum": ["immediate", "next_cycle"] },
+          "cycle_invoice_mode": { "type": "string", "enum": ["unified", "split_by_kind"] }
         }
       },
       "Service": {
         "type": "object",
-        "description": "Owns units + per-unit pricing. Does NOT own the billing cycle (the customer does).",
+        "description": "Plan. `monthly_unit_amount_cents` y `setup_unit_amount_cents` reflejan el precio EFECTIVO ahora (si hay pending con effective_from ≤ now, sus valores ganan). `pending_price_change` describe un cambio futuro.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string" },
+          "code": { "type": "string", "description": "Identificador único por organización." },
           "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
           "customer_id": { "type": "string", "format": "uuid" },
+          "tax_entity_id": { "type": "string", "format": "uuid", "description": "Razón social a la que se factura este plan. Default = la del cliente. Cambiable vía PATCH (aplica a próximos ciclos)." },
           "currency": { "type": "string" },
-          "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "description": "recurring=renta por periodo + setup opcional. one_off=cargo único por unit cuando aparece." },
-          "monthly_unit_amount_cents": { "type": "integer", "description": "Precio mensual /unidad VIGENTE (resuelto al instante de leer). Si hay un pending_price_change con effective_from ya pasado, este campo refleja ese valor promovido." },
-          "setup_unit_amount_cents": { "type": "integer", "description": "Setup /unidad VIGENTE (resuelto al instante de leer)." },
+          "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "description": "`recurring`: renta mensual continua. `one_off` (prepago): setup + N mensualidades adelantadas al primer evento de cada unit." },
+          "monthly_unit_amount_cents": { "type": "integer", "description": "Renta per_unit / mes calendario. Refleja el precio efectivo ahora." },
+          "setup_unit_amount_cents": { "type": "integer", "description": "Cargo único al instalar la unit." },
+          "removal_unit_amount_cents": { "type": "integer", "description": "Cargo único al desinstalar la unit (solo recurring). 0 = sin cargo." },
+          "setup_billing_mode": { "type": "string", "enum": ["next_cycle", "immediate"], "description": "Cuándo emitir el cargo de setup." },
+          "removal_billing_mode": { "type": "string", "enum": ["next_cycle", "immediate"], "description": "Cuándo emitir el cargo de baja." },
           "pending_price_change": {
-            "type": ["object", "null"],
-            "description": "Cambio de precio programado a futuro (v7). Solo presente cuando hay un cambio con effective_from > ahora. Aplica a recurring (cycle next ≥ effective_from) y a one_off (cycle/ping next ≥ effective_from).",
-            "properties": {
-              "monthly_unit_amount_cents": { "type": "integer" },
-              "setup_unit_amount_cents": { "type": "integer" },
-              "effective_from": { "type": "string", "format": "date-time" }
-            }
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "properties": {
+                  "monthly_unit_amount_cents": { "type": "integer" },
+                  "setup_unit_amount_cents": { "type": "integer" },
+                  "effective_from": { "type": "string", "format": "date-time" }
+                }
+              }
+            ],
+            "description": "Cambio programado. null cuando no hay pending o el pending ya entró en vigor (en cuyo caso sus valores ya están en `monthly_unit_amount_cents` / `setup_unit_amount_cents`)."
           },
-          "prepaid_months_default": { "type": ["integer", "null"], "description": "Solo one_off: default de meses prepagados por unit. Sobreescribible por unit en POST /events o POST /units (campo prepaid_months)." },
-          "netsuite_monthly_item_code": { "type": ["string", "null"], "description": "v9 — Código del item NetSuite al que se mapean los fees kind=monthly (recurring) Y los fees kind=one_off (mensualidades prepagadas de un service one_off — conceptualmente la misma renta mensual cobrada por anticipado). null = no configurado." },
-          "netsuite_setup_item_code": { "type": ["string", "null"], "description": "v9 — Código NetSuite para fees kind=setup. Aplica si setup_unit_amount_cents > 0." },
-          "status": { "type": "string", "enum": ["active", "terminated"] }
+          "prepaid_months_default": { "type": ["integer", "null"], "description": "Solo one_off: default de meses prepagados por unit. Sobreescribible per-unit (`unit.prepaid_months`). Si ambos null al momento de facturar, falla." },
+          "netsuite_monthly_item_code": { "type": ["string", "null"], "description": "Mapea a fees `kind=monthly` (recurring) Y `kind=one_off` (prepago — la mensualidad prepagada es la misma renta conceptual)." },
+          "netsuite_setup_item_code": { "type": ["string", "null"] },
+          "netsuite_removal_item_code": { "type": ["string", "null"] },
+          "status": { "type": "string", "enum": ["active", "terminated"] },
+          "terminated_at": { "type": ["string", "null"], "format": "date-time" },
+          "metadata": { "type": "object", "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "ServiceWriteable": {
         "type": "object",
+        "description": "Cuerpo de `POST /api/v1/services`. La currency del plan se hereda del cliente si no se manda.",
         "required": ["code", "name", "customer_external_id"],
         "properties": {
-          "code": { "type": "string" },
-          "name": { "type": "string" },
+          "code": { "type": "string", "description": "Único por organización." },
           "customer_external_id": { "type": "string" },
-          "currency": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "tax_entity_id": { "type": ["string", "null"], "format": "uuid", "description": "Razón social del plan. Vacío/null → default del cliente. ID de otro cliente → 422 `not_found_for_customer`. Inactiva → 422 `inactive`." },
+          "currency": { "type": "string", "description": "Default: hereda del customer." },
           "pricing_model": { "type": "string", "enum": ["recurring", "one_off"], "default": "recurring" },
+          "monthly_unit_amount_cents": { "type": "integer", "minimum": 0, "description": "En one_off debe ser > 0." },
+          "setup_unit_amount_cents": { "type": "integer", "minimum": 0, "default": 0 },
+          "removal_unit_amount_cents": { "type": "integer", "minimum": 0, "default": 0, "description": "Solo aplica a recurring. > 0 con one_off → 422." },
+          "setup_billing_mode": { "type": "string", "enum": ["next_cycle", "immediate"], "default": "next_cycle", "description": "Modo `immediate` requiere setup > 0. Solo aplica a recurring." },
+          "removal_billing_mode": { "type": "string", "enum": ["next_cycle", "immediate"], "default": "next_cycle", "description": "Modo `immediate` requiere removal > 0. Solo aplica a recurring." },
+          "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1, "description": "Solo one_off. En recurring debe ser null." },
+          "netsuite_monthly_item_code": { "type": ["string", "null"] },
+          "netsuite_setup_item_code": { "type": ["string", "null"] },
+          "netsuite_removal_item_code": { "type": ["string", "null"] },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "ServicePatchWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `PATCH /api/v1/services/:code`. NO permite cambiar montos de mensualidad/setup (esos van por `PUT /price` para que pasen por el flujo de pending). SÍ permite cambiar nombre, descripción, razón social, monto de baja, modos de emisión, prepaid_months_default, item codes y metadata.",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "tax_entity_id": { "type": ["string", "null"], "format": "uuid", "description": "Cambia la razón social del plan (aplica a próximos ciclos; las facturas ya emitidas conservan la suya)." },
+          "removal_unit_amount_cents": { "type": "integer", "minimum": 0 },
+          "setup_billing_mode": { "type": "string", "enum": ["next_cycle", "immediate"] },
+          "removal_billing_mode": { "type": "string", "enum": ["next_cycle", "immediate"] },
+          "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1 },
+          "netsuite_monthly_item_code": { "type": ["string", "null"] },
+          "netsuite_setup_item_code": { "type": ["string", "null"] },
+          "netsuite_removal_item_code": { "type": ["string", "null"] },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "PriceWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `PUT /api/v1/services/:code/price`. Programa un cambio de precio para `effective_from` (futuro obligatorio). Si ya hay un pending vigente cuando llega este request, se promueve (los valores pending pasan a ser los base) antes de escribir el nuevo pending — preserva la semántica para clientes mid-cycle.",
+        "required": ["monthly_unit_amount_cents", "setup_unit_amount_cents", "effective_from"],
+        "properties": {
           "monthly_unit_amount_cents": { "type": "integer", "minimum": 0 },
           "setup_unit_amount_cents": { "type": "integer", "minimum": 0 },
-          "prepaid_months_default": { "type": ["integer", "null"], "minimum": 1, "description": "Solo para one_off — meses prepagados por defecto por unit." },
-          "netsuite_monthly_item_code": { "type": ["string", "null"] },
-          "netsuite_setup_item_code": { "type": ["string", "null"] }
-        }
-      },
-      "ServiceAddOn": {
-        "type": "object",
-        "description": "Per-unit recurring modifier attached to a Service. Genera 1 fee 'service_addon' por invoice mientras esté activo.",
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "service_id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "pricing_type": { "type": "string", "enum": ["per_unit_monthly"], "description": "Solo per_unit_monthly en v3." },
-          "amount_cents": { "type": "integer" },
-          "netsuite_item_code": { "type": ["string", "null"], "description": "v9 — código NetSuite del item al que se mapean los fees service_addon de este add-on." },
-          "active_from": { "type": "string", "format": "date-time" },
-          "active_to": { "type": ["string", "null"], "format": "date-time" },
-          "status": { "type": "string", "enum": ["active", "terminated"] }
-        }
-      },
-      "CustomerAddOn": {
-        "type": "object",
-        "description": "Flat recurring modifier attached to a Customer (independiente de services y units).",
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "customer_id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string" },
-          "name": { "type": "string" },
-          "pricing_type": { "type": "string", "enum": ["flat_monthly"] },
-          "amount_cents": { "type": "integer" },
-          "netsuite_item_code": { "type": ["string", "null"], "description": "v9 — código NetSuite del item al que se mapea el fee customer_addon." },
-          "active_from": { "type": "string", "format": "date-time" },
-          "active_to": { "type": ["string", "null"], "format": "date-time" },
-          "status": { "type": "string", "enum": ["active", "terminated"] }
+          "effective_from": { "type": "string", "format": "date-time", "description": "Debe ser estrictamente > now (422 `must_be_in_the_future`)." }
         }
       },
       "Unit": {
         "type": "object",
+        "description": "Unidad materializada. Una unit pertenece a UN service en un momento dado; las migraciones (`POST /units/:id/migrate`) cierran la unit vieja y crean una nueva en otro service con el mismo external_id.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "service_id": { "type": "string", "format": "uuid" },
-          "external_id": { "type": "string" },
-          "label": { "type": ["string", "null"] },
-          "active_from": { "type": "string", "format": "date-time", "description": "Cuándo empezó a reportar / existir la unit (verdad operativa)." },
-          "active_to": { "type": ["string", "null"], "format": "date-time" },
-          "billing_starts_at": { "type": ["string", "null"], "format": "date-time", "description": "v8 — Override de fecha de facturación. Si null, el motor usa active_from. Útil para migración desde otra plataforma: cobrar mes completo aunque entre mid-mes (billing_starts_at = inicio del mes) o saltarse el primer mes ya pagado (billing_starts_at = inicio del próximo mes). Aplica a proration de monthly + gate de setup + filtro one_off+next_cycle. En POST /events (one_off+immediate): si billing_starts_at > event timestamp, no se emite invoice en el ping." },
-          "setup_already_billed": { "type": "boolean", "description": "v14 — INPUT ONLY (POST /units, POST /events): si true al CREATE de la unit, setupBilledAt se preestablece para que el motor NO incluya la unit en setup fees. Solo aplica a pricing_model=recurring; en one_off se ignora silenciosamente. La unit sigue facturando mensualidad normal." },
-          "one_off_already_billed": { "type": "boolean", "description": "v14 — INPUT ONLY (POST /units, POST /events): si true al CREATE de la unit, oneoffBilledAt se preestablece para que el motor NO entre la unit ni al cycle invoice ni al ping immediate. Solo aplica a pricing_model=one_off; en recurring se ignora silenciosamente. Útil cuando el bundle one_off completo (setup + N meses) ya fue cobrado en el sistema legacy." },
-          "setup_billed_at": { "type": ["string", "null"], "format": "date-time" },
-          "oneoff_billed_at": { "type": ["string", "null"], "format": "date-time", "description": "Si está set, la unit ya fue cobrada en un service one_off y no genera más fees." },
-          "prepaid_months": { "type": ["integer", "null"], "minimum": 1, "description": "Solo aplica si el service es one_off. Sobreescribe service.prepaid_months_default." },
-          "status": { "type": "string", "enum": ["active", "terminated"] }
+          "external_id": { "type": "string", "description": "Único por (service, external_id). Texto libre." },
+          "label": { "type": ["string", "null"], "description": "Etiqueta humana opcional." },
+          "active_from": { "type": "string", "format": "date-time" },
+          "active_to": { "type": ["string", "null"], "format": "date-time", "description": "null = unit todavía activa." },
+          "billing_starts_at": { "type": ["string", "null"], "format": "date-time", "description": "Override de fecha de facturación. Si null, el motor usa `active_from`. Útil para migración mid-mes (cobrar mes completo aunque entre mid-mes, o saltarse el primer mes ya pagado). Aplica a proration de monthly + gate de setup + filtro one_off+next_cycle." },
+          "setup_billed_at": { "type": ["string", "null"], "format": "date-time", "description": "Si está set, el motor NO incluye esta unit en fees de setup. Se setea automáticamente cuando se emite la primera factura con su setup, o pre-set vía `setup_already_billed` para migración legacy." },
+          "oneoff_billed_at": { "type": ["string", "null"], "format": "date-time", "description": "Análogo a `setup_billed_at` pero para units de planes one_off. Si está set, la unit no vuelve a aparecer en facturas (ya pagó por adelantado N meses)." },
+          "prepaid_months": { "type": ["integer", "null"], "description": "Override del default del service (solo one_off). Si ambos null al momento de facturar, falla." },
+          "metadata": { "type": "object", "additionalProperties": true, "description": "Bag libre. El motor escribe `migrated_to` / `migrated_from` aquí durante migraciones." },
+          "status": { "type": "string", "enum": ["active", "terminated"], "description": "Derivado: `active` si active_to es null, `terminated` si no." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
-      "InvoiceWriteable": {
+      "UnitWriteable": {
         "type": "object",
-        "required": ["customer_external_id"],
+        "description": "Cuerpo de `POST /api/v1/units`. Crea la unit y, si aplica, dispara una invoice inmediata (setup_billing_mode='immediate' con setup > 0 y sin setup_already_billed → emite invoice y devuelve `triggered_invoice_id`).",
+        "required": ["service_code", "external_id"],
         "properties": {
-          "customer_external_id": { "type": "string" },
-          "period_from": { "type": "string", "format": "date-time" },
-          "period_to": { "type": "string", "format": "date-time" },
-          "metadata": { "type": "object", "properties": { "idempotency_key": { "type": "string" } } }
+          "service_code": { "type": "string" },
+          "external_id": { "type": "string", "description": "Único por (service, external_id)." },
+          "label": { "type": ["string", "null"] },
+          "active_from": { "type": "string", "format": "date-time", "description": "Default = ahora." },
+          "billing_starts_at": { "type": ["string", "null"], "format": "date-time" },
+          "prepaid_months": { "type": ["integer", "null"], "minimum": 1 },
+          "setup_already_billed": { "type": "boolean", "description": "INPUT-ONLY (no es atributo persistido). Si true en recurring, preestablece `setup_billed_at = active_from` para que la unit no genere fee de setup. En one_off se ignora silenciosamente." },
+          "one_off_already_billed": { "type": "boolean", "description": "INPUT-ONLY. Si true en one_off, preestablece `oneoff_billed_at = active_from` para que la unit nunca entre a facturas. En recurring se ignora silenciosamente." },
+          "metadata": { "type": "object", "additionalProperties": true }
         }
       },
-      "Invoice": {
+      "UnitPatchWriteable": {
         "type": "object",
-        "description": "Per Customer per Period. Agrega fees de TODOS los services + customer add-ons del customer.",
+        "description": "Cuerpo de `PATCH /api/v1/units/:id`. Si el PATCH dispara la baja (active_to pasa de null a date) y el service tiene `removal_billing_mode='immediate'`, emite una invoice inmediata y devuelve `triggered_invoice_id`.",
+        "properties": {
+          "label": { "type": "string" },
+          "active_to": { "type": ["string", "null"], "format": "date-time", "description": "Set para terminar la unit; null para reabrirla." },
+          "billing_starts_at": { "type": ["string", "null"], "format": "date-time" },
+          "prepaid_months": { "type": ["integer", "null"], "minimum": 1, "description": "Solo se permite cambiar antes de que se haya facturado (oneoff_billed_at = null). 422 `unit_already_billed` si no." },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "UnitMigrateWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `POST /api/v1/units/:id/migrate`. Atómico: cierra la unit en su service actual (activeTo = migration_at) y crea una nueva con el mismo external_id en `to_service_code`. Política: solo a futuro, mismo customer, mismo pricing_model. NO cobra setup nuevo por default (`charge_new_setup=false`). Add-ons per-unit del service viejo se cierran junto con la unit. Audit: metadata.migrated_to/migrated_from + EventLog `operation_type='migrate'`.",
+        "required": ["to_service_code", "migration_at"],
+        "properties": {
+          "to_service_code": { "type": "string" },
+          "migration_at": { "type": "string", "format": "date-time", "description": "Estrictamente > now. 422 `must_be_in_the_future` si no." },
+          "charge_new_setup": { "type": "boolean", "default": false, "description": "Si true Y el plan destino tiene setup > 0 Y setup_billing_mode='immediate', se emite la invoice del setup AL INSTANTE (no en migration_at)." },
+          "new_label": { "type": ["string", "null"] },
+          "metadata": { "type": "object", "additionalProperties": true, "description": "Metadata extra para la unit nueva (el motor agrega `migrated_from` automáticamente)." }
+        }
+      },
+      "UnitMigrateResponse": {
+        "type": "object",
+        "properties": {
+          "old_unit": { "$ref": "#/components/schemas/Unit" },
+          "new_unit": { "$ref": "#/components/schemas/Unit" },
+          "event_id": { "type": "string", "format": "uuid", "description": "EventLog generado con `operation_type='migrate'`." },
+          "triggered_invoice_id": { "type": ["string", "null"], "format": "uuid", "description": "Presente solo si la migración disparó una invoice inmediata por el setup del plan nuevo." }
+        }
+      },
+      "EventLog": {
+        "type": "object",
+        "description": "Bitácora append-only. POST /events genera estos registros como audit; las side-effects sobre Unit ocurren al mismo tiempo. Idempotente por transaction_id (mismo transaction_id → no-op).",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
-          "sequential_id": { "type": "integer" },
-          "number": { "type": ["string", "null"] },
+          "transaction_id": { "type": "string", "description": "Clave de idempotencia controlada por el cliente. Unique por organización." },
+          "service_id": { "type": "string", "format": "uuid" },
+          "unit_id": { "type": ["string", "null"], "format": "uuid" },
+          "unit_external_id": { "type": "string" },
+          "unit_label": { "type": ["string", "null"] },
+          "operation_type": { "type": "string", "enum": ["add", "remove", "migrate"], "description": "`migrate` solo lo genera el endpoint /units/:id/migrate; no es válido como input de POST /events." },
+          "kind": { "type": ["string", "null"] },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "properties": { "type": "object", "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "EventWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `POST /api/v1/events`. Idempotente por `transaction_id` (re-postear lo mismo no genera duplicados). Side-effects sobre Unit:\n- `operation_type=add` → upsert Unit (crea si no existe; clear activeTo si re-activa una terminada).\n- `operation_type=remove` → set Unit.activeTo = timestamp.\n\nDispara invoice inmediata cuando: el evento crea/re-activa una unit de un service `pricing_model=one_off`, el customer tiene `nonrecurring_trigger=immediate`, y la unit no ha sido cobrada (oneoff_billed_at=null). En ese caso, la respuesta incluye `triggered_invoice_id`.",
+        "required": ["transaction_id", "service_code", "operation_type", "unit_external_id", "timestamp"],
+        "properties": {
+          "transaction_id": { "type": "string", "description": "Idempotency key. Unique por organización." },
+          "service_code": { "type": "string", "description": "Code del Service al que pertenece la unit." },
+          "operation_type": { "type": "string", "enum": ["add", "remove"] },
+          "unit_external_id": { "type": "string", "description": "Identificador opaco de la unit." },
+          "unit_label": { "type": ["string", "null"], "description": "Etiqueta humana opcional (solo se usa en operation_type=add)." },
+          "timestamp": { "type": "integer", "description": "Unix epoch en segundos (no milisegundos, no ISO string)." },
+          "prepaid_months": { "type": ["integer", "null"], "minimum": 1, "description": "Solo aplica si el service es one_off. Sobreescribe `service.prepaid_months_default`. Si ambos null al momento de facturar, falla." },
+          "billing_starts_at": { "type": ["string", "null"], "format": "date-time", "description": "Override de fecha de facturación al CREATE de la unit (si el event causa upsert; si la unit ya existe, se ignora — usa PATCH /units/:id para ajustarla)." },
+          "setup_already_billed": { "type": "boolean", "description": "INPUT-ONLY al CREATE de la unit. Solo aplica a pricing_model=recurring; en one_off se ignora silenciosamente." },
+          "one_off_already_billed": { "type": "boolean", "description": "INPUT-ONLY al CREATE de la unit. Solo aplica a pricing_model=one_off; en recurring se ignora silenciosamente." },
+          "kind": { "type": ["string", "null"], "description": "Tag libre para clasificar el evento (ej. 'first_ping', 'replacement')." },
+          "properties": { "type": "object", "additionalProperties": true, "description": "Bag libre — propaga al EventLog." }
+        }
+      },
+      "EventResponse": {
+        "type": "object",
+        "description": "Respuesta de `POST /events`. Si el evento detonó una invoice (one_off + immediate), `triggered_invoice_id` está set; el invoice ya está dispatchando a NetSuite en background.",
+        "properties": {
+          "event": { "$ref": "#/components/schemas/EventLog" },
+          "triggered_invoice_id": { "type": ["string", "null"], "format": "uuid" }
+        }
+      },
+      "ServiceAddOn": {
+        "type": "object",
+        "description": "Recargo per_unit recurrente sobre un plan. Cobra `amount_cents` por cada unit activa del service en cada periodo.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "service_id": { "type": "string", "format": "uuid" },
+          "code": { "type": "string", "description": "Único por (service, code). Inmutable después de creado." },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "pricing_type": { "type": "string", "enum": ["per_unit_monthly"], "description": "Constante. Existe para diferenciar de CustomerAddOn cuando consumes ambos." },
+          "amount_cents": { "type": "integer" },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active_from": { "type": "string", "format": "date-time" },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "status": { "type": "string", "enum": ["active", "terminated"] },
+          "metadata": { "type": "object", "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ServiceAddOnWriteable": {
+        "type": "object",
+        "required": ["code", "name", "amount_cents"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "amount_cents": { "type": "integer", "minimum": 0 },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active_from": { "type": "string", "format": "date-time", "description": "Default = ahora." },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "ServiceAddOnPatchWriteable": {
+        "type": "object",
+        "description": "PATCH NO permite cambiar `code` (422 `immutable`).",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "amount_cents": { "type": "integer", "minimum": 0 },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "CustomerAddOn": {
+        "type": "object",
+        "description": "Cargo flat mensual a nivel cliente (independiente de unidades).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
           "customer_id": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["calculated", "finalized", "voided"] },
-          "external_dispatch_status": { "type": "string", "enum": ["pending", "dispatched", "confirmed", "failed"] },
-          "currency": { "type": "string" },
-          "fees_amount_cents": { "type": "integer", "description": "Monto neto sin impuestos. NetSuite agrega los taxes al emitir el CFDI." },
-          "period_from": { "type": ["string", "null"], "format": "date-time" },
-          "period_to": { "type": ["string", "null"], "format": "date-time" },
-          "fees": { "type": "array", "items": { "$ref": "#/components/schemas/Fee" } },
-          "units_annex": { "type": "array" }
+          "tax_entity_id": { "type": "string", "format": "uuid", "description": "Razón social a la que se factura este add-on." },
+          "code": { "type": "string", "description": "Único por (customer, code). Inmutable." },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "pricing_type": { "type": "string", "enum": ["flat_monthly"], "description": "Constante." },
+          "amount_cents": { "type": "integer" },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active_from": { "type": "string", "format": "date-time" },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "status": { "type": "string", "enum": ["active", "terminated"] },
+          "metadata": { "type": "object", "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CustomerAddOnWriteable": {
+        "type": "object",
+        "required": ["code", "name", "amount_cents"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "amount_cents": { "type": "integer", "minimum": 0 },
+          "tax_entity_id": { "type": ["string", "null"], "format": "uuid", "description": "Vacío/null → razón social default del cliente. ID de otro cliente → 422. ID inactivo → 422." },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active_from": { "type": "string", "format": "date-time", "description": "Default = ahora." },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "CustomerAddOnPatchWriteable": {
+        "type": "object",
+        "description": "PATCH NO permite cambiar `code` (422 `immutable`).",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "amount_cents": { "type": "integer", "minimum": 0 },
+          "tax_entity_id": { "type": ["string", "null"], "format": "uuid", "description": "Cambia la razón social (aplica a próximos ciclos)." },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active_to": { "type": ["string", "null"], "format": "date-time" },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "CatalogEvent": {
+        "type": "object",
+        "description": "Evento facturable en el catálogo de la organización (ej. 'revisión de dispositivo'). Se administra desde el admin UI — la API solo expone listado.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": ["string", "null"] },
+          "default_amount_cents": { "type": ["integer", "null"], "description": "Si null, cada ocurrencia debe especificar `amount_cents` o devuelve 422." },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "active": { "type": "boolean", "description": "Si false, no se aceptan nuevas ocurrencias (422 `catalog_event_inactive`)." }
+        }
+      },
+      "CatalogEventOccurrence": {
+        "type": "object",
+        "description": "Una ocurrencia concreta del evento, asociada a un cliente y opcionalmente a una unit. Si `billing_mode=immediate`, emite invoice individual al instante; si `next_cycle`, entra al próximo cierre de ciclo del cliente (en la factura de su razón social).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "catalog_event_id": { "type": "string", "format": "uuid" },
+          "customer_id": { "type": "string", "format": "uuid" },
+          "tax_entity_id": { "type": "string", "format": "uuid" },
+          "unit_external_id": { "type": ["string", "null"], "description": "Texto libre — referencia opcional a la unidad." },
+          "amount_cents": { "type": "integer" },
+          "billing_mode": { "type": "string", "enum": ["immediate", "next_cycle"] },
+          "reference": { "type": ["string", "null"], "description": "Notas / ID externo (ticket, orden de servicio, etc.)." },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "fee_id": { "type": ["string", "null"], "format": "uuid", "description": "Se setea cuando la ocurrencia se materializa en una fee dentro de una invoice. null = pendiente." },
+          "invoice_id": { "type": ["string", "null"], "format": "uuid", "description": "Solo presente en la respuesta de creación cuando billing_mode=immediate y la invoice se emitió." },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CatalogEventOccurrenceWriteable": {
+        "type": "object",
+        "required": ["catalog_event_code", "customer_external_id", "billing_mode"],
+        "properties": {
+          "catalog_event_code": { "type": "string", "description": "Code de un evento ACTIVO en el catálogo. 422 `catalog_event_inactive` si no." },
+          "customer_external_id": { "type": "string" },
+          "billing_mode": { "type": "string", "enum": ["immediate", "next_cycle"] },
+          "amount_cents": { "type": "integer", "minimum": 0, "description": "Override del default del catálogo. Si el catálogo no tiene default Y no se especifica, 422 `value_is_mandatory_when_catalog_has_no_default`." },
+          "unit_external_id": { "type": ["string", "null"] },
+          "reference": { "type": ["string", "null"] },
+          "occurred_at": { "type": "string", "format": "date-time", "description": "Default = ahora." },
+          "tax_entity_id": { "type": ["string", "null"], "format": "uuid", "description": "Vacío/null → razón social default del cliente." }
+        }
+      },
+      "BilledUnitDetail": {
+        "type": "object",
+        "description": "Una entrada en `fee.billed_units_detail` — detalla cuánto contribuye cada unit al fee. Útil para soporte: 'el cliente pregunta por qué cobramos $X de renta este mes' → buscas la fee monthly y miras el desglose por unit.",
+        "properties": {
+          "external_id": { "type": "string" },
+          "label": { "type": ["string", "null"] },
+          "amount_cents": { "type": "integer" }
+        }
+      },
+      "UnitsAnnex": {
+        "type": "array",
+        "description": "Anexo de unidades por factura. Una entrada por unit, con todos sus fees agregados.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "external_id": { "type": "string" },
+            "label": { "type": ["string", "null"] },
+            "fees": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": { "type": "string" },
+                  "amount_cents": { "type": "integer" }
+                }
+              }
+            }
+          }
         }
       },
       "Fee": {
         "type": "object",
+        "description": "Línea de invoice. Cada fee representa un concepto facturable (renta, setup, baja, add-on, evento de catálogo). En cycle invoices el motor agrupa fees por kind y por razón social. `precise_unit_amount` es el monto en string para preservar precisión.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "service_id": { "type": ["string", "null"], "format": "uuid" },
           "service_add_on_id": { "type": ["string", "null"], "format": "uuid" },
           "customer_add_on_id": { "type": ["string", "null"], "format": "uuid" },
-          "kind": { "type": "string", "enum": ["monthly", "setup", "service_addon", "customer_addon", "one_off"] },
+          "kind": { "type": "string", "enum": ["monthly", "setup", "removal", "service_addon", "customer_addon", "one_off", "catalog_event"] },
+          "description": { "type": "string" },
+          "units": { "type": "string", "description": "Numérico-como-string. Para monthly/service_addon refleja la suma de fracciones de unit activas en el periodo. Para setup/removal/customer_addon típicamente 1.0000. Para one_off (prepaid) refleja N meses." },
+          "unit_amount_cents": { "type": "integer" },
+          "precise_unit_amount": { "type": "string", "description": "Mismo monto que `unit_amount_cents` pero como string en pesos (ej. 500.00)." },
+          "amount_cents": { "type": "integer", "description": "Importe total de la línea (units × unit_amount_cents, redondeado bankers half-to-even)." },
+          "netsuite_item_code": { "type": ["string", "null"], "description": "Resuelto desde el service / addon / catalog event al momento de construir la fee. null = no configurado (NetSuite rechazará la línea)." },
+          "billed_units_detail": { "type": "array", "items": { "$ref": "#/components/schemas/BilledUnitDetail" } },
+          "payment_status": { "type": "string", "description": "Reservado para futuro: tracking de pago por línea." },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ExternalInvoice": {
+        "type": "object",
+        "description": "Folio CFDI y metadatos del documento fiscal en NetSuite. Se popula vía `POST /api/v1/invoices/:id/external-confirm`. null si la invoice todavía no fue confirmada.",
+        "properties": {
+          "folio": { "type": "string" },
+          "uuid_cfdi": { "type": ["string", "null"] },
+          "system": { "type": ["string", "null"] },
+          "netsuite_internal_id": { "type": ["string", "null"] },
+          "pdf_url": { "type": ["string", "null"] },
+          "xml_url": { "type": ["string", "null"] },
+          "issued_at": { "type": ["string", "null"], "format": "date-time" },
+          "confirmed_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "Invoice": {
+        "type": "object",
+        "description": "Factura. `fees_amount_cents` es el monto NETO sin impuestos — NetSuite calcula IVA/IEPS/retenciones al emitir el CFDI.\n\n**Cycle vs Immediate**:\n- Cycle: `metadata.cycle_invoice_kind` ∈ {`unified`, `recurring`, `oneoff`} indica el split contable. period_from/to = ciclo del cliente.\n- Immediate: `metadata.trigger` ∈ {`one_off_immediate`, `setup_immediate`, `removal_immediate`, `catalog_event_immediate`}. period_from = period_to = momento del evento.\n\n`status` lifecycle: `calculated` → `finalized` (cuando NetSuite confirma vía external-confirm) → `voided` (opcional, vía POST /void).\n`external_dispatch_status` lifecycle: `pending` → `dispatched` (envío exitoso) o `failed` (error de NetSuite) → `confirmed` (al recibir external-confirm).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "sequential_id": { "type": "integer", "description": "Contador autoincremental por organización." },
+          "number": { "type": ["string", "null"], "description": "Folio asignado por NetSuite (= external_invoice.folio una vez confirmada)." },
+          "customer_id": { "type": "string", "format": "uuid" },
+          "issuing_date": { "type": "string", "description": "ISO date (YYYY-MM-DD) en la tz del cliente." },
+          "payment_due_date": { "type": "string", "description": "ISO date (YYYY-MM-DD)." },
+          "net_payment_term": { "type": "integer", "description": "Días entre issuing y due. Default 0 (mismo día)." },
+          "status": { "type": "string", "enum": ["calculated", "finalized", "voided"] },
+          "external_dispatch_status": { "type": "string", "enum": ["pending", "dispatched", "failed", "confirmed"] },
+          "external_dispatch_error": { "type": ["string", "null"], "description": "Detalle del error si `failed`." },
+          "payment_status": { "type": "string", "description": "Reservado: tracking de pago." },
+          "currency": { "type": "string" },
+          "fees_amount_cents": { "type": "integer", "description": "Suma neta de todas las fees. SIN impuestos — NetSuite los agrega." },
+          "period_from": { "type": ["string", "null"], "format": "date-time" },
+          "period_to": { "type": ["string", "null"], "format": "date-time" },
+          "customer": { "$ref": "#/components/schemas/CustomerEmbedded" },
+          "fees": { "type": "array", "items": { "$ref": "#/components/schemas/Fee" } },
+          "units_annex": { "$ref": "#/components/schemas/UnitsAnnex" },
+          "external_invoice": {
+            "oneOf": [
+              { "type": "null" },
+              { "$ref": "#/components/schemas/ExternalInvoice" }
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Incluye `cycle_invoice_kind` para cycle invoices, `trigger` para immediates, `idempotency_key` reflejado, y `transaction_id` para one_off_immediate."
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "InvoiceWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `POST /api/v1/invoices` (cierre de ciclo manual). El header `Idempotency-Key` y `metadata.idempotency_key` son alternativos; si ambos están deben coincidir.\n\nSin `period_from`/`period_to`, el motor usa el ciclo vigente del cliente. Con override, factura un periodo arbitrario.",
+        "required": ["customer_external_id"],
+        "properties": {
+          "customer_external_id": { "type": "string" },
+          "period_from": { "type": "string", "format": "date-time", "description": "Override (opcional)." },
+          "period_to": { "type": "string", "format": "date-time", "description": "Override (opcional)." },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Bag libre que se propaga a la invoice. Si `idempotency_key` está aquí y el header `Idempotency-Key` también, deben coincidir."
+          }
+        }
+      },
+      "InvoiceResponse": {
+        "type": "object",
+        "description": "Respuesta de `POST /api/v1/invoices`. Cuando el cierre emite múltiples facturas (split_by_kind y/o multi-tax-entity), la primera viene en `invoice` y la segunda en `companion_invoice` (presente solo si hay 2). El orden es estable (recurrente antes que único). Si el cliente factura a >2 razones sociales con split, las facturas adicionales se consultan vía `GET /api/v1/invoices?customer_external_id=...`.",
+        "properties": {
+          "invoice": { "$ref": "#/components/schemas/Invoice" },
+          "companion_invoice": { "$ref": "#/components/schemas/Invoice" }
+        }
+      },
+      "PreviewWriteable": {
+        "type": "object",
+        "description": "Cuerpo de `POST /api/v1/invoices/preview`. Dry-run: NO persiste invoice, NO marca units como facturadas, NO dispatcha a NetSuite. Acepta override de periodo y de `now` (este último simula 'qué pasaría si hoy fuera X'; útil para verificar cambios de precio programados).",
+        "required": ["customer_external_id"],
+        "properties": {
+          "customer_external_id": { "type": "string" },
+          "period_from": { "type": "string", "format": "date-time" },
+          "period_to": { "type": "string", "format": "date-time", "description": "Si se manda alguno de los dos, AMBOS son obligatorios y to > from." },
+          "now": { "type": "string", "format": "date-time", "description": "Simula 'now'. Sin override de periodo, se usa para calcular el ciclo vigente." }
+        }
+      },
+      "PreviewFee": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
           "description": { "type": "string" },
           "units": { "type": "string" },
           "unit_amount_cents": { "type": "integer" },
-          "amount_cents": { "type": "integer", "description": "Monto neto sin impuestos." },
-          "billed_units_detail": { "type": "array" }
+          "precise_unit_amount": { "type": "string" },
+          "amount_cents": { "type": "integer" },
+          "service_id": { "type": ["string", "null"], "format": "uuid" },
+          "service_add_on_id": { "type": ["string", "null"], "format": "uuid" },
+          "customer_add_on_id": { "type": ["string", "null"], "format": "uuid" },
+          "netsuite_item_code": { "type": ["string", "null"] },
+          "billed_units_detail": { "type": "array", "items": { "$ref": "#/components/schemas/BilledUnitDetail" } }
+        }
+      },
+      "PreviewNetSuitePayload": {
+        "type": "object",
+        "description": "Forma exacta del payload que el dispatcher enviaría a NetSuite. Una entrada por cada factura emitida (por razón social).",
+        "properties": {
+          "external_id": { "type": "null" },
+          "minilago_invoice_id": { "type": "null" },
+          "issued_at": { "type": "string", "format": "date-time" },
+          "currency": { "type": "string" },
+          "customer": {
+            "type": "object",
+            "description": "El `customer` del payload es la **razón social** (NetSuite ve cada razón social como un customer).",
+            "properties": {
+              "external_id": { "type": "string", "description": "external_id de la razón social." },
+              "name": { "type": "string", "description": "legal_name de la razón social." },
+              "tax_identification_number": { "type": ["string", "null"], "description": "RFC de la razón social." },
+              "country": { "type": ["string", "null"] },
+              "netsuite_internal_id": { "type": ["string", "null"] },
+              "netsuite_entity_handle": { "type": "string", "description": "`<internal_id>` si está cacheado, o `eid:<tax_entity.external_id>` si no. El consumidor lo usa directo como `entity: { id: <handle> }`." },
+              "customer_external_id": { "type": "string", "description": "External_id del Customer comercial (útil en logs para agrupar razones sociales del mismo cliente)." }
+            }
+          },
+          "billing_period": {
+            "type": "object",
+            "properties": {
+              "from": { "type": "string", "format": "date-time" },
+              "to": { "type": "string", "format": "date-time" }
+            }
+          },
+          "lines": { "type": "array", "items": { "type": "object" } },
+          "units_annex": { "$ref": "#/components/schemas/UnitsAnnex" },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "fees_amount_cents": { "type": "integer" }
+            }
+          }
+        }
+      },
+      "PreviewResponse": {
+        "type": "object",
+        "description": "Respuesta de `POST /api/v1/invoices/preview`. `fees`/`fees_amount_cents`/`units_annex` son los AGREGADOS de todas las razones sociales (qué se cobraría en total al cliente este ciclo). `invoices[]` desglosa la emisión real: una entrada por razón social. El cierre real puede emitir hasta `invoices.length × 2` facturas si el customer está en `split_by_kind` (el split aplica dentro de cada razón social y no se refleja en preview).",
+        "properties": {
+          "preview": {
+            "type": "object",
+            "properties": {
+              "period": {
+                "type": "object",
+                "properties": {
+                  "from": { "type": "string", "format": "date-time" },
+                  "to": { "type": "string", "format": "date-time" },
+                  "days_in_period": { "type": "integer" }
+                }
+              },
+              "reference_now": { "type": "string", "format": "date-time" },
+              "fees": { "type": "array", "items": { "$ref": "#/components/schemas/PreviewFee" } },
+              "fees_amount_cents": { "type": "integer" },
+              "units_annex": { "$ref": "#/components/schemas/UnitsAnnex" },
+              "invoices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tax_entity": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "legal_name": { "type": "string" },
+                        "tax_identification_number": { "type": ["string", "null"] },
+                        "country": { "type": ["string", "null"] },
+                        "netsuite_internal_id": { "type": ["string", "null"] },
+                        "is_default": { "type": "boolean" }
+                      }
+                    },
+                    "fees": { "type": "array", "items": { "$ref": "#/components/schemas/PreviewFee" } },
+                    "fees_amount_cents": { "type": "integer" },
+                    "units_annex": { "$ref": "#/components/schemas/UnitsAnnex" },
+                    "netsuite_payload": { "$ref": "#/components/schemas/PreviewNetSuitePayload" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ExternalConfirmInvoice": {
+        "type": "object",
+        "description": "Body del callback de NetSuite (`POST /api/v1/invoices/:id/external-confirm`). HMAC obligatorio.",
+        "required": ["external_invoice"],
+        "properties": {
+          "external_invoice": {
+            "type": "object",
+            "required": ["folio"],
+            "properties": {
+              "folio": { "type": "string", "description": "Folio fiscal asignado por NetSuite / PAC." },
+              "uuid_cfdi": { "type": "string", "description": "UUID del CFDI emitido por el SAT." },
+              "system": { "type": "string", "description": "Identificador del sistema emisor (ej. 'netsuite-mx')." },
+              "netsuite_internal_id": { "type": "string", "description": "Internal ID del documento en NetSuite." },
+              "pdf_url": { "type": "string", "format": "uri" },
+              "xml_url": { "type": "string", "format": "uri" },
+              "issued_at": { "type": "string", "format": "date-time" },
+              "due_date": { "type": "string", "format": "date" },
+              "payment_status": { "type": "string" },
+              "total_amount_cents": { "type": "integer" },
+              "currency": { "type": "string" }
+            }
+          }
+        }
+      },
+      "CreditNote": {
+        "type": "object",
+        "description": "Nota de crédito sobre una invoice ya emitida en NetSuite. Tiene su propio dispatch + external-confirm.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "sequential_id": { "type": "integer" },
+          "number": { "type": ["string", "null"], "description": "Folio CN de NetSuite." },
+          "invoice_id": { "type": "string", "format": "uuid", "description": "Invoice original (debe estar finalized + confirmed)." },
+          "customer_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["calculated", "finalized", "voided"] },
+          "external_dispatch_status": { "type": "string", "enum": ["pending", "dispatched", "failed", "confirmed"] },
+          "credit_status": { "type": "string", "enum": ["available", "consumed"], "description": "Reservado para tracking de crédito aplicable." },
+          "refund_status": { "type": ["string", "null"] },
+          "reason": { "type": "string", "enum": ["duplicated_charge", "product_unsatisfactory", "order_change", "order_cancellation", "fraudulent_charge", "other"] },
+          "description": { "type": "string" },
+          "currency": { "type": "string" },
+          "total_amount_cents": { "type": "integer", "description": "Suma neta de items (sin impuestos)." },
+          "balance_amount_cents": { "type": "integer" },
+          "credit_amount_cents": { "type": "integer" },
+          "refund_amount_cents": { "type": "integer" },
+          "issuing_date": { "type": "string", "description": "ISO date (YYYY-MM-DD)." },
+          "idempotency_marker": { "type": ["string", "null"], "description": "Si la `description` contiene `[idem:<token>]`, ese token queda aquí." },
+          "customer": { "$ref": "#/components/schemas/CustomerEmbedded" },
+          "invoice": {
+            "type": "object",
+            "description": "Forma reducida del invoice asociado.",
+            "properties": {
+              "id": { "type": "string", "format": "uuid" },
+              "number": { "type": ["string", "null"] },
+              "status": { "type": "string" },
+              "external_dispatch_status": { "type": "string" },
+              "payment_status": { "type": "string" }
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "format": "uuid" },
+                "fee_id": { "type": "string", "format": "uuid" },
+                "amount_cents": { "type": "integer" },
+                "amount_currency": { "type": "string" },
+                "fee": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string", "format": "uuid" },
+                    "kind": { "type": "string" },
+                    "description": { "type": "string" },
+                    "units": { "type": "string" },
+                    "amount_cents": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "external_credit_note": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "properties": {
+                  "folio": { "type": "string" },
+                  "uuid_cfdi": { "type": ["string", "null"] },
+                  "system": { "type": ["string", "null"] },
+                  "netsuite_internal_id": { "type": ["string", "null"] },
+                  "pdf_url": { "type": ["string", "null"] },
+                  "xml_url": { "type": ["string", "null"] },
+                  "issued_at": { "type": ["string", "null"], "format": "date-time" },
+                  "confirmed_at": { "type": ["string", "null"], "format": "date-time" }
+                }
+              }
+            ]
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "CreditNoteWriteable": {
         "type": "object",
+        "description": "Cuerpo de `POST /api/v1/credit_notes`. La invoice debe estar en `status=finalized` Y `external_dispatch_status=confirmed` (422 `invoice_not_confirmed` si no).",
         "required": ["invoice_id", "reason", "items"],
         "properties": {
           "invoice_id": { "type": "string", "format": "uuid" },
           "reason": { "type": "string", "enum": ["duplicated_charge", "product_unsatisfactory", "order_change", "order_cancellation", "fraudulent_charge", "other"] },
-          "description": { "type": "string" },
-          "credit_amount_cents": { "type": "integer" },
-          "items": { "type": "array", "items": { "type": "object", "required": ["fee_id", "amount_cents"], "properties": { "fee_id": { "type": "string", "format": "uuid" }, "amount_cents": { "type": "integer", "minimum": 1 } } } }
+          "description": { "type": "string", "description": "Texto libre. Si contiene `[idem:<token>]`, el token se guarda como `idempotency_marker`." },
+          "credit_amount_cents": { "type": "integer", "description": "Debe igualar la suma de `items[].amount_cents` (422 `must_equal_sum_of_items` si no). Si se omite, se asume = total." },
+          "refund_amount_cents": { "type": "integer", "default": 0 },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Cada item refiere a una `fee_id` de la invoice original y un `amount_cents` (positivo, ≤ fee.amount_cents).",
+            "items": {
+              "type": "object",
+              "required": ["fee_id", "amount_cents"],
+              "properties": {
+                "fee_id": { "type": "string", "format": "uuid" },
+                "amount_cents": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
         }
       },
-      "ExternalConfirmInvoice": { "type": "object", "required": ["external_invoice"], "properties": { "external_invoice": { "type": "object", "required": ["folio"], "properties": { "folio": { "type": "string" }, "uuid_cfdi": { "type": "string" }, "system": { "type": "string" }, "issued_at": { "type": "string", "format": "date-time" } } } } },
-      "ExternalConfirmCreditNote": { "type": "object", "required": ["external_credit_note"], "properties": { "external_credit_note": { "type": "object", "required": ["folio"], "properties": { "folio": { "type": "string" }, "uuid_cfdi": { "type": "string" }, "system": { "type": "string" } } } } }
+      "ExternalConfirmCreditNote": {
+        "type": "object",
+        "required": ["external_credit_note"],
+        "properties": {
+          "external_credit_note": {
+            "type": "object",
+            "required": ["folio"],
+            "properties": {
+              "folio": { "type": "string" },
+              "uuid_cfdi": { "type": "string" },
+              "system": { "type": "string" },
+              "netsuite_internal_id": { "type": "string" },
+              "pdf_url": { "type": "string", "format": "uri" },
+              "xml_url": { "type": "string", "format": "uri" },
+              "issued_at": { "type": "string", "format": "date-time" },
+              "total_amount_cents": { "type": "integer" },
+              "currency": { "type": "string" }
+            }
+          }
+        }
+      },
+      "AdminResetBody": {
+        "type": "object",
+        "required": ["confirm"],
+        "properties": {
+          "confirm": { "type": "string", "description": "Debe coincidir EXACTAMENTE con `organization.slug` (sino 422 `must_equal_organization_slug`)." }
+        }
+      },
+      "AdminResetResponse": {
+        "type": "object",
+        "properties": {
+          "reset": { "type": "boolean", "const": true },
+          "customers_deleted": { "type": "integer" },
+          "services_deleted": { "type": "integer" },
+          "invoices_deleted": { "type": "integer" }
+        }
+      }
     }
   },
   "security": [{ "BearerAuth": [] }],
   "paths": {
-    "/health": { "get": { "summary": "Health check", "security": [], "tags": ["meta"], "responses": { "200": { "description": "OK" } } } },
-    "/openapi.json": { "get": { "summary": "OpenAPI spec", "security": [], "tags": ["meta"], "responses": { "200": { "description": "JSON" } } } },
-    "/api/v1": { "get": { "summary": "Endpoint discovery", "security": [], "tags": ["meta"], "responses": { "200": { "description": "Lista" } } } },
-
-    "/api/v1/customers": {
-      "post": { "summary": "Create / upsert customer (con billing_time + subscription_at)", "tags": ["customers"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/CustomerWriteable" } } } } } }, "responses": { "200": { "description": "Customer" } } },
-      "get": { "summary": "List customers", "tags": ["customers"], "responses": { "200": { "description": "Lista" } } }
+    "/openapi.json": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "OpenAPI 3.1 spec completo (machine-readable)",
+        "security": [],
+        "responses": {
+          "200": { "description": "El JSON de esta documentación.", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
     },
-    "/api/v1/customers/{externalId}": {
-      "get": { "summary": "Read customer", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Customer" } } },
-      "patch": {
-        "summary": "Edita soft fields del customer (v12) — name, email, dirección, etc.",
-        "description": "Edita campos NO billing-impacting. Para subscription_at, anchor_day, period_months o nonrecurring_trigger usar PATCH /:externalId/billing-schedule (v11). currency tiene gate: 409 si hay invoices no-voided (cambiar moneda con invoices viejas corrompe reportes). timezone se valida contra IANA. Customer terminated → 409.",
+    "/openapi.yaml": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Alias del openapi.json (se sirve con content-type application/yaml pero el body sigue siendo JSON — la mayoría de las tools lo aceptan)",
+        "security": [],
+        "responses": { "200": { "description": "Spec" } }
+      }
+    },
+    "/api/v1": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Índice ligero de endpoints (sin auth)",
+        "description": "Devuelve un listado plano `{ method, path, summary, tags, auth }` sin schemas. Útil cuando solo necesitas saber qué endpoints existen.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Catálogo de endpoints",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "service": { "type": "string" },
+                    "version": { "type": "string" },
+                    "endpoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "method": { "type": "string" },
+                          "path": { "type": "string" },
+                          "summary": { "type": "string" },
+                          "tags": { "type": "array", "items": { "type": "string" } },
+                          "auth": { "type": "string", "enum": ["bearer", "hmac", "none"] }
+                        }
+                      }
+                    },
+                    "openapi": { "type": "string" },
+                    "docs": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Swagger UI interactivo (HTML)",
+        "security": [],
+        "responses": { "200": { "description": "Página HTML que renderiza el spec." } }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["discovery"],
+        "summary": "Health probe (sin auth)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string" } } } } }
+          }
+        }
+      }
+    },
+    "/api/v1/customers": {
+      "post": {
         "tags": ["customers"],
-        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "summary": "Crear o actualizar (upsert por external_id) un cliente",
+        "description": "Si `external_id` ya existe en la organización, hace UPDATE en su lugar (idempotente). Si no, lo crea — incluye su razón social default (con `external_id` y `legal_name` heredados del Customer).\n\nValidaciones:\n- `external_id`: slug ASCII `[A-Za-z0-9._-]+` (422 `must_be_ascii_slug` si no).\n- `timezone`: IANA válida.\n- `billing_period_months`: 1, 3, 6 o 12.\n- `billing_anchor_day`: 1..28.\n- `billing_anchor_month`: 1..12, solo si period_months > 1.\n- `currency` y `name` obligatorios en alta (no en update).",
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "type": "object", "properties": {
-            "name": { "type": "string" },
-            "email": { "type": ["string", "null"], "format": "email" },
-            "phone": { "type": ["string", "null"] },
-            "tax_identification_number": { "type": ["string", "null"] },
-            "address_line1": { "type": ["string", "null"] },
-            "address_line2": { "type": ["string", "null"] },
-            "city": { "type": ["string", "null"] },
-            "state": { "type": ["string", "null"] },
-            "zipcode": { "type": ["string", "null"] },
-            "country": { "type": ["string", "null"], "description": "ISO 2 letras" },
-            "timezone": { "type": ["string", "null"], "description": "IANA timezone" },
-            "currency": { "type": "string", "description": "ISO 3 letras. Solo editable si NO hay invoices no-voided." },
-            "netsuite_internal_id": { "type": ["string", "null"], "description": "v13 — Cache del internal id que NetSuite asignó. String vacío o whitespace se normaliza a null." },
-            "metadata": { "type": "object" }
-          } } } } } }
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["customer"], "properties": { "customer": { "$ref": "#/components/schemas/CustomerWriteable" } } },
+              "examples": {
+                "minimo": {
+                  "summary": "Mínimo viable",
+                  "value": { "customer": { "external_id": "transportes-marva", "name": "Transportes MARVA SA de CV", "currency": "MXN" } }
+                },
+                "completo": {
+                  "summary": "Con calendario explícito",
+                  "value": {
+                    "customer": {
+                      "external_id": "cust-001",
+                      "name": "Empresa Demo",
+                      "currency": "MXN",
+                      "timezone": "America/Mexico_City",
+                      "billing_period_months": 1,
+                      "billing_anchor_day": 1,
+                      "nonrecurring_trigger": "next_cycle",
+                      "cycle_invoice_mode": "unified",
+                      "subscription_at": "2026-06-01T06:00:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
         },
         "responses": {
-          "200": { "description": "Customer actualizado" },
-          "404": { "description": "Customer no existe" },
-          "409": { "description": "customer_terminated | customer_has_invoices (al cambiar currency)" },
-          "422": { "description": "Validación: use_billing_schedule_endpoint (si se envían hard fields), invalid_iana, must_not_be_empty, at_least_one_field_required" }
+          "200": { "description": "Customer creado o actualizado", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } },
+          "401": { "description": "unauthorized", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "validation_errors", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       },
-      "delete": { "summary": "Delete (409 si tiene services activos)", "tags": ["customers"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
-    },
-    "/api/v1/customers/{externalId}/billing-schedule": {
-      "patch": {
-        "summary": "Edita el calendario de facturación del customer post-creación (v11)",
-        "description": "Permite cambiar subscription_at / billing_anchor_day / billing_period_months / billing_anchor_month / nonrecurring_trigger después de crear el customer. Los 4 primeros están gateados por 'sin invoices no-voided' — si las hay, 409. nonrecurring_trigger es siempre editable. Tras actualizar, currentBillingPeriodStartedAt/EndingAt se recalculan automáticamente. Si el nuevo subscription_at es futuro, el customer pasa a status='pending'. El histórico se guarda en customer.metadata.schedule_history (append-only, últimas 50 ediciones).",
+      "get": {
         "tags": ["customers"],
-        "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "summary": "Listar clientes (paginado)",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "customers": { "type": "array", "items": { "$ref": "#/components/schemas/Customer" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/customers/{externalId}": {
+      "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" }, "description": "external_id del cliente (slug ASCII)." }],
+      "get": {
+        "tags": ["customers"],
+        "summary": "Leer un cliente",
+        "responses": {
+          "200": { "description": "Customer", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } },
+          "404": { "description": "customer_not_found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      },
+      "patch": {
+        "tags": ["customers"],
+        "summary": "Editar soft fields (no billing-impacting)",
+        "description": "Solo `name`, `email`, `phone`, `currency`, `timezone`, `metadata`. Para `subscription_at`, `billing_anchor_day`, `billing_period_months` o `nonrecurring_trigger` usar `/billing-schedule` (mandar acá devuelve 422 `use_billing_schedule_endpoint`).\n\nGate de currency: solo se permite cambiar si NO hay invoices con status ≠ voided (409 `customer_has_invoices`).",
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "properties": { "billing_schedule": { "type": "object", "properties": {
-            "subscription_at": { "type": "string", "format": "date-time" },
-            "billing_anchor_day": { "type": "integer", "minimum": 1, "maximum": 28 },
-            "billing_period_months": { "type": "integer", "enum": [1, 3, 6, 12] },
-            "billing_anchor_month": { "type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "v15 — Solo aplica si period_months > 1. NULL para limpiar override." },
-            "nonrecurring_trigger": { "type": "string", "enum": ["immediate", "next_cycle"] }
-          } } } } } }
+          "content": { "application/json": { "schema": { "type": "object", "required": ["customer"], "properties": { "customer": { "$ref": "#/components/schemas/CustomerPatchSoft" } } } } }
         },
         "responses": {
-          "200": { "description": "Customer actualizado" },
-          "404": { "description": "Customer no existe" },
-          "409": { "description": "customer_terminated | customer_has_invoices (con blocking_invoice_count)" },
-          "422": { "description": "Validación: at_least_one_field_required, must_be_1_to_28, must_be_1_3_6_or_12, value_is_invalid, invalid_iso_datetime" }
+          "200": { "description": "Customer actualizado", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } },
+          "404": { "description": "customer_not_found" },
+          "409": { "description": "customer_has_invoices o customer_terminated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "validation_errors", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["customers"],
+        "summary": "Borrar un cliente (solo sin services activos)",
+        "description": "Hard delete. Si tiene services en `status=active` devuelve 409 `customer_has_active_services` — primero hay que terminate-los.",
+        "responses": {
+          "200": { "description": "Borrado", "content": { "application/json": { "schema": { "type": "object", "properties": { "deleted": { "type": "boolean" }, "external_id": { "type": "string" } } } } } },
+          "404": { "description": "customer_not_found" },
+          "409": { "description": "customer_has_active_services" }
+        }
+      },
+      "put": {
+        "tags": ["customers"],
+        "summary": "(no soportado — devuelve 404 resource_not_found)",
+        "description": "PUT no se usa para customers. La operación de creación/upsert es POST /api/v1/customers.",
+        "responses": { "404": { "description": "resource_not_found" } }
+      }
+    },
+    "/api/v1/customers/{externalId}/billing-schedule": {
+      "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "patch": {
+        "tags": ["customers"],
+        "summary": "Editar el calendario de facturación",
+        "description": "Cambia `subscription_at`, `billing_anchor_day`, `billing_period_months`, `billing_anchor_month`, `nonrecurring_trigger`, o `cycle_invoice_mode`. Los 4 primeros (billing-impacting) requieren que el cliente NO tenga invoices con status ≠ voided (409 `customer_has_invoices`). Los últimos 2 no tienen gate.\n\nDespués de actualizar, recalcula `currentBillingPeriodStartedAt/EndingAt` y guarda un audit entry en `customer.metadata.schedule_history` (últimas 50 ediciones).",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["billing_schedule"], "properties": { "billing_schedule": { "$ref": "#/components/schemas/BillingScheduleWriteable" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Customer actualizado", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer": { "$ref": "#/components/schemas/Customer" } } } } } },
+          "404": { "description": "customer_not_found" },
+          "409": { "description": "customer_has_invoices o customer_terminated" },
+          "422": { "description": "validation_errors" }
+        }
+      }
+    },
+    "/api/v1/services": {
+      "post": {
+        "tags": ["services"],
+        "summary": "Crear un plan (service)",
+        "description": "El plan se asocia a un cliente y a una razón social (por default la default del cliente). La currency se hereda del cliente si no se especifica.\n\nValidaciones específicas:\n- `pricing_model=one_off`: `monthly_unit_amount_cents` > 0, `removal_unit_amount_cents` = 0, `setup_billing_mode` y `removal_billing_mode` deben ser `next_cycle`.\n- `setup_billing_mode=immediate`: requiere `setup_unit_amount_cents > 0`.\n- `removal_billing_mode=immediate`: requiere `removal_unit_amount_cents > 0`.\n- `prepaid_months_default`: solo válido en one_off.\n- `tax_entity_id`: si se especifica, debe ser una razón social ACTIVA del MISMO cliente (422 `not_found_for_customer` / `inactive`).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["service"], "properties": { "service": { "$ref": "#/components/schemas/ServiceWriteable" } } },
+              "examples": {
+                "recurring": {
+                  "summary": "Recurrente",
+                  "value": {
+                    "service": {
+                      "code": "combustible-mensual",
+                      "customer_external_id": "transportes-marva",
+                      "name": "Combustible · mensual",
+                      "pricing_model": "recurring",
+                      "monthly_unit_amount_cents": 45000,
+                      "setup_unit_amount_cents": 120000,
+                      "netsuite_monthly_item_code": "COMB-MONTHLY",
+                      "netsuite_setup_item_code": "COMB-SETUP"
+                    }
+                  }
+                },
+                "prepago": {
+                  "summary": "Prepago (one_off) 48 meses",
+                  "value": {
+                    "service": {
+                      "code": "gps-instalacion",
+                      "customer_external_id": "transportes-marva",
+                      "name": "GPS · instalación con 48 meses prepagados",
+                      "pricing_model": "one_off",
+                      "monthly_unit_amount_cents": 10000,
+                      "setup_unit_amount_cents": 150000,
+                      "prepaid_months_default": 48,
+                      "netsuite_monthly_item_code": "GPS-MONTHLY",
+                      "netsuite_setup_item_code": "GPS-SETUP"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Service", "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/Service" } } } } } },
+          "404": { "description": "customer_not_found" },
+          "422": { "description": "validation_errors" }
+        }
+      },
+      "get": {
+        "tags": ["services"],
+        "summary": "Listar planes (paginado, filtros opcionales)",
+        "parameters": [
+          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "services": { "type": "array", "items": { "$ref": "#/components/schemas/Service" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/services/{code}": {
+      "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "tags": ["services"],
+        "summary": "Leer un plan",
+        "responses": {
+          "200": { "description": "Service", "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/Service" } } } } } },
+          "404": { "description": "service_not_found" }
+        }
+      },
+      "patch": {
+        "tags": ["services"],
+        "summary": "Editar metadata del plan (no precios)",
+        "description": "Cambia nombre, descripción, razón social, monto de baja, modos de emisión, prepaid_months_default, item codes y metadata. Los precios `monthly_unit_amount_cents` y `setup_unit_amount_cents` se modifican vía `PUT /price` (pasan por el flujo de pending).",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["service"], "properties": { "service": { "$ref": "#/components/schemas/ServicePatchWriteable" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Service", "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/Service" } } } } } },
+          "404": { "description": "service_not_found" },
+          "422": { "description": "validation_errors" }
+        }
+      },
+      "delete": {
+        "tags": ["services"],
+        "summary": "Borrar un plan (solo sin fees)",
+        "description": "Hard delete. Si el plan tiene fees emitidos (cualquier invoice histórica que lo referencia), devuelve 409 `service_has_fees` — usa `POST /:code/terminate` en su lugar.",
+        "responses": {
+          "200": { "description": "Borrado", "content": { "application/json": { "schema": { "type": "object", "properties": { "deleted": { "type": "boolean" }, "code": { "type": "string" } } } } } },
+          "404": { "description": "service_not_found" },
+          "409": { "description": "service_has_fees" }
+        }
+      }
+    },
+    "/api/v1/services/{code}/price": {
+      "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "put": {
+        "tags": ["services"],
+        "summary": "Programar cambio de precio (vigencia futura)",
+        "description": "Programa un cambio de `monthly_unit_amount_cents` y `setup_unit_amount_cents` para `effective_from` (debe ser estrictamente > now). Mientras no llegue la fecha, los precios viejos se mantienen y `pending_price_change` aparece en el serializer.\n\nSi al programar este cambio ya existe un pending cuyo `effective_from` está en el pasado (es decir, ya entró en vigor pero aún no se sobreescribió la base), se PROMUEVE primero (los valores pending pasan a ser los base) antes de escribir el nuevo pending. Esto preserva la semántica para clientes mid-cycle.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["price"], "properties": { "price": { "$ref": "#/components/schemas/PriceWriteable" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Service con pending_price_change", "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/Service" } } } } } },
+          "404": { "description": "service_not_found" },
+          "409": { "description": "service_terminated" },
+          "422": { "description": "validation_errors (effective_from en pasado, montos negativos, etc.)" }
+        }
+      }
+    },
+    "/api/v1/services/{code}/pending-price": {
+      "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "delete": {
+        "tags": ["services"],
+        "summary": "Cancelar cambio de precio programado (solo si no ha entrado en vigor)",
+        "description": "Si `pending_effective_from` ya pasó, devuelve 409 `pending_price_already_in_effect` — para revertir un cambio que ya está vigente, programa OTRO cambio en sentido opuesto vía `PUT /price`.",
+        "responses": {
+          "200": { "description": "Service con pending_price_change = null" },
+          "404": { "description": "service_not_found" },
+          "409": { "description": "no_pending_price_change o pending_price_already_in_effect" }
+        }
+      }
+    },
+    "/api/v1/services/{code}/terminate": {
+      "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "tags": ["services"],
+        "summary": "Terminar un plan (cierra units activas)",
+        "description": "Setea `status='terminated'` y `terminated_at=now`. Adicionalmente, todas las units del plan con `active_to=null` se cierran (activeTo=now). Idempotente: si ya está terminado, devuelve el plan sin tocarlo.",
+        "responses": {
+          "200": { "description": "Service terminado" },
+          "404": { "description": "service_not_found" }
+        }
+      }
+    },
+    "/api/v1/services/{code}/add-ons": {
+      "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "tags": ["service-add-ons"],
+        "summary": "Crear un add-on per_unit sobre un plan",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Acepta `service_add_on` o `add_on` (alias).",
+                "properties": {
+                  "service_add_on": { "$ref": "#/components/schemas/ServiceAddOnWriteable" },
+                  "add_on": { "$ref": "#/components/schemas/ServiceAddOnWriteable" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "ServiceAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "$ref": "#/components/schemas/ServiceAddOn" } } } } } },
+          "404": { "description": "service_not_found" },
+          "422": { "description": "validation_errors (incluye `code: value_already_exist` si choca)" }
+        }
+      },
+      "get": {
+        "tags": ["service-add-ons"],
+        "summary": "Listar add-ons de un plan",
+        "parameters": [
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "service_add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/ServiceAddOn" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "service_not_found" }
+        }
+      }
+    },
+    "/api/v1/service-add-ons/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "tags": ["service-add-ons"],
+        "summary": "Leer un add-on per_unit",
+        "responses": {
+          "200": { "description": "ServiceAddOn" },
+          "404": { "description": "service_add_on_not_found" }
+        }
+      },
+      "patch": {
+        "tags": ["service-add-ons"],
+        "summary": "Editar un add-on per_unit",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "service_add_on": { "$ref": "#/components/schemas/ServiceAddOnPatchWriteable" },
+                  "add_on": { "$ref": "#/components/schemas/ServiceAddOnPatchWriteable" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "ServiceAddOn" },
+          "404": { "description": "service_add_on_not_found" },
+          "422": { "description": "validation_errors (incluye `code: immutable`)" }
+        }
+      },
+      "delete": {
+        "tags": ["service-add-ons"],
+        "summary": "Terminar un add-on (soft, setea active_to=now)",
+        "description": "Idempotente: si ya tenía `active_to` no lo cambia.",
+        "responses": {
+          "200": { "description": "ServiceAddOn terminado" },
+          "404": { "description": "service_add_on_not_found" }
         }
       }
     },
     "/api/v1/customers/{externalId}/add-ons": {
-      "post": { "summary": "Create customer-level flat add-on", "tags": ["add-ons"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "type": "object", "required": ["code", "name", "amount_cents"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "amount_cents": { "type": "integer", "minimum": 0 }, "active_from": { "type": "string", "format": "date-time" } } } } } } } }, "responses": { "200": { "description": "CustomerAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "$ref": "#/components/schemas/CustomerAddOn" } } } } } } } },
-      "get": { "summary": "List customer add-ons", "tags": ["add-ons"], "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
-    },
-    "/api/v1/customer-add-ons/{id}": {
-      "get": { "summary": "Read customer add-on", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CustomerAddOn" } } },
-      "patch": { "summary": "Update (code is immutable)", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CustomerAddOn" } } },
-      "delete": { "summary": "Soft-terminate (active_to = now)", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Terminated" } } }
-    },
-
-    "/api/v1/services": {
-      "post": { "summary": "Create service (sin billing fields — heredados del customer)", "tags": ["services"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "$ref": "#/components/schemas/ServiceWriteable" } } } } } }, "responses": { "200": { "description": "Service" } } },
-      "get": { "summary": "List services", "tags": ["services"], "parameters": [{ "name": "customer_external_id", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
-    },
-    "/api/v1/services/{code}": {
-      "get": { "summary": "Read service", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service" } } },
-      "patch": { "summary": "Update name/description/metadata + códigos NetSuite (v9). NO toca precios — usa PUT /price.", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": ["string", "null"] }, "netsuite_monthly_item_code": { "type": ["string", "null"] }, "netsuite_setup_item_code": { "type": ["string", "null"] }, "metadata": { "type": "object" } } } } } } } }, "responses": { "200": { "description": "Service actualizado" } } },
-      "delete": { "summary": "Delete (409 si tiene fees — usa terminate)", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK" } } }
-    },
-    "/api/v1/invoices/preview": {
+      "parameters": [{ "name": "externalId", "in": "path", "required": true, "schema": { "type": "string" } }],
       "post": {
-        "summary": "Vista previa (dry-run) de cycle invoice — no persiste nada",
-        "description": "Computa exactamente lo que /api/v1/invoices produciría (fees, units_annex, payload a NetSuite) SIN crear invoice, SIN crear fees, SIN marcar units como facturadas, SIN incrementar contadores y SIN dispatchar. Re-ejecutable infinitas veces. Acepta override de periodo (period_from + period_to) y de `now` (para simular qué pasaría si hoy fuera X — útil con cambios de precio programados v7).",
-        "tags": ["invoices"],
+        "tags": ["customer-add-ons"],
+        "summary": "Crear un add-on flat a nivel cliente",
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "type": "object", "required": ["customer_external_id"], "properties": { "customer_external_id": { "type": "string" }, "period_from": { "type": "string", "format": "date-time" }, "period_to": { "type": "string", "format": "date-time" }, "now": { "type": "string", "format": "date-time", "description": "Simula que la hora actual es X. Si no hay override de periodo, este valor se usa como reference para calcular el ciclo vigente. También determina el precio efectivo para pings one_off + immediate." } } } } } } }
-        },
-        "responses": { "200": { "description": "Preview con fees + units_annex + netsuite_payload" }, "404": { "description": "Customer no existe" }, "422": { "description": "Validación (period_from/to incompletos, fechas inválidas, etc.)" } }
-      }
-    },
-    "/api/v1/services/{code}/terminate": { "post": { "summary": "Terminate service + sus units activas", "tags": ["services"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Service terminated" } } } },
-    "/api/v1/services/{code}/price": {
-      "put": {
-        "summary": "Programar cambio de precio con vigencia desde el siguiente ciclo (v7)",
-        "description": "Aplica a recurring y one_off. El nuevo precio se usa cuando el periodStart del cycle invoice (o el timestamp del ping immediate) sea on-or-after effective_from. Clientes mid-cycle mantienen el precio viejo hasta su cierre. Si ya existe un pending sin vencer, se sobreescribe. Si el pending existente ya está en vigor, se promueve a base antes de escribir el nuevo.",
-        "tags": ["services"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "properties": { "price": { "type": "object", "required": ["monthly_unit_amount_cents", "setup_unit_amount_cents", "effective_from"], "properties": { "monthly_unit_amount_cents": { "type": "integer", "minimum": 0 }, "setup_unit_amount_cents": { "type": "integer", "minimum": 0 }, "effective_from": { "type": "string", "format": "date-time", "description": "Debe ser futuro (> ahora)." } } } } } } }
-        },
-        "responses": { "200": { "description": "Service con pending_price_change" }, "409": { "description": "service_terminated" }, "422": { "description": "Validación (must_be_in_the_future, must_be_non_negative_integer, etc.)" } }
-      }
-    },
-    "/api/v1/services/{code}/pending-price": {
-      "delete": {
-        "summary": "Cancelar un cambio de precio programado (v7)",
-        "description": "Solo tiene éxito si effective_from > ahora. Si el cambio ya entró en vigor, devuelve 409 (la única forma de revertirlo es programar otro cambio en sentido opuesto).",
-        "tags": ["services"],
-        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Service con pending_price_change=null" }, "409": { "description": "no_pending_price_change | pending_price_already_in_effect" } }
-      }
-    },
-    "/api/v1/services/{code}/add-ons": {
-      "post": { "summary": "Create service-level per-unit add-on", "tags": ["add-ons"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "type": "object", "required": ["code", "name", "amount_cents"], "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" }, "amount_cents": { "type": "integer", "minimum": 0 }, "active_from": { "type": "string", "format": "date-time" } } } } } } } }, "responses": { "200": { "description": "ServiceAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "service_add_on": { "$ref": "#/components/schemas/ServiceAddOn" } } } } } } } },
-      "get": { "summary": "List service add-ons", "tags": ["add-ons"], "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
-    },
-    "/api/v1/service-add-ons/{id}": {
-      "get": { "summary": "Read service add-on", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "ServiceAddOn" } } },
-      "patch": { "summary": "Update (code is immutable)", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "ServiceAddOn" } } },
-      "delete": { "summary": "Soft-terminate", "tags": ["add-ons"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Terminated" } } }
-    },
-
-    "/api/v1/units": {
-      "post": { "summary": "Create unit", "tags": ["units"], "responses": { "200": { "description": "Unit" } } },
-      "get": { "summary": "List units", "tags": ["units"], "parameters": [{ "name": "service_code", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } }], "responses": { "200": { "description": "Lista" } } }
-    },
-    "/api/v1/units/{id}": {
-      "get": { "summary": "Read unit", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } },
-      "patch": { "summary": "Update label / active_to / billing_starts_at", "tags": ["units"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Unit" } } }
-    },
-    "/api/v1/units/{id}/migrate": {
-      "post": {
-        "summary": "Migración de plan: terminate-and-recreate atómico (v8)",
-        "description": "Cierra la unit en su service actual (activeTo = migration_at) y crea una nueva unit en `to_service_code` con el mismo external_id. Política: solo a futuro, mismo customer, mismo pricing_model. Por default NO cobra setup del plan nuevo (setupBilledAt se preestablece en la nueva unit). Add-ons per-unit del service viejo se cierran junto con la unit vieja. Audit: metadata.migrated_to (vieja) + metadata.migrated_from (nueva) + EventLog operation_type='migrate'. Tras la migración, eventos al service viejo con ese external_id son rechazados (422).",
-        "tags": ["units"],
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
-        "requestBody": {
-          "required": true,
-          "content": { "application/json": { "schema": { "type": "object", "properties": { "migration": { "type": "object", "required": ["to_service_code", "migration_at"], "properties": {
-            "to_service_code": { "type": "string", "description": "Code del service destino (mismo customer, mismo pricing_model, distinto al actual)." },
-            "migration_at": { "type": "string", "format": "date-time", "description": "Cuándo entra en vigor. Debe ser > ahora." },
-            "charge_new_setup": { "type": "boolean", "default": false, "description": "Si true, deja setupBilledAt=null en la unit nueva (se cobrará setup del plan nuevo en el próximo cycle). Default false." },
-            "new_label": { "type": ["string", "null"], "description": "Label opcional para la unit nueva. Si se omite, se hereda el label viejo." },
-            "metadata": { "type": "object", "description": "Metadata adicional para la unit nueva (se combina con migrated_from)." }
-          } } } } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Acepta `customer_add_on` o `add_on` (alias).",
+                "properties": {
+                  "customer_add_on": { "$ref": "#/components/schemas/CustomerAddOnWriteable" },
+                  "add_on": { "$ref": "#/components/schemas/CustomerAddOnWriteable" }
+                }
+              }
+            }
+          }
         },
         "responses": {
-          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "old_unit": { "$ref": "#/components/schemas/Unit" }, "new_unit": { "$ref": "#/components/schemas/Unit" }, "event_id": { "type": "string", "format": "uuid" } } } } } },
-          "404": { "description": "unit | to_service no existe" },
-          "409": { "description": "unit_terminated | unit_already_migrated | external_id_collision_on_target" },
-          "422": { "description": "Validación (must_be_in_the_future, must_be_same_customer, must_be_same_pricing_model, same_as_current_service, service_terminated)" }
+          "200": { "description": "CustomerAddOn", "content": { "application/json": { "schema": { "type": "object", "properties": { "customer_add_on": { "$ref": "#/components/schemas/CustomerAddOn" } } } } } },
+          "404": { "description": "customer_not_found" },
+          "422": { "description": "validation_errors" }
+        }
+      },
+      "get": {
+        "tags": ["customer-add-ons"],
+        "summary": "Listar add-ons flat de un cliente",
+        "parameters": [
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "customer_add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/CustomerAddOn" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "customer_not_found" }
         }
       }
     },
-
+    "/api/v1/customer-add-ons/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "tags": ["customer-add-ons"],
+        "summary": "Leer un add-on flat",
+        "responses": {
+          "200": { "description": "CustomerAddOn" },
+          "404": { "description": "customer_add_on_not_found" }
+        }
+      },
+      "patch": {
+        "tags": ["customer-add-ons"],
+        "summary": "Editar un add-on flat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer_add_on": { "$ref": "#/components/schemas/CustomerAddOnPatchWriteable" },
+                  "add_on": { "$ref": "#/components/schemas/CustomerAddOnPatchWriteable" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "CustomerAddOn" },
+          "404": { "description": "customer_add_on_not_found" },
+          "422": { "description": "validation_errors" }
+        }
+      },
+      "delete": {
+        "tags": ["customer-add-ons"],
+        "summary": "Terminar un add-on flat (soft, setea active_to=now)",
+        "responses": {
+          "200": { "description": "CustomerAddOn terminado" },
+          "404": { "description": "customer_add_on_not_found" }
+        }
+      }
+    },
+    "/api/v1/units": {
+      "post": {
+        "tags": ["units"],
+        "summary": "Crear una unit",
+        "description": "Alternativa explícita a `POST /events` con `operation_type=add` (sin generar audit). Si el plan tiene `setup_billing_mode='immediate'` con setup > 0 y no se mandó `setup_already_billed=true`, se emite una invoice inmediata por el setup y se devuelve `triggered_invoice_id`.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["unit"], "properties": { "unit": { "$ref": "#/components/schemas/UnitWriteable" } } } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Unit (+ triggered_invoice_id si aplica)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "unit": { "$ref": "#/components/schemas/Unit" },
+                    "triggered_invoice_id": { "type": "string", "format": "uuid" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "service_not_found" },
+          "422": { "description": "validation_errors (incluye `external_id: value_already_exist`)" }
+        }
+      },
+      "get": {
+        "tags": ["units"],
+        "summary": "Listar units (paginado, filtros opcionales)",
+        "parameters": [
+          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["active", "terminated"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "units": { "type": "array", "items": { "$ref": "#/components/schemas/Unit" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/units/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "tags": ["units"],
+        "summary": "Leer una unit",
+        "responses": {
+          "200": { "description": "Unit" },
+          "404": { "description": "unit_not_found" }
+        }
+      },
+      "patch": {
+        "tags": ["units"],
+        "summary": "Editar una unit (incluye terminate vía active_to)",
+        "description": "Setea label, active_to (terminate=set a date; reabrir=null), billing_starts_at, prepaid_months o metadata. Si el PATCH dispara la baja Y el plan tiene `removal_billing_mode='immediate'` con removal > 0, emite una invoice inmediata y devuelve `triggered_invoice_id`.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["unit"], "properties": { "unit": { "$ref": "#/components/schemas/UnitPatchWriteable" } } } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Unit (+ triggered_invoice_id si aplicó)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "unit": { "$ref": "#/components/schemas/Unit" },
+                    "triggered_invoice_id": { "type": "string", "format": "uuid" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "unit_not_found" },
+          "422": { "description": "validation_errors (incluye `prepaid_months: unit_already_billed`)" }
+        }
+      }
+    },
+    "/api/v1/units/{id}/migrate": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "post": {
+        "tags": ["units"],
+        "summary": "Migrar una unit a otro plan",
+        "description": "Cierra atómicamente la unit en su service actual (activeTo = migration_at) y crea una nueva con el mismo external_id en `to_service_code`. Política: `migration_at > now`, mismo customer, mismo pricing_model, plan destino activo. Por default NO cobra setup nuevo. Audit: metadata.migrated_to/migrated_from + EventLog 'migrate'. Tras la migración, eventos al service viejo con ese external_id son rechazados (422).",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["migration"], "properties": { "migration": { "$ref": "#/components/schemas/UnitMigrateWriteable" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Resultado", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UnitMigrateResponse" } } } },
+          "404": { "description": "unit_not_found o to_service_not_found" },
+          "409": { "description": "unit_terminated, unit_already_migrated o external_id_collision_on_target" },
+          "422": { "description": "validation_errors (must_be_in_the_future, must_be_same_customer, must_be_same_pricing_model, etc.)" }
+        }
+      }
+    },
     "/api/v1/events": {
-      "post": { "summary": "POST event (add/remove unit) — materializa unit. El payload acepta `prepaid_months` opcional para overrides en services one_off. Si la unit pertenece a un service one_off de un customer con trigger=immediate, también emite invoice individual con setup + N mensualidades, y la response incluye `triggered_invoice_id`.", "tags": ["events"], "responses": { "200": { "description": "Event (+ triggered_invoice_id si aplicó)" } } },
-      "get": { "summary": "Event log (audit)", "tags": ["events"], "responses": { "200": { "description": "Lista" } } }
+      "post": {
+        "tags": ["events"],
+        "summary": "Registrar un evento (add/remove) — primario para integraciones",
+        "description": "Endpoint principal para que sistemas externos (Numaris) reporten activaciones/desactivaciones de unidades. Idempotente por `transaction_id`.\n\n**Side-effects sobre Unit:**\n- `add`: upsert (crea Unit si no existe; si existe y está terminated, la re-activa limpiando active_to).\n- `remove`: setea Unit.activeTo = timestamp.\n\n**Detona invoice inmediata cuando:**\n- El evento crea/re-activa una unit en un service `pricing_model=one_off` Y\n- El customer tiene `nonrecurring_trigger=immediate` Y\n- La unit no ha sido cobrada antes (`oneoff_billed_at=null`).\n\nLa invoice se dispatcha a NetSuite en background. La respuesta del POST devuelve `triggered_invoice_id` sin esperar al dispatch.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["event"], "properties": { "event": { "$ref": "#/components/schemas/EventWriteable" } } },
+              "examples": {
+                "add_unit_recurring": {
+                  "summary": "Activar unidad en plan recurrente",
+                  "value": {
+                    "event": {
+                      "transaction_id": "tx-2026-06-15-001",
+                      "service_code": "combustible-mensual",
+                      "operation_type": "add",
+                      "unit_external_id": "gps-001",
+                      "unit_label": "Camión 001 — Placas ABC-123",
+                      "timestamp": 1781884800,
+                      "kind": "first_ping"
+                    }
+                  }
+                },
+                "add_unit_oneoff_immediate": {
+                  "summary": "Activar en plan prepago (detona invoice inmediata)",
+                  "value": {
+                    "event": {
+                      "transaction_id": "tx-2026-06-15-002",
+                      "service_code": "gps-instalacion",
+                      "operation_type": "add",
+                      "unit_external_id": "gps-002",
+                      "timestamp": 1781884800,
+                      "prepaid_months": 48
+                    }
+                  }
+                },
+                "remove_unit": {
+                  "summary": "Desactivar (cerrar Unit)",
+                  "value": {
+                    "event": {
+                      "transaction_id": "tx-2026-09-30-099",
+                      "service_code": "combustible-mensual",
+                      "operation_type": "remove",
+                      "unit_external_id": "gps-001",
+                      "timestamp": 1790000000
+                    }
+                  }
+                },
+                "migrate_legacy_already_billed": {
+                  "summary": "Importar unidad legacy ya cobrada en otro sistema",
+                  "value": {
+                    "event": {
+                      "transaction_id": "tx-legacy-import-gps-099",
+                      "service_code": "combustible-mensual",
+                      "operation_type": "add",
+                      "unit_external_id": "gps-099",
+                      "timestamp": 1746057600,
+                      "setup_already_billed": true,
+                      "billing_starts_at": "2026-07-01T06:00:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Event (+ triggered_invoice_id si aplica)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EventResponse" } } } },
+          "404": { "description": "service_not_found" },
+          "422": { "description": "validation_errors (timestamp inválido, operation_type fuera de enum, etc.)" }
+        }
+      },
+      "get": {
+        "tags": ["events"],
+        "summary": "Listar la bitácora de eventos",
+        "parameters": [
+          { "name": "service_code", "in": "query", "schema": { "type": "string" } },
+          { "name": "unit_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista (ordenada por timestamp desc)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": { "type": "array", "items": { "$ref": "#/components/schemas/EventLog" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
-
+    "/api/v1/catalog-events": {
+      "get": {
+        "tags": ["catalog-events"],
+        "summary": "Listar eventos del catálogo (activos + inactivos)",
+        "description": "El catálogo lo administra el equipo de operaciones desde el admin UI. La API solo expone listado para que los integradores sepan qué `catalog_event_code`s pueden usar.",
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "catalog_events": { "type": "array", "items": { "$ref": "#/components/schemas/CatalogEvent" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog-events/occurrences": {
+      "post": {
+        "tags": ["catalog-events"],
+        "summary": "Registrar una ocurrencia (facturable inmediato o al próximo cierre)",
+        "description": "Crea la ocurrencia y, si `billing_mode=immediate`, emite una invoice individual con UNA fee `kind='catalog_event'` y la enlaza a la ocurrencia. Dispatch a NetSuite async. La respuesta incluye `invoice_id` si fue inmediato (null si `next_cycle`).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["catalog_event_occurrence"], "properties": { "catalog_event_occurrence": { "$ref": "#/components/schemas/CatalogEventOccurrenceWriteable" } } },
+              "examples": {
+                "revision_inmediata": {
+                  "summary": "Revisión de campo facturada al instante",
+                  "value": {
+                    "catalog_event_occurrence": {
+                      "catalog_event_code": "revision-campo",
+                      "customer_external_id": "transportes-marva",
+                      "billing_mode": "immediate",
+                      "unit_external_id": "gps-001",
+                      "reference": "ticket-3421"
+                    }
+                  }
+                },
+                "capacitacion_next_cycle": {
+                  "summary": "Capacitación cobrada en el próximo cierre",
+                  "value": {
+                    "catalog_event_occurrence": {
+                      "catalog_event_code": "capacitacion",
+                      "customer_external_id": "transportes-marva",
+                      "billing_mode": "next_cycle",
+                      "amount_cents": 250000,
+                      "reference": "curso 2 horas"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Ocurrencia (+ invoice_id si immediate)", "content": { "application/json": { "schema": { "type": "object", "properties": { "catalog_event_occurrence": { "$ref": "#/components/schemas/CatalogEventOccurrence" } } } } } },
+          "404": { "description": "catalog_event_not_found o customer_not_found" },
+          "422": { "description": "validation_errors (catalog_event_inactive, amount_cents requerido, etc.)" }
+        }
+      },
+      "get": {
+        "tags": ["catalog-events"],
+        "summary": "Listar ocurrencias (con filtros)",
+        "parameters": [
+          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "catalog_event_code", "in": "query", "schema": { "type": "string" } },
+          { "name": "pending", "in": "query", "schema": { "type": "string", "enum": ["true"] }, "description": "Si 'true', solo devuelve ocurrencias con fee_id=null (todavía no facturadas)." },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista (ordenada por occurredAt desc)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "catalog_event_occurrences": { "type": "array", "items": { "$ref": "#/components/schemas/CatalogEventOccurrence" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/invoices": {
-      "post": { "summary": "Calcular invoice del customer (incluye TODOS sus services + customer add-ons)", "tags": ["invoices"], "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/InvoiceWriteable" } } } } } }, "responses": { "200": { "description": "Invoice" } } },
-      "get": { "summary": "List invoices", "tags": ["invoices"], "parameters": [{ "name": "customer_external_id", "in": "query", "schema": { "type": "string" } }, { "name": "status", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "description": "Lista" } } }
+      "post": {
+        "tags": ["invoices"],
+        "summary": "Cerrar ciclo (emitir invoice del periodo vigente o uno arbitrario)",
+        "description": "Acepta `Idempotency-Key` (header) o `metadata.idempotency_key` (body). Si ambos vienen deben ser iguales (422 `idempotency_key_mismatch`). Sin ninguno, se autogenera un hash del body.\n\n**Multi-razón social + split_by_kind**:\n- Con 1 razón social y `unified`: 1 invoice.\n- Con 1 razón social y `split_by_kind`: hasta 2 invoices (recurring + oneoff).\n- Con N razones sociales y `unified`: N invoices.\n- Con N razones sociales y `split_by_kind`: hasta N×2 invoices.\n\nLa respuesta principal viene en `invoice` y la segunda (si hay) en `companion_invoice`. Si hay más de 2 (multi-tax-entity + split), las facturas adicionales se consultan vía GET /invoices.\n\nSin fees en el periodo: 422 `no_billable_items`.",
+        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" }, "description": "Alternativo a `metadata.idempotency_key`. Re-llamadas con la misma key y mismo body devuelven cached." }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["invoice"], "properties": { "invoice": { "$ref": "#/components/schemas/InvoiceWriteable" } } },
+              "examples": {
+                "ciclo_actual": {
+                  "summary": "Cierra el ciclo vigente del cliente",
+                  "value": { "invoice": { "customer_external_id": "transportes-marva", "metadata": { "idempotency_key": "cycle-2026-06-marva" } } }
+                },
+                "periodo_override": {
+                  "summary": "Re-emite un ciclo histórico",
+                  "value": { "invoice": { "customer_external_id": "transportes-marva", "period_from": "2026-05-01T06:00:00Z", "period_to": "2026-06-01T05:59:59Z", "metadata": { "idempotency_key": "cycle-2026-05-marva-rerun" } } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Invoice (+ companion si split)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InvoiceResponse" } } } },
+          "404": { "description": "customer_not_found" },
+          "422": { "description": "validation_errors, no_billable_items, idempotency_key_mismatch o idempotency_key_reused_with_different_body" }
+        }
+      },
+      "get": {
+        "tags": ["invoices"],
+        "summary": "Listar invoices (paginado, filtros opcionales)",
+        "parameters": [
+          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["calculated", "finalized", "voided"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista (ordenada por createdAt desc)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invoices": { "type": "array", "items": { "$ref": "#/components/schemas/Invoice" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
-    "/api/v1/invoices/{id}": { "get": { "summary": "Read invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "Invoice" } } } },
-    "/api/v1/invoices/{id}/void": { "post": { "summary": "Void invoice", "tags": ["invoices"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "OK" } } } },
-    "/api/v1/invoices/{id}/external-confirm": { "post": { "summary": "Callback NetSuite (HMAC)", "tags": ["external-confirm"], "security": [{ "NetSuiteSignature": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmInvoice" } } } }, "responses": { "200": { "description": "Finalized" } } } },
-
+    "/api/v1/invoices/preview": {
+      "post": {
+        "tags": ["invoices"],
+        "summary": "Dry-run del cierre de ciclo (NO persiste, NO marca units, NO dispatcha)",
+        "description": "Re-ejecutable infinitas veces — útil para validar el output antes de cerrar el ciclo de verdad. Útil también para verificar el efecto de un cambio de precio programado (con `now` en una fecha futura).\n\nDevuelve agregados planos (`fees`, `fees_amount_cents`, `units_annex`) y el desglose por razón social en `invoices[]`. El cierre real puede emitir hasta `invoices.length × 2` facturas si el customer está en `split_by_kind`.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["invoice"], "properties": { "invoice": { "$ref": "#/components/schemas/PreviewWriteable" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Preview", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PreviewResponse" } } } },
+          "404": { "description": "customer_not_found" },
+          "422": { "description": "validation_errors" }
+        }
+      }
+    },
+    "/api/v1/invoices/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "tags": ["invoices"],
+        "summary": "Leer una invoice",
+        "responses": {
+          "200": { "description": "Invoice", "content": { "application/json": { "schema": { "type": "object", "properties": { "invoice": { "$ref": "#/components/schemas/Invoice" } } } } } },
+          "404": { "description": "invoice_not_found" }
+        }
+      }
+    },
+    "/api/v1/invoices/{id}/void": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "post": {
+        "tags": ["invoices"],
+        "summary": "Anular una invoice (status=voided)",
+        "description": "Idempotente. NOTA: si la invoice ya fue dispatchada/confirmada a NetSuite, el void aquí NO la cancela en NetSuite — eso requiere flujo de credit note.",
+        "responses": {
+          "200": { "description": "Invoice" },
+          "404": { "description": "invoice_not_found" }
+        }
+      }
+    },
+    "/api/v1/invoices/{id}/external-confirm": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "post": {
+        "tags": ["external-confirm"],
+        "summary": "Callback HMAC de NetSuite con el folio CFDI",
+        "description": "Endpoint para que NetSuite (vía SuiteScript) notifique el folio fiscal una vez emitido el CFDI. Auth por HMAC-SHA256 (header `X-NetSuite-Signature`) sobre el body crudo, con el secreto `organization.netsuite_callback_secret`. Si la organización no tiene secreto configurado: 403 `secret_not_configured`. Si la firma no es válida: 401 `invalid_signature`.\n\nIdempotente: misma `(lago_id, folio)` no muta y devuelve 200. Folio distinto en una factura ya confirmada: 409 `conflict_folio_changed`.\n\nAl confirmar, la invoice pasa a `status=finalized` + `external_dispatch_status=confirmed` y se popula `external_invoice.*`.",
+        "security": [{ "NetSuiteSignature": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmInvoice" } } }
+        },
+        "responses": {
+          "200": { "description": "Invoice finalized" },
+          "401": { "description": "invalid_signature" },
+          "403": { "description": "secret_not_configured, client_cert_required, ip_not_allowed" },
+          "404": { "description": "invoice_not_found" },
+          "409": { "description": "conflict_folio_changed" },
+          "422": { "description": "validation_errors (folio faltante)" }
+        }
+      }
+    },
     "/api/v1/credit_notes": {
-      "post": { "summary": "Create credit note (invoice debe estar finalized+confirmed)", "tags": ["credit_notes"], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNoteWriteable" } } } } } }, "responses": { "200": { "description": "CN" } } },
-      "get": { "summary": "List credit notes", "tags": ["credit_notes"], "responses": { "200": { "description": "Lista" } } }
+      "post": {
+        "tags": ["credit-notes"],
+        "summary": "Crear nota de crédito sobre una invoice confirmada",
+        "description": "Solo se pueden crear notas de crédito sobre invoices con `status=finalized` Y `external_dispatch_status=confirmed` (422 `invoice_not_confirmed` si no). El `total_amount_cents` se calcula como la suma de `items[].amount_cents`; si se manda `credit_amount_cents` debe coincidir.\n\nIdempotencia opcional vía el marker `[idem:<token>]` dentro de `description` (se guarda en `idempotency_marker`).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["credit_note"], "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNoteWriteable" } } },
+              "examples": {
+                "completa": {
+                  "summary": "Nota de crédito por una línea completa",
+                  "value": {
+                    "credit_note": {
+                      "invoice_id": "11111111-1111-1111-1111-111111111111",
+                      "reason": "order_cancellation",
+                      "description": "Cliente canceló unidad antes de despachar. [idem:cnc-001]",
+                      "items": [{ "fee_id": "22222222-2222-2222-2222-222222222222", "amount_cents": 45000 }]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "CreditNote", "content": { "application/json": { "schema": { "type": "object", "properties": { "credit_note": { "$ref": "#/components/schemas/CreditNote" } } } } } },
+          "404": { "description": "invoice_not_found" },
+          "422": { "description": "validation_errors o invoice_not_confirmed" }
+        }
+      },
+      "get": {
+        "tags": ["credit-notes"],
+        "summary": "Listar notas de crédito (paginado)",
+        "parameters": [
+          { "name": "customer_external_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "credit_notes": { "type": "array", "items": { "$ref": "#/components/schemas/CreditNote" } },
+                    "meta": { "$ref": "#/components/schemas/Meta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
-    "/api/v1/credit_notes/{id}": { "get": { "summary": "Read credit note", "tags": ["credit_notes"], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "responses": { "200": { "description": "CN" } } } },
-    "/api/v1/credit_notes/{id}/external-confirm": { "post": { "summary": "Callback NetSuite CN", "tags": ["external-confirm"], "security": [{ "NetSuiteSignature": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmCreditNote" } } } }, "responses": { "200": { "description": "Finalized" } } } },
-
-    "/api/v1/admin/reset": { "post": { "summary": "Hard reset (wipea data, preserva org)", "tags": ["admin"], "parameters": [{ "name": "X-Admin-Reset-Token", "in": "header", "required": true, "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["confirm"], "properties": { "confirm": { "type": "string" } } } } } }, "responses": { "200": { "description": "OK" } } } }
+    "/api/v1/credit_notes/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "tags": ["credit-notes"],
+        "summary": "Leer una nota de crédito",
+        "responses": {
+          "200": { "description": "CreditNote" },
+          "404": { "description": "credit_note_not_found" }
+        }
+      }
+    },
+    "/api/v1/credit_notes/{id}/external-confirm": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "post": {
+        "tags": ["external-confirm"],
+        "summary": "Callback HMAC de NetSuite para la nota de crédito",
+        "description": "Mismo esquema de auth que el de invoice (HMAC). Misma idempotencia por (lago_id, folio).",
+        "security": [{ "NetSuiteSignature": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalConfirmCreditNote" } } }
+        },
+        "responses": {
+          "200": { "description": "CreditNote finalized" },
+          "401": { "description": "invalid_signature" },
+          "403": { "description": "secret_not_configured" },
+          "404": { "description": "credit_note_not_found" },
+          "409": { "description": "conflict_folio_changed" },
+          "422": { "description": "validation_errors" }
+        }
+      }
+    },
+    "/api/v1/admin/reset": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Wipe destructivo de la organización autenticada",
+        "description": "**Operación destructiva.** Borra todos los datos de la organización (customers, services, invoices, units, eventos…) preservando la organización y sus API keys.\n\nGates en defensa en profundidad:\n1. Bearer auth normal (acota el wipe a la org del API key).\n2. Header `X-Admin-Reset-Token` comparado timing-safe contra `process.env.ADMIN_RESET_TOKEN`. Si la env var no está set → 403 `admin_reset_disabled` (fail-closed).\n3. Body `{ confirm: \"<organization.slug>\" }` (forza el reconocimiento explícito).",
+        "security": [{ "BearerAuth": [] }, { "AdminResetToken": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminResetBody" } } }
+        },
+        "responses": {
+          "200": { "description": "Reset completado", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminResetResponse" } } } },
+          "403": { "description": "admin_reset_disabled o invalid_reset_token" },
+          "422": { "description": "validation_errors (confirm no coincide con el slug)" }
+        }
+      }
+    }
   }
 }
