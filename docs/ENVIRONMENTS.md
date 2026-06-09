@@ -53,12 +53,9 @@ Corre en el mismo proceso que la API.
 ## A futuro: separar ambientes
 
 Si más adelante quieres aislar pruebas de producción real (recomendable cuando
-arranque la facturación con dinero real), las piezas a duplicar serían:
-
-- Un Railway project separado con su propia BD Postgres.
-- Las mismas variables de entorno con valores propios (API key nueva,
-  credenciales NetSuite productivas, `SESSION_SECRET` distinto).
-- El script `npm run bootstrap-org` para crear el tenant inicial con una API
-  key generada criptográficamente.
+arranque la facturación con dinero real), las piezas a duplicar serían un
+Railway project nuevo con su propia BD Postgres y las mismas variables de
+entorno con valores propios (API key nueva, credenciales NetSuite productivas,
+`SESSION_SECRET` distinto).
 
 Por ahora no hace falta. Todo opera contra `billing.numaris.com`.
