@@ -9,6 +9,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 import { seedNumaris } from '../../src/admin/seed.js';
 
 describe('v3 billing (customer-level invoice)', () => {
@@ -45,9 +46,10 @@ describe('v3 billing (customer-level invoice)', () => {
     // FULL CALENDAR MONTH se cobra entero. Para evitar que el stub inicial
     // prorratee la prueba a un valor parcial, forzamos period_from/period_to
     // a un mes calendario completo (junio 2026 en CST).
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c-flat', name: 'Flat', currency: 'MXN', timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-flat', name: 'Flat', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),

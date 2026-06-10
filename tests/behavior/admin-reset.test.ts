@@ -141,7 +141,7 @@ describe('POST /api/v1/admin/reset', () => {
       method: 'POST',
       url: '/api/v1/customers',
       headers: h.authHeader(),
-      payload: { customer: { external_id: 'after-reset-1', name: 'Fresh', currency: 'MXN' } },
+      payload: { customer: { external_id: 'after-reset-1', name: 'Fresh' } },
     });
     expect(created.statusCode).toBe(200);
     const body = created.json() as { customer: { sequential_id: number } };

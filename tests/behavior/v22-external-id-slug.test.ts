@@ -14,10 +14,7 @@ describe('v22 — customer.external_id slug ASCII', () => {
   async function create(externalId: string) {
     return h.app.inject({
       method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-      } },
+      payload: { customer: { external_id: externalId, name: externalId } },
     });
   }
 
