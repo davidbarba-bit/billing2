@@ -278,31 +278,43 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
 
     const metrics = await computeDashboardMetrics(prisma, org);
 
-    // Acciones de operación — sólo visibles en modo técnico ya que son
-    // herramientas de devs/seed/reset, no de uso operativo diario.
+    // Acciones de operación: seed + reset siempre visibles para iterar pruebas.
+    // El reset borra TODOS los datos operacionales de la org (clientes, planes,
+    // unidades, eventos, eventos facturables, pricing, razones sociales,
+    // facturas, NCs) pero preserva la org, su API key y los cuestionarios.
     const seedAction = postButton('/admin/seed', 'Seed Numaris (demo)', 'primary');
     const resetForm = `
       <details class="mt-2">
-        <summary class="cursor-pointer text-sm text-red-700 font-medium">Hard reset (borrar TODA la data de esta org)</summary>
-        <form method="post" action="/admin/reset" class="mt-3 space-y-2 p-3 border border-red-200 rounded bg-red-50">
-          <p class="text-sm text-gray-700">Borra customers, services, units, events, invoices y CNs para <b>${escapeHtml(org.slug)}</b>. Org y API key se preservan. No se puede deshacer.</p>
+        <summary class="cursor-pointer text-sm font-medium" style="color: var(--danger);">Borrar todos los datos operacionales (empezar desde cero)</summary>
+        <form method="post" action="/admin/reset" class="mt-3 space-y-2 p-3 rounded" style="background: var(--danger-soft); border: 1px solid var(--danger-soft);">
+          <p class="text-sm ink">
+            Borra <strong>clientes, planes, unidades, eventos, eventos facturables, precios pactados,
+            razones sociales, facturas y notas de crédito</strong> de <code class="font-mono-pro">${escapeHtml(org.slug)}</code>.
+            La organización, su API key, los cuestionarios de migración y la presentación se preservan.
+            No se puede deshacer.
+          </p>
           <label class="block">
-            <span class="text-xs text-gray-700">Escribe <code class="font-mono">${escapeHtml(org.slug)}</code> para confirmar:</span>
-            <input required name="confirm" autocomplete="off" class="mt-1 block w-full rounded border-red-300 shadow-sm font-mono text-sm">
+            <span class="text-xs ink">Escribe <code class="font-mono-pro">${escapeHtml(org.slug)}</code> para confirmar:</span>
+            <input required name="confirm" autocomplete="off" class="${INPUT_CLASS_MONO} mt-1">
           </label>
-          <button type="submit" class="px-3 py-1.5 rounded text-sm font-medium bg-red-600 text-white hover:bg-red-700">Reset definitivo</button>
+          <button type="submit" class="px-3 py-1.5 rounded text-sm font-medium" style="background: var(--danger); color: white;">Borrar definitivamente</button>
         </form>
       </details>
     `;
+    const resetCard = card('Reiniciar pruebas', `
+      <div class="text-sm space-y-2">
+        <p class="ink">Genera datos demo para probar la plataforma, o borra toda la data operacional para arrancar desde cero. La organización y los cuestionarios se preservan.</p>
+        <div>${seedAction}</div>
+        ${resetForm}
+      </div>
+    `);
     const techBlock = adminContextStorage.getStore()?.techMode
       ? card('Herramientas técnicas', `
         <div class="space-y-3 text-sm">
-          <div>${seedAction}</div>
           ${kv([
             ['ID', `<code>${escapeHtml(org.id)}</code>`],
             ['API key', `<code>${escapeHtml(org.apiKey)}</code>`],
           ])}
-          ${resetForm}
         </div>
       `)
       : '';
@@ -316,7 +328,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         metrics,
         org,
         dispatchFlagOn: deps.config.featureNetsuiteDispatchEnabled,
-      }) + techBlock,
+      }) + resetCard + techBlock,
     }));
   });
 
