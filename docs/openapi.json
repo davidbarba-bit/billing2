@@ -299,7 +299,7 @@
       },
       "CustomerWriteable": {
         "type": "object",
-        "description": "Cuerpo de `POST /api/v1/customers`. `external_id`, `name` y `currency` son obligatorios en alta. POST con un `external_id` existente hace UPDATE (idempotente).",
+        "description": "Cuerpo de `POST /api/v1/customers` (upsert por `external_id`). La configuración de facturación de la organización (ciclo, día de corte, moneda, timezone, modo de cierre) la administra el equipo Numaris en su backoffice — no se envía aquí.",
         "required": [
           "external_id"
         ],
@@ -307,10 +307,11 @@
           "external_id": {
             "type": "string",
             "pattern": "^[A-Za-z0-9._-]+$",
-            "description": "Slug ASCII — sin espacios ni acentos."
+            "description": "Identificador estable de la organización en el sistema del cliente. Slug ASCII (`[A-Za-z0-9._-]+`), sin espacios ni acentos."
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Nombre comercial."
           },
           "email": {
             "type": [
@@ -324,66 +325,10 @@
               "null"
             ]
           },
-          "currency": {
-            "type": "string",
-            "description": "ISO 4217"
-          },
-          "timezone": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "IANA — validada (`invalid_iana` si no se reconoce)."
-          },
-          "billing_period_months": {
-            "type": "integer",
-            "enum": [
-              1,
-              3,
-              6,
-              12
-            ],
-            "default": 1
-          },
-          "billing_anchor_day": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 28,
-            "default": 1
-          },
-          "billing_anchor_month": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 1,
-            "maximum": 12,
-            "description": "Solo válido si billing_period_months > 1."
-          },
-          "nonrecurring_trigger": {
-            "type": "string",
-            "enum": [
-              "immediate",
-              "next_cycle"
-            ],
-            "default": "next_cycle"
-          },
-          "cycle_invoice_mode": {
-            "type": "string",
-            "enum": [
-              "unified",
-              "split_by_kind"
-            ],
-            "default": "unified"
-          },
-          "subscription_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Default = ahora. Si está en el futuro, customer arranca en `pending`."
-          },
           "metadata": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Bag libre opcional. Se almacena tal cual."
           }
         }
       },
@@ -911,55 +856,31 @@
       },
       "UnitWriteable": {
         "type": "object",
-        "description": "Cuerpo de `POST /api/v1/units`. Crea la unit y, si aplica, dispara una invoice inmediata (setup_billing_mode='immediate' con setup > 0 y sin setup_already_billed → emite invoice y devuelve `triggered_invoice_id`).",
+        "description": "Cuerpo de `POST /api/v1/units`. Crea la unidad asociada al plan (service_code) y queda pendiente de activación hasta su primer evento `add`.",
         "required": [
           "service_code",
           "external_id"
         ],
         "properties": {
           "service_code": {
-            "type": "string"
+            "type": "string",
+            "description": "Código del plan al que pertenece la unidad. Se acuerda con el equipo Numaris."
           },
           "external_id": {
             "type": "string",
-            "description": "Único por (service, external_id)."
+            "description": "Identificador estable de la unidad en el sistema del cliente (slug ASCII, único por servicio)."
           },
           "label": {
             "type": [
               "string",
               "null"
-            ]
-          },
-          "active_from": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Default = ahora."
-          },
-          "billing_starts_at": {
-            "type": [
-              "string",
-              "null"
             ],
-            "format": "date-time"
-          },
-          "prepaid_months": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 1
-          },
-          "setup_already_billed": {
-            "type": "boolean",
-            "description": "INPUT-ONLY (no es atributo persistido). Si true en recurring, preestablece `setup_billed_at = active_from` para que la unit no genere fee de setup. En one_off se ignora silenciosamente."
-          },
-          "one_off_already_billed": {
-            "type": "boolean",
-            "description": "INPUT-ONLY. Si true en one_off, preestablece `oneoff_billed_at = active_from` para que la unit nunca entre a facturas. En recurring se ignora silenciosamente."
+            "description": "Nombre legible (opcional). Útil para humanos al inspeccionar la unidad."
           },
           "metadata": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Bag libre opcional. Se almacena tal cual; útil para correlacionar con IDs internos del cliente."
           }
         }
       },
@@ -1093,7 +1014,7 @@
       },
       "EventWriteable": {
         "type": "object",
-        "description": "Cuerpo de `POST /api/v1/events`. Idempotente por `transaction_id` (re-postear lo mismo no genera duplicados). Side-effects sobre Unit:\n- `operation_type=add` → upsert Unit (crea si no existe; clear activeTo si re-activa una terminada).\n- `operation_type=remove` → set Unit.activeTo = timestamp.\n\nDispara invoice inmediata cuando: el evento crea/re-activa una unit de un service `pricing_model=one_off`, el customer tiene `nonrecurring_trigger=immediate`, y la unit no ha sido cobrada (oneoff_billed_at=null). En ese caso, la respuesta incluye `triggered_invoice_id`.",
+        "description": "Cuerpo de `POST /api/v1/events`. Idempotente por `transaction_id` (re-postear lo mismo no genera duplicados). Side-effects sobre Unit:\n- `operation_type=add` → upsert Unit (crea si no existe; clear activeTo si re-activa una terminada).\n- `operation_type=remove` → set Unit.activeTo = timestamp.\n\nDispara invoice inmediata cuando: el evento crea/re-activa una unit de un service `pricing_model=one_off`, el customer tiene `nonrecurring_trigger=immediate`, y la unit no ha sido cobrada (oneoff_billed_at=null). En ese caso, la respuesta incluye `triggered_invoice_id`. Para integración: `add` registra el primer ping (activación) y `remove` da de baja la unidad. La configuración de facturación de la unidad la administra Numaris en su backoffice.",
         "required": [
           "transaction_id",
           "service_code",
@@ -1131,30 +1052,6 @@
           "timestamp": {
             "type": "integer",
             "description": "Unix epoch en segundos (no milisegundos, no ISO string)."
-          },
-          "prepaid_months": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 1,
-            "description": "Solo aplica si el service es one_off. Sobreescribe `service.prepaid_months_default`. Si ambos null al momento de facturar, falla."
-          },
-          "billing_starts_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "Override de fecha de facturación al CREATE de la unit (si el event causa upsert; si la unit ya existe, se ignora — usa PATCH /units/:id para ajustarla)."
-          },
-          "setup_already_billed": {
-            "type": "boolean",
-            "description": "INPUT-ONLY al CREATE de la unit. Solo aplica a pricing_model=recurring; en one_off se ignora silenciosamente."
-          },
-          "one_off_already_billed": {
-            "type": "boolean",
-            "description": "INPUT-ONLY al CREATE de la unit. Solo aplica a pricing_model=one_off; en recurring se ignora silenciosamente."
           },
           "kind": {
             "type": [
@@ -1634,55 +1531,38 @@
         "type": "object",
         "required": [
           "catalog_event_code",
-          "customer_external_id",
-          "billing_mode"
+          "customer_external_id"
         ],
         "properties": {
           "catalog_event_code": {
             "type": "string",
-            "description": "Code de un evento ACTIVO en el catálogo. 422 `catalog_event_inactive` si no."
+            "description": "Código del evento en el catálogo de la organización. Descubre los códigos con `GET /api/v1/catalog-events`."
           },
           "customer_external_id": {
-            "type": "string"
-          },
-          "billing_mode": {
             "type": "string",
-            "enum": [
-              "immediate",
-              "next_cycle"
-            ]
-          },
-          "amount_cents": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Override del default del catálogo. Si el catálogo no tiene default Y no se especifica, 422 `value_is_mandatory_when_catalog_has_no_default`."
+            "description": "external_id del cliente al que se cobra el evento."
           },
           "unit_external_id": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "external_id de la unidad asociada al evento (opcional, si el evento aplica a una unidad específica como revisión o reinstalación)."
           },
           "reference": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Referencia opcional del cliente (ej. número de orden, ticket)."
           },
           "occurred_at": {
             "type": "string",
             "format": "date-time",
-            "description": "Default = ahora."
-          },
-          "tax_entity_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "uuid",
-            "description": "Vacío/null → razón social default del cliente."
+            "description": "Cuándo ocurrió el evento (ISO 8601). Default = ahora."
           }
-        }
+        },
+        "description": "Cuerpo de `POST /api/v1/catalog-events/occurrences`. Registra que un evento facturable del catálogo (revisión, capacitación, reinstalación, etc.) ocurrió para un cliente. El precio y el momento de facturación se toman del precio pactado del cliente para ese código de evento — no se envían aquí."
       },
       "BilledUnitDetail": {
         "type": "object",
@@ -2861,7 +2741,7 @@
           "customers"
         ],
         "summary": "Crear o actualizar (upsert por external_id) un cliente",
-        "description": "Si `external_id` ya existe en la organización, hace UPDATE en su lugar (idempotente). Si no, lo crea — incluye su razón social default (con `external_id` y `legal_name` heredados del Customer).\n\nValidaciones:\n- `external_id`: slug ASCII `[A-Za-z0-9._-]+` (422 `must_be_ascii_slug` si no).\n- `timezone`: IANA válida.\n- `billing_period_months`: 1, 3, 6 o 12.\n- `billing_anchor_day`: 1..28.\n- `billing_anchor_month`: 1..12, solo si period_months > 1.\n- `currency` y `name` obligatorios en alta (no en update).",
+        "description": "Si `external_id` ya existe en la organización, hace UPDATE en su lugar (idempotente). Si no, lo crea.\n\nValidaciones:\n- `external_id`: slug ASCII `[A-Za-z0-9._-]+` (422 `must_be_ascii_slug` si no).",
         "requestBody": {
           "required": true,
           "content": {
@@ -3047,7 +2927,7 @@
           "units"
         ],
         "summary": "Crear una unit",
-        "description": "Alternativa explícita a `POST /events` con `operation_type=add` (sin generar audit). Si el plan tiene `setup_billing_mode='immediate'` con setup > 0 y no se mandó `setup_already_billed=true`, se emite una invoice inmediata por el setup y se devuelve `triggered_invoice_id`.",
+        "description": "Crea una unidad asociada a un plan (`service_code`). Queda en estado pendiente hasta que llega su primer evento `add` por `POST /api/v1/events`.\n\n`external_id` es único por (servicio, external_id): reintentar con el mismo external_id devuelve la unidad existente.",
         "requestBody": {
           "required": true,
           "content": {
@@ -3246,7 +3126,7 @@
           "events"
         ],
         "summary": "Registrar un evento (add/remove) — primario para integraciones",
-        "description": "Endpoint principal para que sistemas externos (Numaris) reporten activaciones/desactivaciones de unidades. Idempotente por `transaction_id`.\n\n**Side-effects sobre Unit:**\n- `add`: upsert (crea Unit si no existe; si existe y está terminated, la re-activa limpiando active_to).\n- `remove`: setea Unit.activeTo = timestamp.\n\n**Detona invoice inmediata cuando:**\n- El evento crea/re-activa una unit en un service `pricing_model=one_off` Y\n- El customer tiene `nonrecurring_trigger=immediate` Y\n- La unit no ha sido cobrada antes (`oneoff_billed_at=null`).\n\nLa invoice se dispatcha a NetSuite en background. La respuesta del POST devuelve `triggered_invoice_id` sin esperar al dispatch.",
+        "description": "Endpoint principal para que el sistema del cliente reporte el ciclo de vida de cada unidad. Idempotente por `transaction_id`.\n\n**Operaciones:**\n- `add`: activa la unidad (primer ping). Si la unidad no existía, la crea; si estaba dada de baja, la reactiva.\n- `remove`: da de baja la unidad (setea su fecha de fin).\n\n**Idempotencia:** reintentar con el mismo `transaction_id` devuelve el evento original sin efectos secundarios.",
         "requestBody": {
           "required": true,
           "content": {
@@ -3437,7 +3317,7 @@
           "catalog-events"
         ],
         "summary": "Registrar una ocurrencia (facturable inmediato o al próximo cierre)",
-        "description": "Crea la ocurrencia y, si `billing_mode=immediate`, emite una invoice individual con UNA fee `kind='catalog_event'` y la enlaza a la ocurrencia. Dispatch a NetSuite async. La respuesta incluye `invoice_id` si fue inmediato (null si `next_cycle`).",
+        "description": "Registra que un evento facturable del catálogo (revisión, capacitación, reinstalación, desinstalación, etc.) ocurrió para un cliente. El precio y el momento de facturación se toman del precio pactado del cliente para ese código de evento — el dev no los envía.",
         "requestBody": {
           "required": true,
           "content": {
