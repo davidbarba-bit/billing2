@@ -46,6 +46,7 @@ model Organization {
   idempotencyKeys IdempotencyRecord[]
   catalogEvents   CatalogEvent[]
   catalogEventOccurrences CatalogEventOccurrence[]
+  customerCatalogEventPricings CustomerCatalogEventPricing[]
   taxEntities     TaxEntity[]
 
   @@map("organizations")
@@ -108,6 +109,7 @@ model Customer {
   invoices     Invoice[]
   creditNotes  CreditNote[]
   catalogEventOccurrences CatalogEventOccurrence[]
+  catalogEventPricings    CustomerCatalogEventPricing[]
   taxEntities  TaxEntity[]
 
   @@unique([organizationId, externalId])
@@ -611,6 +613,10 @@ model CatalogEvent {
   name               String
   description        String?
   defaultAmountCents Int?     @map("default_amount_cents")
+  // Default usado como semilla al crear pricing por cliente; el precio real
+  // que se cobra al registrar una ocurrencia siempre viene de
+  // CustomerCatalogEventPricing, no de aquí.
+  defaultBillingMode String   @default("next_cycle") @map("default_billing_mode")
   netsuiteItemCode   String?  @map("netsuite_item_code")
   active             Boolean  @default(true)
   createdAt          DateTime @default(now()) @map("created_at")
@@ -618,9 +624,34 @@ model CatalogEvent {
 
   organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   occurrences  CatalogEventOccurrence[]
+  customerPricings CustomerCatalogEventPricing[]
 
   @@unique([organizationId, code])
   @@map("catalog_events")
+}
+
+// Precio pactado por cliente para un evento del catálogo. El registro de una
+// ocurrencia (POST /api/v1/catalog-events/occurrences) toma de aquí amount +
+// billing_mode — no del request body. Si no hay pricing configurado para el
+// par (customer, catalog_event), el handler rechaza la ocurrencia con
+// `customer_catalog_event_pricing_not_set`.
+model CustomerCatalogEventPricing {
+  id              String   @id @default(uuid())
+  organizationId  String   @map("organization_id")
+  customerId      String   @map("customer_id")
+  catalogEventId  String   @map("catalog_event_id")
+  amountCents     Int      @map("amount_cents")
+  billingMode     String   @map("billing_mode") // immediate | next_cycle
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  catalogEvent CatalogEvent @relation(fields: [catalogEventId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, catalogEventId])
+  @@index([organizationId])
+  @@map("customer_catalog_event_pricing")
 }
 
 model CatalogEventOccurrence {

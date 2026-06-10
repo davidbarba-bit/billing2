@@ -7,25 +7,24 @@ import { ApiError, notFound, pathNotFound, validation } from '../errors.js';
 import { buildCustomerSlug } from '../services/slug.js';
 import { applicableTimezone, isValidIanaTimezone } from '../services/tz.js';
 import { billingPeriodFor } from '../services/billing-engine.js';
+import { rejectUnknownFields } from '../services/payload.js';
 import { serializeCustomer, type CustomerWithLinks } from '../serializers/customer.js';
+
+// El API público acepta solo los campos comerciales del cliente. La
+// configuración de facturación (ciclo, día de corte, moneda, timezone, modo
+// de cierre) la administra el equipo Numaris desde el admin.
+const CREATE_ALLOWED_FIELDS = ['external_id', 'name', 'email', 'phone', 'metadata'] as const;
+// PATCH soft fields — currency mantiene su gate, billing schedule sigue por
+// su propio endpoint. Mantenemos compat con el conjunto histórico documentado
+// para clientes que ya integraron contra esos campos.
+const PATCH_ALLOWED_FIELDS = ['name', 'email', 'phone', 'currency', 'timezone', 'metadata'] as const;
+const DEFAULT_CURRENCY = 'MXN';
 
 type CustomerPayload = {
   external_id?: string;
   name?: string;
   email?: string | null;
   phone?: string | null;
-  // v22: los campos fiscales (RFC, dirección, NetSuite) se administran vía
-  // razones sociales (TaxEntity), no en el Customer.
-  currency?: string;
-  timezone?: string | null;
-  billing_period_months?: number; // 1 | 3 | 6 | 12
-  billing_anchor_day?: number;    // 1..28
-  billing_anchor_month?: number | null;  // v15: 1..12, solo aplica si period_months > 1
-  nonrecurring_trigger?: 'immediate' | 'next_cycle';
-  // v19: estructura de la cycle invoice al cierre. 'unified' (default) o
-  // 'split_by_kind' (factura separada para recurrentes vs únicos).
-  cycle_invoice_mode?: 'unified' | 'split_by_kind';
-  subscription_at?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -46,8 +45,9 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const body = request.body as { customer?: CustomerPayload } | null;
-      const payload = body?.customer;
+      const body = request.body as { customer?: Record<string, unknown> } | null;
+      rejectUnknownFields(body?.customer, CREATE_ALLOWED_FIELDS);
+      const payload = body?.customer as CustomerPayload | undefined;
       if (!payload?.external_id) throw validation({ external_id: ['value_is_mandatory'] });
       // El external_id viaja en la URL de todos los endpoints del customer
       // y en NetSuite como identificador estable; lo restringimos a un slug
@@ -56,33 +56,6 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       if (!/^[A-Za-z0-9._-]+$/.test(payload.external_id)) {
         throw validation({ external_id: ['must_be_ascii_slug'] });
       }
-      if (payload.timezone && !isValidIanaTimezone(payload.timezone)) {
-        throw validation({ timezone: ['invalid_iana'] });
-      }
-      const periodMonths = payload.billing_period_months;
-      if (periodMonths !== undefined && ![1, 3, 6, 12].includes(periodMonths)) {
-        throw validation({ billing_period_months: ['must_be_1_3_6_or_12'] });
-      }
-      const anchorDay = payload.billing_anchor_day;
-      if (anchorDay !== undefined && (!Number.isInteger(anchorDay) || anchorDay < 1 || anchorDay > 28)) {
-        throw validation({ billing_anchor_day: ['must_be_1_to_28'] });
-      }
-      // v15: anchor_month validación. Solo aplica si period_months > 1.
-      const anchorMonth = payload.billing_anchor_month;
-      const effectivePeriodMonths = periodMonths ?? 1;
-      if (anchorMonth !== undefined && anchorMonth !== null) {
-        if (effectivePeriodMonths === 1) {
-          throw validation({ billing_anchor_month: ['not_applicable_to_monthly'] });
-        }
-        if (!Number.isInteger(anchorMonth) || anchorMonth < 1 || anchorMonth > 12) {
-          throw validation({ billing_anchor_month: ['must_be_1_to_12'] });
-        }
-      }
-      const trigger = payload.nonrecurring_trigger;
-      if (trigger !== undefined && trigger !== 'immediate' && trigger !== 'next_cycle') {
-        throw validation({ nonrecurring_trigger: ['value_is_invalid'] });
-      }
-      const cycleInvoiceMode = validateCycleInvoiceMode(payload.cycle_invoice_mode);
 
       const existing = await prisma.customer.findUnique({
         where: { organizationId_externalId: { organizationId: org.id, externalId: payload.external_id } },
@@ -95,24 +68,19 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
         customer = await prisma.customer.update({ where: { id: existing.id }, data: updates });
       } else {
         if (!payload.name) throw validation({ name: ['value_is_mandatory'] });
-        if (!payload.currency) throw validation({ currency: ['value_is_mandatory'] });
 
         const now = new Date();
-        const subscriptionAt = payload.subscription_at ? new Date(payload.subscription_at) : now;
-        if (Number.isNaN(subscriptionAt.getTime())) {
-          throw validation({ subscription_at: ['invalid_iso_datetime'] });
-        }
-        const isFuture = subscriptionAt.getTime() > now.getTime();
-        const status = isFuture ? 'pending' : 'active';
-        const startedAt = isFuture ? null : subscriptionAt;
-        const tz = applicableTimezone(payload.timezone, org.timezone);
+        const subscriptionAt = now;
+        const status = 'active';
+        const startedAt = subscriptionAt;
+        const tz = applicableTimezone(null, org.timezone);
         const tempCustomer = {
-          billingPeriodMonths: periodMonths ?? 1,
-          billingAnchorDay: anchorDay ?? 1,
-          billingAnchorMonth: anchorMonth ?? null,
+          billingPeriodMonths: 1,
+          billingAnchorDay: 1,
+          billingAnchorMonth: null,
           subscriptionAt,
         } as unknown as import('@prisma/client').Customer;
-        const period = isFuture ? null : billingPeriodFor(tempCustomer, tz, now);
+        const period = billingPeriodFor(tempCustomer, tz, now);
 
         customer = await prisma.$transaction(async (tx) => {
           const orgUpdated = await tx.organization.update({
@@ -129,16 +97,16 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
               sequentialId,
               slug: buildCustomerSlug(orgUpdated.slug, sequentialId),
               name: payload.name!,
-              currency: payload.currency!,
-              billingPeriodMonths: periodMonths ?? 1,
-              billingAnchorDay: anchorDay ?? 1,
-              billingAnchorMonth: anchorMonth ?? null,
-              nonrecurringTrigger: trigger ?? 'next_cycle',
-              cycleInvoiceMode,
+              currency: DEFAULT_CURRENCY,
+              billingPeriodMonths: 1,
+              billingAnchorDay: 1,
+              billingAnchorMonth: null,
+              nonrecurringTrigger: 'next_cycle',
+              cycleInvoiceMode: 'unified',
               subscriptionAt,
               startedAt,
               status,
-              currentBillingPeriodStartedAt: isFuture ? null : startedAt,
+              currentBillingPeriodStartedAt: startedAt,
               currentBillingPeriodEndingAt: period?.end ?? null,
             },
           });
@@ -266,6 +234,7 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
       const body = (request.body ?? {}) as { customer?: Record<string, unknown> };
       const payload = body.customer;
       if (!payload) throw validation({ customer: ['value_is_mandatory'] });
+      rejectUnknownFields(payload, PATCH_ALLOWED_FIELDS);
 
       const customer = await prisma.customer.findUnique({
         where: { organizationId_externalId: { organizationId: org.id, externalId } },
@@ -276,16 +245,6 @@ export function registerCustomerRoutes(app: FastifyInstance, prisma: PrismaClien
           errorDetails: { customer: ['cannot_edit_terminated_customer'] },
         });
       }
-
-      // Rechazo explícito de hard fields — deben ir por /billing-schedule.
-      const hardFields = ['subscription_at', 'billing_anchor_day', 'billing_period_months', 'nonrecurring_trigger'];
-      const hardErrors: Record<string, string[]> = {};
-      for (const f of hardFields) {
-        if (payload[f] !== undefined) {
-          hardErrors[f] = ['use_billing_schedule_endpoint'];
-        }
-      }
-      if (Object.keys(hardErrors).length > 0) throw validation(hardErrors);
 
       // Validaciones de soft fields.
       const softPayload = payload as {
@@ -573,7 +532,6 @@ function buildCreateData(payload: CustomerPayload): Prisma.CustomerUncheckedCrea
     subscriptionAt: new Date(),
     email: payload.email ?? null,
     phone: payload.phone ?? null,
-    timezone: payload.timezone ?? null,
     metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
   };
 }
@@ -583,15 +541,6 @@ function buildUpdateData(payload: CustomerPayload): Prisma.CustomerUpdateInput {
   if (payload.name !== undefined) updates.name = payload.name ?? '';
   if (payload.email !== undefined) updates.email = payload.email;
   if (payload.phone !== undefined) updates.phone = payload.phone;
-  if (payload.currency !== undefined) updates.currency = payload.currency;
-  if (payload.timezone !== undefined) updates.timezone = payload.timezone;
-  if (payload.billing_period_months !== undefined) updates.billingPeriodMonths = payload.billing_period_months;
-  if (payload.billing_anchor_day !== undefined) updates.billingAnchorDay = payload.billing_anchor_day;
-  if (payload.billing_anchor_month !== undefined) updates.billingAnchorMonth = payload.billing_anchor_month;
-  if (payload.nonrecurring_trigger !== undefined) updates.nonrecurringTrigger = payload.nonrecurring_trigger;
-  if (payload.cycle_invoice_mode !== undefined) {
-    updates.cycleInvoiceMode = validateCycleInvoiceMode(payload.cycle_invoice_mode);
-  }
   if (payload.metadata !== undefined) updates.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
   return updates;
 }

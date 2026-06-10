@@ -558,9 +558,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       : [];
 
     // Ocurrencias del catálogo de eventos para este customer + el catálogo
-    // activo (para el select del modal de "Registrar evento"). Conteo siempre
-    // se calcula porque alimenta el badge del tab.
-    const [catalogEventOccurrences, catalogEvents] = await Promise.all([
+    // activo (para el select del modal de "Registrar evento") + pricings
+    // pactados por (customer, evento). El pricing alimenta tanto el render
+    // del modal "Registrar evento" como la tab "Precios de eventos".
+    const [catalogEventOccurrences, catalogEvents, customerCatalogEventPricings] = await Promise.all([
       prisma.catalogEventOccurrence.findMany({
         where: { organizationId: org.id, customerId: customer.id },
         orderBy: { occurredAt: 'desc' },
@@ -574,6 +575,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       prisma.catalogEvent.findMany({
         where: { organizationId: org.id },
         orderBy: [{ active: 'desc' }, { name: 'asc' }],
+      }),
+      prisma.customerCatalogEventPricing.findMany({
+        where: { customerId: customer.id },
       }),
     ]);
 
@@ -590,6 +594,11 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         org,
         catalogEvents,
         catalogEventOccurrences,
+        customerCatalogEventPricings: customerCatalogEventPricings.map((p) => ({
+          catalogEventId: p.catalogEventId,
+          amountCents: p.amountCents,
+          billingMode: p.billingMode,
+        })),
       }),
     }));
   });
@@ -2797,8 +2806,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     reply.redirect('/admin/catalogo-eventos');
   });
 
-  // Registrar una ocurrencia de catálogo desde el detalle del cliente. Reutiliza
-  // la API pública (que ya tiene toda la lógica de validación + immediate dispatch).
+  // Registrar una ocurrencia de catálogo desde el detalle del cliente. El monto
+  // y el modo de facturación los toma del pricing pactado del cliente (no se
+  // envían desde el form). Si no existe pricing, la API devuelve 422 y se le
+  // pide al usuario configurarlo en la tab "Precios de eventos facturables".
   app.post('/admin/customers/:externalId/catalog-events', async (request, reply) => {
     const org = await getOrg(prisma);
     if (!org) return reply.redirect('/admin');
@@ -2807,11 +2818,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const payload: Record<string, unknown> = {
       catalog_event_code: body.catalog_event_code,
       customer_external_id: externalId,
-      billing_mode: body.billing_mode,
     };
-    if (body.amount && body.amount.trim()) {
-      payload.amount_cents = Math.round(Number(body.amount) * 100);
-    }
     if (body.unit_external_id && body.unit_external_id.trim()) {
       payload.unit_external_id = body.unit_external_id.trim();
     }
@@ -2821,9 +2828,6 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (body.occurred_at && body.occurred_at.trim()) {
       payload.occurred_at = toUtcIso(body.occurred_at);
     }
-    if (body.tax_entity_id && body.tax_entity_id.trim()) {
-      payload.tax_entity_id = body.tax_entity_id.trim();
-    }
     const result = await app.inject({
       method: 'POST',
       url: '/api/v1/catalog-events/occurrences',
@@ -2831,13 +2835,72 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       payload: { catalog_event_occurrence: payload },
     });
     if (result.statusCode !== 200) {
-      setFlash(reply, 'error', `Rechazado: ${result.body.slice(0, 240)}`);
+      const parsed = (() => { try { return JSON.parse(result.body) as { code?: string; error_details?: Record<string, string[]> }; } catch { return null; } })();
+      const isMissingPricing = parsed?.error_details?.catalog_event_code?.includes('customer_catalog_event_pricing_not_set');
+      setFlash(reply, 'error', isMissingPricing
+        ? 'Este cliente no tiene precio pactado para ese evento. Configúralo en la tab "Precios".'
+        : `Rechazado: ${result.body.slice(0, 240)}`);
     } else {
-      const isImmediate = body.billing_mode === 'immediate';
+      const parsed = (() => { try { return JSON.parse(result.body) as { catalog_event_occurrence?: { billing_mode?: string } }; } catch { return null; } })();
+      const isImmediate = parsed?.catalog_event_occurrence?.billing_mode === 'immediate';
       setFlash(reply, 'success', isImmediate
         ? 'Evento registrado y facturado de inmediato.'
         : 'Evento registrado. Se incluirá en la próxima factura del ciclo.');
     }
     reply.redirect(`/admin/customers/${externalId}?tab=cargos`);
+  });
+
+  // Upsert del pricing pactado para un (cliente, evento del catálogo). Cuando
+  // un sistema externo registra una ocurrencia vía API, se cobra según este
+  // pricing (no se acepta override por ocurrencia).
+  app.post('/admin/customers/:externalId/catalog-event-pricing', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const { externalId } = request.params as { externalId: string };
+    const body = request.body as Record<string, string>;
+
+    const customer = await prisma.customer.findUnique({
+      where: { organizationId_externalId: { organizationId: org.id, externalId } },
+    });
+    if (!customer) {
+      setFlash(reply, 'error', 'Cliente no encontrado.');
+      return reply.redirect('/admin/customers');
+    }
+
+    const code = body.catalog_event_code;
+    if (!code) {
+      setFlash(reply, 'error', 'Falta el código del evento.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=precios-eventos`);
+    }
+    const event = await prisma.catalogEvent.findUnique({
+      where: { organizationId_code: { organizationId: org.id, code } },
+    });
+    if (!event) {
+      setFlash(reply, 'error', 'Evento no encontrado en el catálogo.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=precios-eventos`);
+    }
+
+    const amountPesos = Number(body.amount);
+    if (!Number.isFinite(amountPesos) || amountPesos < 0) {
+      setFlash(reply, 'error', 'Monto inválido.');
+      return reply.redirect(`/admin/customers/${externalId}?tab=precios-eventos`);
+    }
+    const amountCents = Math.round(amountPesos * 100);
+    const billingMode = body.billing_mode === 'immediate' ? 'immediate' : 'next_cycle';
+
+    await prisma.customerCatalogEventPricing.upsert({
+      where: { customerId_catalogEventId: { customerId: customer.id, catalogEventId: event.id } },
+      create: {
+        organizationId: org.id,
+        customerId: customer.id,
+        catalogEventId: event.id,
+        amountCents,
+        billingMode,
+      },
+      update: { amountCents, billingMode },
+    });
+
+    setFlash(reply, 'success', `Precio de "${event.name}" actualizado.`);
+    reply.redirect(`/admin/customers/${externalId}?tab=precios-eventos`);
   });
 }

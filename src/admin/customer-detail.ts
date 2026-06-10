@@ -64,6 +64,7 @@ export const CUSTOMER_TABS = [
   'unidades',
   'addons',
   'cargos',
+  'precios-eventos',
   'facturas',
   'eventos',
   'datos',
@@ -194,6 +195,7 @@ function renderTabsNav(externalId: string, active: CustomerTab, counts: {
       { key: 'unidades', label: 'Unidades', count: counts.units },
       { key: 'addons', label: 'Add-ons', count: counts.addOns },
       { key: 'cargos', label: 'Cargos extras', count: counts.catalogEventOccurrences },
+      { key: 'precios-eventos', label: 'Precios de eventos' },
       { key: 'facturas', label: 'Facturas', count: counts.invoices + counts.creditNotes },
       { key: 'eventos', label: 'Eventos' },
       { key: 'datos', label: 'Datos fiscales' },
@@ -806,14 +808,23 @@ function renderFacturas(customer: CustomerWithRelations): string {
 
 // --- Tab: Cargos extras (ocurrencias del catálogo de eventos) -------------
 
+export type CustomerCatalogEventPricingRow = {
+  catalogEventId: string;
+  amountCents: number;
+  billingMode: string;
+};
+
 function renderCargosExtras(args: {
   customer: CustomerWithRelations;
   catalogEvents: CatalogEvent[];
+  pricings: CustomerCatalogEventPricingRow[];
   occurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null; taxEntity?: { legalName: string; isDefault: boolean } | null }>;
 }): string {
   const activeCatalog = args.catalogEvents.filter((e) => e.active);
+  const pricingByEventId = new Map(args.pricings.map((p) => [p.catalogEventId, p] as const));
+  const eventsWithPricing = activeCatalog.filter((e) => pricingByEventId.has(e.id));
 
-  const newButton = activeCatalog.length > 0 && args.customer.status !== 'terminated'
+  const newButton = eventsWithPricing.length > 0 && args.customer.status !== 'terminated'
     ? modalTrigger({ modalId: 'modal-new-cargo-extra', label: '+ Registrar evento' })
     : '';
 
@@ -843,13 +854,18 @@ function renderCargosExtras(args: {
         ],
       });
 
-  const formModal = activeCatalog.length > 0 && args.customer.status !== 'terminated'
-    ? renderCargoExtraModal({ customer: args.customer, catalogEvents: activeCatalog })
+  const formModal = eventsWithPricing.length > 0 && args.customer.status !== 'terminated'
+    ? renderCargoExtraModal({ customer: args.customer, catalogEvents: eventsWithPricing, pricingByEventId })
     : '';
 
-  const description = activeCatalog.length === 0
-    ? 'No hay eventos activos en el catálogo. Define al menos uno en <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos">Catálogo de eventos facturables</a> antes de registrar cargos extras.'
-    : 'Cargos puntuales registrados para este cliente, desde el catálogo de eventos. Cada uno se factura inmediato o en el próximo cierre de ciclo según el modo seleccionado al registrarlo.';
+  let description: string;
+  if (activeCatalog.length === 0) {
+    description = 'No hay eventos activos en el catálogo. Define al menos uno en <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos">Catálogo de eventos facturables</a> antes de registrar cargos extras.';
+  } else if (eventsWithPricing.length === 0) {
+    description = 'Ningún evento del catálogo tiene precio pactado para este cliente. Configura precios en la tab <strong>Precios de eventos</strong> antes de registrar cargos.';
+  } else {
+    description = 'Cargos puntuales registrados para este cliente. El monto y el modo de facturación los toma del precio pactado para este cliente (tab "Precios de eventos").';
+  }
 
   return panel({
     title: `Cargos extras · ${args.occurrences.length}`,
@@ -862,14 +878,16 @@ function renderCargosExtras(args: {
 function renderCargoExtraModal(args: {
   customer: CustomerWithRelations;
   catalogEvents: CatalogEvent[];
+  pricingByEventId: Map<string, CustomerCatalogEventPricingRow>;
 }): string {
-  // Cada option lleva el default amount como data attribute para que el JS
-  // del modal lo precargue en el campo Monto cuando se selecciona el evento.
+  // Cada option muestra el precio pactado del cliente para ese evento (el
+  // pricing es por (customer, catalog_event)). El monto y modo de facturación
+  // no se editan aquí — se configuran en la tab "Precios de eventos".
   const eventOptions = args.catalogEvents.map((e) => {
-    const defaultPesos = e.defaultAmountCents !== null
-      ? (e.defaultAmountCents / 100).toFixed(2)
-      : '';
-    return `<option value="${escapeHtml(e.code)}" data-default-amount="${escapeHtml(defaultPesos)}">${escapeHtml(e.name)}${e.defaultAmountCents !== null ? ` — default ${fmtMoney(e.defaultAmountCents, args.customer.currency)}` : ''}</option>`;
+    const p = args.pricingByEventId.get(e.id)!;
+    const modeLabel = p.billingMode === 'immediate' ? 'inmediato' : 'próximo ciclo';
+    const label = `${e.name} — ${fmtMoney(p.amountCents, args.customer.currency)} (${modeLabel})`;
+    return `<option value="${escapeHtml(e.code)}">${escapeHtml(label)}</option>`;
   }).join('');
 
   const form = `
@@ -879,26 +897,8 @@ function renderCargoExtraModal(args: {
           label: 'Evento del catálogo',
           required: true,
           span: 2,
-          hint: 'Si necesitas registrar un evento que no aparece aquí, créalo primero en el catálogo.',
-          input: `<select required name="catalog_event_code" id="cargo-extra-event" class="${INPUT_CLASS}"><option value="">— elegir evento —</option>${eventOptions}</select>`,
-        })}
-        ${formField({
-          label: 'Monto',
-          required: true,
-          hint: `En ${escapeHtml(args.customer.currency)}. Se precarga con el default del evento si lo tiene.`,
-          input: `<div class="relative">
-            <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(args.customer.currency)}</span>
-            <input required type="number" step="0.01" min="0" name="amount" id="cargo-extra-amount" placeholder="0.00" class="${INPUT_CLASS_MONO} pl-14 text-right">
-          </div>`,
-        })}
-        ${formField({
-          label: 'Modo de facturación',
-          required: true,
-          hint: '"Inmediato" emite una factura individual al instante. "Próximo ciclo" lo incluye en la cycle invoice del periodo.',
-          input: `<select required name="billing_mode" class="${INPUT_CLASS}">
-            <option value="next_cycle">Próximo cierre de ciclo</option>
-            <option value="immediate">Inmediato (factura individual)</option>
-          </select>`,
+          hint: 'El precio y modo de facturación se toman del precio pactado para este cliente.',
+          input: `<select required name="catalog_event_code" class="${INPUT_CLASS}"><option value="">— elegir evento —</option>${eventOptions}</select>`,
         })}
         ${formField({
           label: 'Unidad (opcional)',
@@ -912,51 +912,94 @@ function renderCargoExtraModal(args: {
         })}
         ${formField({
           label: 'Fecha y hora del evento',
+          span: 2,
           hint: 'Cuándo ocurrió. Si lo dejas vacío usa el momento del registro.',
           input: `<input type="datetime-local" name="occurred_at" class="${INPUT_CLASS}">`,
         })}
-        ${(() => {
-          // v22: select de razón social — solo aparece si el cliente tiene
-          // más de una activa. Con una sola, hereda la default sin preguntar.
-          const activeTes = args.customer.taxEntities.filter((te) => te.active);
-          if (activeTes.length <= 1) return '';
-          return formField({
-            label: 'Razón social',
-            span: 2,
-            hint: 'Razón social a la que se factura este evento. Default = la del cliente.',
-            input: `<select name="tax_entity_id" class="${INPUT_CLASS}">${activeTes.map((te) => {
-              const sel = te.isDefault ? 'selected' : '';
-              const label = (te.isDefault ? `${te.legalName} (default)` : te.legalName)
-                + (te.taxIdentificationNumber ? ` — ${te.taxIdentificationNumber}` : '');
-              return `<option value="${escapeHtml(te.id)}" ${sel}>${escapeHtml(label)}</option>`;
-            }).join('')}</select>`,
-          });
-        })()}
       </div>
       <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
         ${primaryButton('Registrar evento')}
       </div>
     </form>
-    <script>
-    (function() {
-      // Cuando se elige un evento, precarga el monto default si lo tiene.
-      const sel = document.getElementById('cargo-extra-event');
-      const amt = document.getElementById('cargo-extra-amount');
-      if (!sel || !amt) return;
-      sel.addEventListener('change', function() {
-        const opt = sel.options[sel.selectedIndex];
-        const def = opt && opt.getAttribute('data-default-amount');
-        if (def && !amt.value) amt.value = def;
-      });
-    })();
-    </script>
   `;
 
   return modal({
     id: 'modal-new-cargo-extra',
     title: 'Registrar cargo extra',
-    description: 'Registra un cargo puntual del catálogo de eventos para este cliente (revisión, capacitación, reinstalación, etc.).',
+    description: 'Registra un cargo puntual del catálogo de eventos para este cliente. El precio y el modo de facturación se toman del precio pactado.',
     body: form,
+  });
+}
+
+// --- Tab: Precios de eventos facturables (pricing por cliente) -----------
+
+function renderPreciosEventos(args: {
+  customer: CustomerWithRelations;
+  catalogEvents: CatalogEvent[];
+  pricings: CustomerCatalogEventPricingRow[];
+}): string {
+  const activeCatalog = args.catalogEvents.filter((e) => e.active);
+  const pricingByEventId = new Map(args.pricings.map((p) => [p.catalogEventId, p] as const));
+  const terminated = args.customer.status === 'terminated';
+  const currency = args.customer.currency;
+
+  if (activeCatalog.length === 0) {
+    return panel({
+      title: 'Precios de eventos facturables',
+      description: 'No hay eventos activos en el catálogo. Define al menos uno en <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos">Catálogo de eventos facturables</a>.',
+      body: '',
+    });
+  }
+
+  const rows = activeCatalog.map((e) => {
+    const p = pricingByEventId.get(e.id);
+    const amountValue = p ? (p.amountCents / 100).toFixed(2) : '';
+    const modeValue = p?.billingMode ?? 'next_cycle';
+    const status = p
+      ? `<span class="pill pill-success">configurado</span>`
+      : `<span class="pill pill-warn">sin precio</span>`;
+
+    const formAction = `/admin/customers/${escapeHtml(args.customer.externalId)}/catalog-event-pricing`;
+    const editForm = terminated ? '' : `
+      <form method="post" action="${formAction}" class="flex items-end gap-2">
+        <input type="hidden" name="catalog_event_code" value="${escapeHtml(e.code)}">
+        <div class="relative">
+          <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono-pro uppercase tracking-wider ink-faint">${escapeHtml(currency)}</span>
+          <input required type="number" step="0.01" min="0" name="amount" value="${escapeHtml(amountValue)}" placeholder="0.00" class="${INPUT_CLASS_MONO} pl-14 text-right" style="width: 9rem;">
+        </div>
+        <select name="billing_mode" class="${INPUT_CLASS}" style="width: 12rem;">
+          <option value="next_cycle" ${modeValue === 'next_cycle' ? 'selected' : ''}>Próximo ciclo</option>
+          <option value="immediate" ${modeValue === 'immediate' ? 'selected' : ''}>Inmediato</option>
+        </select>
+        ${primaryButton(p ? 'Actualizar' : 'Configurar')}
+      </form>
+    `;
+
+    return {
+      event: e,
+      status,
+      pricing: p,
+      editForm,
+    };
+  });
+
+  const t = table({
+    rows,
+    empty: 'Sin eventos',
+    columns: [
+      { label: 'Evento', render: (r) => `<div class="ink">${escapeHtml(r.event.name)}</div><code class="font-mono-pro text-xs ink-faint">${escapeHtml(r.event.code)}</code>` },
+      { label: 'Default del catálogo', render: (r) => r.event.defaultAmountCents !== null
+        ? `<span class="font-mono-pro text-xs">${fmtMoney(r.event.defaultAmountCents, currency)}</span>`
+        : '<span class="ink-faint text-xs">—</span>' },
+      { label: 'Status', render: (r) => r.status },
+      { label: 'Precio para este cliente', render: (r) => r.editForm },
+    ],
+  });
+
+  return panel({
+    title: `Precios de eventos facturables · ${args.pricings.length}/${activeCatalog.length}`,
+    description: 'Precio y modo de facturación pactados con este cliente para cada evento del catálogo. Cuando un sistema externo (API) registra una ocurrencia, se cobra según lo configurado aquí.',
+    body: t,
   });
 }
 
@@ -1167,6 +1210,7 @@ export function renderCustomerDetail(args: {
   org: Organization;
   catalogEvents: CatalogEvent[];
   catalogEventOccurrences: Array<CatalogEventOccurrence & { catalogEvent: { code: string; name: string }; fee: { invoiceId: string } | null; taxEntity?: { legalName: string; isDefault: boolean } | null }>;
+  customerCatalogEventPricings: CustomerCatalogEventPricingRow[];
 }): string {
   const tz = adminContextStorage.getStore()?.displayTz ?? args.org.timezone ?? 'UTC';
   const metrics = computeCustomerMetrics({ customer: args.customer, tz });
@@ -1190,7 +1234,13 @@ export function renderCustomerDetail(args: {
       case 'cargos': return renderCargosExtras({
         customer: args.customer,
         catalogEvents: args.catalogEvents,
+        pricings: args.customerCatalogEventPricings,
         occurrences: args.catalogEventOccurrences,
+      });
+      case 'precios-eventos': return renderPreciosEventos({
+        customer: args.customer,
+        catalogEvents: args.catalogEvents,
+        pricings: args.customerCatalogEventPricings,
       });
       case 'facturas': return renderFacturas(args.customer);
       case 'eventos': return renderEventos(args.events);

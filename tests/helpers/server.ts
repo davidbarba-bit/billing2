@@ -24,6 +24,7 @@ const TABLES = [
   'credit_note_items',
   'credit_notes',
   'catalog_event_occurrences',
+  'customer_catalog_event_pricing',
   'catalog_events',
   'fees',
   'invoices',

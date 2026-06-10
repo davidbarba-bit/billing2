@@ -14,18 +14,25 @@ import {
 } from '../services/immediate-invoice.js';
 import type { ComputedInvoice } from '../services/billing-engine.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
+import { rejectUnknownFields } from '../services/payload.js';
 import { resolveTaxEntityIdForCustomer } from '../services/tax-entity.js';
+
+// El API público acepta solo los campos comerciales de la ocurrencia. El monto
+// (amount_cents) y el momento de facturación (billing_mode) se toman del
+// pricing pactado del cliente para ese código de evento (tabla
+// customer_catalog_event_pricing) — no del request body. La razón social
+// (tax_entity_id) se resuelve al default del cliente.
+const ALLOWED_FIELDS = [
+  'catalog_event_code', 'customer_external_id', 'unit_external_id',
+  'reference', 'occurred_at',
+] as const;
 
 type OccurrencePayload = {
   catalog_event_code?: string;
   customer_external_id?: string;
   unit_external_id?: string | null;
-  amount_cents?: number;
-  billing_mode?: 'immediate' | 'next_cycle';
   reference?: string | null;
   occurred_at?: string;
-  // v22: razón social receptora. Vacío → default del cliente.
-  tax_entity_id?: string | null;
 };
 
 type Deps = {
@@ -130,14 +137,12 @@ export function registerCatalogEventRoutes(
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const body = request.body as { catalog_event_occurrence?: OccurrencePayload } | null;
-      const payload = body?.catalog_event_occurrence;
+      const body = request.body as { catalog_event_occurrence?: Record<string, unknown> } | null;
+      rejectUnknownFields(body?.catalog_event_occurrence, ALLOWED_FIELDS);
+      const payload = body?.catalog_event_occurrence as OccurrencePayload | undefined;
       if (!payload) throw validation({ catalog_event_occurrence: ['value_is_mandatory'] });
       if (!payload.catalog_event_code) throw validation({ catalog_event_code: ['value_is_mandatory'] });
       if (!payload.customer_external_id) throw validation({ customer_external_id: ['value_is_mandatory'] });
-      if (payload.billing_mode !== 'immediate' && payload.billing_mode !== 'next_cycle') {
-        throw validation({ billing_mode: ['value_is_invalid'] });
-      }
 
       const event = await prisma.catalogEvent.findUnique({
         where: { organizationId_code: { organizationId: org.id, code: payload.catalog_event_code } },
@@ -150,23 +155,28 @@ export function registerCatalogEventRoutes(
       });
       if (!customer) throw notFound('customer');
 
-      const amount = payload.amount_cents ?? event.defaultAmountCents;
-      if (amount === null || amount === undefined) {
-        throw validation({ amount_cents: ['value_is_mandatory_when_catalog_has_no_default'] });
+      // Precio + modo vienen del pricing pactado del cliente para este evento.
+      // Si no está configurado el admin debe crearlo primero (UI en customer
+      // detail → "Precios de eventos facturables").
+      const pricing = await prisma.customerCatalogEventPricing.findUnique({
+        where: { customerId_catalogEventId: { customerId: customer.id, catalogEventId: event.id } },
+      });
+      if (!pricing) {
+        throw validation({
+          catalog_event_code: ['customer_catalog_event_pricing_not_set'],
+        });
       }
-      if (!Number.isInteger(amount) || amount < 0) {
-        throw validation({ amount_cents: ['must_be_non_negative_integer'] });
-      }
+      const amount = pricing.amountCents;
+      const billingMode = pricing.billingMode as 'immediate' | 'next_cycle';
 
       const occurredAt = payload.occurred_at ? new Date(payload.occurred_at) : new Date();
       if (Number.isNaN(occurredAt.getTime())) {
         throw validation({ occurred_at: ['invalid_iso_datetime'] });
       }
 
-      // v22: razón social receptora de la ocurrencia (y de la invoice inmediata
-      // si billing_mode=immediate). Si el payload no la especifica, hereda
-      // la default del cliente.
-      const taxEntityId = await resolveTaxEntityIdForCustomer(prisma, customer.id, payload.tax_entity_id);
+      // Razón social receptora — el dev no la decide. Siempre se resuelve a la
+      // default del cliente; el admin maneja multi-RFC si aplica.
+      const taxEntityId = await resolveTaxEntityIdForCustomer(prisma, customer.id, null);
 
       const occurrence = await prisma.catalogEventOccurrence.create({
         data: {
@@ -176,7 +186,7 @@ export function registerCatalogEventRoutes(
           taxEntityId,
           unitExternalId: payload.unit_external_id ?? null,
           amountCents: amount,
-          billingMode: payload.billing_mode,
+          billingMode,
           reference: payload.reference ?? null,
           occurredAt,
         },
@@ -185,7 +195,7 @@ export function registerCatalogEventRoutes(
       // Caso 'immediate': emite invoice individual con UNA fee kind='catalog_event'
       // y la enlaza a la ocurrencia. Dispatch async post-respuesta.
       let invoiceId: string | null = null;
-      if (payload.billing_mode === 'immediate') {
+      if (billingMode === 'immediate') {
         const descParts = [event.name];
         if (occurrence.unitExternalId) descParts.push(occurrence.unitExternalId);
         if (occurrence.reference) descParts.push(`(${occurrence.reference})`);

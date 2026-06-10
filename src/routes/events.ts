@@ -32,11 +32,23 @@ import { notFound, validation } from '../errors.js';
 import { serializeEvent } from '../serializers/event.js';
 import {
   computeOneOffPingInvoice,
+  computeRemovalImmediateInvoice,
   markOneOffBilled,
   persistComputedInvoice,
   splitComputedInvoiceByKind,
 } from '../services/billing-engine.js';
+import { emitImmediateInvoice } from '../services/immediate-invoice.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
+import { rejectUnknownFields } from '../services/payload.js';
+
+// El API público acepta solo los campos comerciales del evento. Gates de
+// facturación inicial (setup_already_billed, one_off_already_billed,
+// billing_starts_at, prepaid_months) son configuración del modelo y los
+// administra Numaris desde el admin.
+const ALLOWED_FIELDS = [
+  'transaction_id', 'service_code', 'operation_type', 'unit_external_id',
+  'unit_label', 'timestamp', 'kind', 'properties',
+] as const;
 
 type EventPayload = {
   transaction_id?: string;
@@ -44,18 +56,6 @@ type EventPayload = {
   operation_type?: 'add' | 'remove';
   unit_external_id?: string;
   unit_label?: string | null;
-  // Meses prepagados específicos para esta unit. Solo aplica si el service es
-  // one_off; sobreescribe service.prepaidMonthsDefault. Si ambos null al
-  // momento de facturar, el cobro falla.
-  prepaid_months?: number | null;
-  // v8: override de fecha de facturación al crear la unit (solo aplica si el
-  // event causa el CREATE de la unit; si ya existe, este campo es ignorado —
-  // usa PATCH /units/:id para ajustarla después). Útil para migración mid-mes.
-  billing_starts_at?: string | null;
-  // v14: flags de "ya pagado afuera" para migración legacy. Solo aplican al
-  // CREATE de la unit. Si la unit ya existe, son ignorados.
-  setup_already_billed?: boolean;
-  one_off_already_billed?: boolean;
   timestamp?: number | string;
   kind?: string | null;
   properties?: Record<string, unknown>;
@@ -74,8 +74,9 @@ export function registerEventRoutes(
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const body = request.body as { event?: EventPayload } | null;
-      const payload = body?.event;
+      const body = request.body as { event?: Record<string, unknown> } | null;
+      rejectUnknownFields(body?.event, ALLOWED_FIELDS);
+      const payload = body?.event as EventPayload | undefined;
       if (!payload) throw validation({ event: ['value_is_mandatory'] });
       if (!payload.transaction_id) throw validation({ transaction_id: ['value_is_mandatory'] });
       if (!payload.service_code) throw validation({ service_code: ['value_is_mandatory'] });
@@ -119,32 +120,14 @@ export function registerEventRoutes(
 
       const timestamp = new Date(payload.timestamp * 1000);
 
-      const prepaidMonthsOverride = payload.prepaid_months ?? null;
-      if (prepaidMonthsOverride !== null && (!Number.isInteger(prepaidMonthsOverride) || prepaidMonthsOverride <= 0)) {
-        throw validation({ prepaid_months: ['must_be_positive_integer'] });
-      }
-
-      // v8: billing_starts_at se respeta solo en CREATE de la unit. Si la
-      // unit ya existe, este campo se ignora (usa PATCH /units/:id para
-      // editar después de creada).
-      let billingStartsAtOverride: Date | null = null;
-      if (payload.billing_starts_at !== undefined && payload.billing_starts_at !== null) {
-        billingStartsAtOverride = new Date(payload.billing_starts_at);
-        if (Number.isNaN(billingStartsAtOverride.getTime())) {
-          throw validation({ billing_starts_at: ['invalid_iso_datetime'] });
-        }
-      }
-
-      // v14: gates pre-pagados ("ya pagado afuera"). Solo aplican al CREATE.
-      const isOneOffService = service.pricingModel === 'one_off';
-      const setupAlreadyBilled = !isOneOffService && payload.setup_already_billed === true
-        ? timestamp
-        : null;
-      const oneOffAlreadyBilled = isOneOffService && payload.one_off_already_billed === true
-        ? timestamp
-        : null;
-
       const result = await prisma.$transaction(async (tx) => {
+        // Snapshot del estado previo de la unidad — necesario para detectar
+        // la transición "estaba activa → se acaba de dar de baja" y disparar
+        // removal_immediate cuando aplique.
+        const previousUnit = await tx.unit.findUnique({
+          where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id! } },
+        });
+
         const unit = await tx.unit.upsert({
           where: { serviceId_externalId: { serviceId: service.id, externalId: payload.unit_external_id! } },
           create: {
@@ -153,17 +136,16 @@ export function registerEventRoutes(
             label: payload.unit_label ?? null,
             activeFrom: timestamp,
             activeTo: op === 'remove' ? timestamp : null,
-            // Solo se setea en create. Si la unit ya existe, preservamos lo
-            // que tenga (se puede ajustar con PATCH /units/:id).
-            prepaidMonths: prepaidMonthsOverride,
-            billingStartsAt: billingStartsAtOverride,
-            setupBilledAt: setupAlreadyBilled,
-            oneoffBilledAt: oneOffAlreadyBilled,
           },
           update: op === 'add'
             ? { activeTo: null, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) }
             : { activeTo: timestamp, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) },
         });
+
+        const justTerminatedByRemove = op === 'remove'
+          && previousUnit !== null
+          && previousUnit.activeTo === null
+          && unit.activeTo !== null;
 
         const event = await tx.eventLog.create({
           data: {
@@ -260,8 +242,38 @@ export function registerEventRoutes(
           await markOneOffBilled(tx as unknown as PrismaClient, [unit.id], timestamp);
         }
 
-        return { event, triggeredInvoiceIds };
+        // Detecta si la baja recién aplicada debe disparar removal_immediate.
+        // La emisión real se hace fuera de la transacción (emitImmediateInvoice
+        // abre su propia tx); aquí solo dejamos el flag.
+        const needsRemovalImmediate = justTerminatedByRemove
+          && unit.removalBilledAt === null
+          && service.pricingModel === 'recurring'
+          && service.removalBillingMode === 'immediate'
+          && service.removalUnitAmountCents > 0;
+
+        return { event, triggeredInvoiceIds, needsRemovalImmediate, unitId: unit.id };
       });
+
+      // Removal immediate fuera de la transacción (emitImmediateInvoice abre
+      // la suya propia). Si el evento dio de baja la unidad y el plan tiene
+      // removal_billing_mode='immediate' con cargo > 0, emitimos invoice ya.
+      if (result.needsRemovalImmediate) {
+        const refreshedUnit = await prisma.unit.findUniqueOrThrow({ where: { id: result.unitId } });
+        const organization = await prisma.organization.findUniqueOrThrow({ where: { id: org.id } });
+        const computed = computeRemovalImmediateInvoice({ service, unit: refreshedUnit });
+        const removalResult = await emitImmediateInvoice({
+          prisma, organization, customer: service.customer,
+          taxEntityId: service.taxEntityId,
+          computed, trigger: 'removal_immediate',
+          idempotencyKey: `removal-immediate:${refreshedUnit.id}`,
+          markBilled: async (tx) => {
+            await tx.unit.update({ where: { id: refreshedUnit.id }, data: { removalBilledAt: new Date() } });
+          },
+        });
+        // Append al array para que el bucle dispatch de abajo lo recoja y la
+        // respuesta exponga triggered_invoice_id.
+        result.triggeredInvoiceIds.push(removalResult.invoiceId);
+      }
 
       // Dispatch async (fuera de la transacción) por cada invoice creada.
       if (opts?.dispatcher && opts.callbackBaseUrl) {

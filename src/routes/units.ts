@@ -18,29 +18,21 @@ import {
   emitImmediateInvoice,
 } from '../services/immediate-invoice.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
+import { rejectUnknownFields } from '../services/payload.js';
+
+// El API público solo expone los campos comerciales de una unidad. Gates de
+// facturación inicial (setup_already_billed, oneoff_already_billed, billing_starts_at,
+// prepaid_months) son configuración del modelo de facturación y los administra
+// Numaris desde el admin.
+const CREATE_ALLOWED_FIELDS = ['service_code', 'external_id', 'label', 'metadata'] as const;
+// PATCH solo cambia el nombre legible. Para dar de baja una unidad usa
+// `POST /api/v1/events` con operation_type='remove'.
+const PATCH_ALLOWED_FIELDS = ['label'] as const;
 
 type UnitPayload = {
   service_code?: string;
   external_id?: string;
   label?: string | null;
-  active_from?: string;
-  // v8: override de fecha de facturación. Si null/omitido, el motor usa
-  // active_from. Útil para migración desde otras plataformas (cobrar mes
-  // completo aunque entre mid-mes, o saltarse el primer mes ya pagado).
-  billing_starts_at?: string | null;
-  prepaid_months?: number | null;
-  // v14: flags de "ya pagado afuera" para migración desde sistemas legacy.
-  // Marcan los gates de facturación inicial sin pasar por el motor.
-  //   - setup_already_billed: para services recurring con setup > 0. Marca
-  //     setupBilledAt = active_from para que la unit NO genere fee de setup.
-  //     La unit sigue facturando mensualidad normal.
-  //   - one_off_already_billed: para services one_off. Marca oneoffBilledAt
-  //     = active_from para que la unit nunca entre al cycle invoice ni al
-  //     ping immediate.
-  // Si se envía el flag "equivocado" para el pricing_model, se ignora
-  // silenciosamente (el gate del otro tipo no afecta este pricing_model).
-  setup_already_billed?: boolean;
-  one_off_already_billed?: boolean;
   metadata?: Record<string, unknown>;
 };
 
@@ -57,8 +49,9 @@ export function registerUnitRoutes(
     preHandler: authenticate,
     handler: async (request, reply) => {
       const org = requireOrg(request);
-      const body = request.body as { unit?: UnitPayload } | null;
-      const payload = body?.unit;
+      const body = request.body as { unit?: Record<string, unknown> } | null;
+      rejectUnknownFields(body?.unit, CREATE_ALLOWED_FIELDS);
+      const payload = body?.unit as UnitPayload | undefined;
       if (!payload) throw validation({ unit: ['value_is_mandatory'] });
       if (!payload.service_code) throw validation({ service_code: ['value_is_mandatory'] });
       if (!payload.external_id) throw validation({ external_id: ['value_is_mandatory'] });
@@ -74,26 +67,7 @@ export function registerUnitRoutes(
       });
       if (existing) throw validation({ external_id: ['value_already_exist'] });
 
-      const activeFrom = payload.active_from ? new Date(payload.active_from) : new Date();
-      if (Number.isNaN(activeFrom.getTime())) throw validation({ active_from: ['invalid_iso_datetime'] });
-      let billingStartsAt: Date | null = null;
-      if (payload.billing_starts_at !== undefined && payload.billing_starts_at !== null) {
-        billingStartsAt = new Date(payload.billing_starts_at);
-        if (Number.isNaN(billingStartsAt.getTime())) throw validation({ billing_starts_at: ['invalid_iso_datetime'] });
-      }
-      const prepaidMonths = payload.prepaid_months ?? null;
-      if (prepaidMonths !== null && (!Number.isInteger(prepaidMonths) || prepaidMonths <= 0)) {
-        throw validation({ prepaid_months: ['must_be_positive_integer'] });
-      }
-
-      // v14: gates pre-pagados ("ya pagado afuera").
-      const isOneOff = service.pricingModel === 'one_off';
-      const setupBilledAt = (!isOneOff && payload.setup_already_billed === true)
-        ? activeFrom
-        : null;
-      const oneoffBilledAt = (isOneOff && payload.one_off_already_billed === true)
-        ? activeFrom
-        : null;
+      const activeFrom = new Date();
 
       const unit = await prisma.unit.create({
         data: {
@@ -101,10 +75,6 @@ export function registerUnitRoutes(
           externalId: payload.external_id,
           label: payload.label ?? null,
           activeFrom,
-          billingStartsAt,
-          prepaidMonths,
-          setupBilledAt,
-          oneoffBilledAt,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
@@ -115,13 +85,13 @@ export function registerUnitRoutes(
       // Solo aplica si:
       //   - recurring (one_off ignora este modo)
       //   - setup > 0
-      //   - NO se marcó setup_already_billed (gate previo ya seteó setupBilledAt)
+      //   - la unit aún no ha sido facturada por setup
       let triggeredInvoiceId: string | null = null;
       if (
         service.pricingModel === 'recurring'
         && service.setupBillingMode === 'immediate'
         && service.setupUnitAmountCents > 0
-        && setupBilledAt === null
+        && unit.setupBilledAt === null
       ) {
         const organization = await prisma.organization.findUniqueOrThrow({ where: { id: org.id } });
         const computed = computeSetupImmediateInvoice({ service, unit });
@@ -218,83 +188,15 @@ export function registerUnitRoutes(
     handler: async (request, reply) => {
       const org = requireOrg(request);
       const { id } = request.params as { id: string };
-      const body = (request.body ?? {}) as { unit?: { label?: string; active_to?: string | null; billing_starts_at?: string | null; prepaid_months?: number | null; metadata?: Record<string, unknown> } };
-      const payload = body.unit ?? {};
+      const body = (request.body ?? {}) as { unit?: Record<string, unknown> };
+      rejectUnknownFields(body.unit, PATCH_ALLOWED_FIELDS);
+      const payload = (body.unit ?? {}) as { label?: string };
       const unit = await prisma.unit.findFirst({ where: { id, service: { organizationId: org.id } } });
       if (!unit) throw notFound('unit');
       const data: Prisma.UnitUpdateInput = {};
       if (payload.label !== undefined) data.label = payload.label;
-      if (payload.active_to !== undefined) {
-        data.activeTo = payload.active_to === null ? null : new Date(payload.active_to);
-      }
-      if (payload.billing_starts_at !== undefined) {
-        if (payload.billing_starts_at === null) {
-          data.billingStartsAt = null;
-        } else {
-          const bs = new Date(payload.billing_starts_at);
-          if (Number.isNaN(bs.getTime())) throw validation({ billing_starts_at: ['invalid_iso_datetime'] });
-          data.billingStartsAt = bs;
-        }
-      }
-      if (payload.prepaid_months !== undefined) {
-        if (payload.prepaid_months !== null && (!Number.isInteger(payload.prepaid_months) || payload.prepaid_months <= 0)) {
-          throw validation({ prepaid_months: ['must_be_positive_integer'] });
-        }
-        // Solo permitir cambio antes de que se haya facturado (oneoffBilledAt = null).
-        if (unit.oneoffBilledAt !== null) {
-          throw validation({ prepaid_months: ['unit_already_billed'] });
-        }
-        data.prepaidMonths = payload.prepaid_months;
-      }
-      if (payload.metadata !== undefined) {
-        data.metadata = (payload.metadata ?? {}) as Prisma.InputJsonValue;
-      }
       const updated = await prisma.unit.update({ where: { id: unit.id }, data });
-
-      // v18: si este PATCH dio de baja la unit (activeTo pasó de null a non-null)
-      // y el service tiene removal_billing_mode='immediate', emitimos invoice
-      // independiente AHORA con el cargo de baja. Reglas:
-      //   - Solo si la baja se acaba de aplicar en ESTE PATCH (transición null→date).
-      //   - service.pricingModel = recurring (one_off ignora).
-      //   - service.removalUnitAmountCents > 0.
-      //   - unit.removalBilledAt === null (no previamente facturada).
-      const justTerminated = unit.activeTo === null && updated.activeTo !== null;
-      let triggeredInvoiceId: string | null = null;
-      if (justTerminated && updated.removalBilledAt === null) {
-        const service = await prisma.service.findUniqueOrThrow({
-          where: { id: updated.serviceId },
-          include: { customer: true },
-        });
-        if (
-          service.pricingModel === 'recurring'
-          && service.removalBillingMode === 'immediate'
-          && service.removalUnitAmountCents > 0
-        ) {
-          const organization = await prisma.organization.findUniqueOrThrow({ where: { id: org.id } });
-          const computed = computeRemovalImmediateInvoice({ service, unit: updated });
-          const result = await emitImmediateInvoice({
-            prisma, organization, customer: service.customer,
-            taxEntityId: service.taxEntityId,
-            computed, trigger: 'removal_immediate',
-            idempotencyKey: `removal-immediate:${updated.id}`,
-            markBilled: async (tx) => {
-              await tx.unit.update({ where: { id: updated.id }, data: { removalBilledAt: new Date() } });
-            },
-          });
-          triggeredInvoiceId = result.invoiceId;
-        }
-      }
-
-      if (triggeredInvoiceId && opts?.dispatcher && opts?.callbackBaseUrl) {
-        dispatchInvoiceInBackground(prisma, org.id, triggeredInvoiceId, opts.dispatcher, opts.callbackBaseUrl, request.log);
-      }
-
-      const refreshed = triggeredInvoiceId
-        ? await prisma.unit.findUniqueOrThrow({ where: { id: updated.id } })
-        : updated;
-      const response = serializeUnit(refreshed);
-      if (triggeredInvoiceId) (response as Record<string, unknown>).triggered_invoice_id = triggeredInvoiceId;
-      reply.send(response);
+      reply.send(serializeUnit(updated));
     },
   });
 
