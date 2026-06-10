@@ -9,6 +9,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v22 — razón social del plan', () => {
   let h: Harness;
@@ -16,14 +17,11 @@ describe('v22 — razón social del plan', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function createCustomer(externalId: string) {
-    const r = await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
     });
-    expect(r.statusCode).toBe(200);
     return h.prisma.customer.findFirstOrThrow({ where: { externalId } });
   }
 

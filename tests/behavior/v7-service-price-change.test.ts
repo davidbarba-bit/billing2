@@ -14,6 +14,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v7 — pending price change con vigencia desde siguiente ciclo', () => {
   let h: Harness;
@@ -31,15 +32,12 @@ describe('v7 — pending price change con vigencia desde siguiente ciclo', () =>
   } = {}) {
     const customerCode = opts.customerCode ?? 'c-rec';
     const serviceCode = opts.serviceCode ?? 's-rec';
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: customerCode, name: customerCode, currency: 'MXN',
-        timezone: 'America/Mexico_City',
-        subscription_at: opts.subscriptionAt ?? '2025-01-01T00:00:00Z',
-        billing_anchor_day: opts.anchorDay ?? 1,
-        billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: customerCode, name: customerCode, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date(opts.subscriptionAt ?? '2025-01-01T00:00:00Z'),
+      billingAnchorDay: opts.anchorDay ?? 1,
+      billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -289,14 +287,12 @@ describe('v7 — pending price change con vigencia desde siguiente ciclo', () =>
   // ===========================================================================
 
   it('one_off + next_cycle: unit creada antes del corte se factura con el precio NUEVO si el cycle empieza on-or-after effective_from', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-oneoff', name: 'OneOff', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2025-01-01T00:00:00Z',
-        nonrecurring_trigger: 'next_cycle',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-oneoff', name: 'OneOff', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2025-01-01T00:00:00Z'),
+      nonrecurringTrigger: 'next_cycle',
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -340,13 +336,11 @@ describe('v7 — pending price change con vigencia desde siguiente ciclo', () =>
   });
 
   it('one_off + immediate ping respeta el precio vigente al momento del ping', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-imm', name: 'Imm', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2025-01-01T00:00:00Z',
-        nonrecurring_trigger: 'immediate',
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-imm', name: 'Imm', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2025-01-01T00:00:00Z'),
+      nonrecurringTrigger: 'immediate',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),

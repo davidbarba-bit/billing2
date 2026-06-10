@@ -3,6 +3,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 import { tickCycleBilling } from '../../src/cron/cycle-billing.js';
 import { FakeNetSuiteDispatcher } from '../../src/services/netsuite-dispatcher.js';
 
@@ -20,9 +21,9 @@ describe('cron — auto-billing on cycle close', () => {
 
   it('emite cycle invoice cuando el periodo del customer venció', async () => {
     // Customer con periodo que ya terminó hace 1 segundo.
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'auto-1', name: 'Auto 1', currency: 'MXN', timezone: 'America/Mexico_City' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'auto-1', name: 'Auto 1', currency: 'MXN',
+      timezone: 'America/Mexico_City',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -63,9 +64,9 @@ describe('cron — auto-billing on cycle close', () => {
   });
 
   it('re-correr el cron no genera invoice duplicada (idempotente)', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'auto-2', name: 'Auto 2', currency: 'MXN', timezone: 'America/Mexico_City' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'auto-2', name: 'Auto 2', currency: 'MXN',
+      timezone: 'America/Mexico_City',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -107,13 +108,11 @@ describe('cron — auto-billing on cycle close', () => {
   });
 
   it('activa customers pending cuyo subscription_at ya pasó', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'pending-1', name: 'Pending', currency: 'MXN',
-        timezone: 'America/Mexico_City',
-        subscription_at: '2099-01-01T00:00:00Z',
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'pending-1', name: 'Pending', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2099-01-01T00:00:00Z'),
+      status: 'pending',
     });
 
     const c = await h.prisma.customer.findUniqueOrThrow({

@@ -11,6 +11,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v7 — preview (dry-run) de cycle invoice', () => {
   let h: Harness;
@@ -18,13 +19,11 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedRecurring(opts: { monthly?: number; setup?: number } = {}) {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-prev', name: 'Preview', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2025-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-prev', name: 'Preview', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2025-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),

@@ -24,6 +24,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect, createUnitDirect } from '../helpers/factories.js';
 
 describe('v8 — migración de unit entre planes', () => {
   let h: Harness;
@@ -38,13 +39,11 @@ describe('v8 — migración de unit entre planes', () => {
     const customer = opts.customer ?? 'c-mig';
     const sA = opts.serviceA ?? { code: 'plan-premium', monthly: 85000, setup: 15000, pricing_model: 'recurring' as const };
     const sB = opts.serviceB ?? { code: 'plan-lite', monthly: 50000, setup: 10000, pricing_model: 'recurring' as const };
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: customer, name: customer, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: customer, name: customer, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     for (const s of [sA, sB]) {
       await h.app.inject({
@@ -62,12 +61,13 @@ describe('v8 — migración de unit entre planes', () => {
   }
 
   async function createUnit(serviceCode: string, externalId: string, activeFrom = '2020-01-01T00:00:00Z') {
-    const r = await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: serviceCode, external_id: externalId, active_from: activeFrom } },
+    const svc = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: serviceCode } },
     });
-    expect(r.statusCode).toBe(200);
-    return (r.json() as { unit: { id: string; external_id: string } }).unit;
+    const { id } = await createUnitDirect(h.prisma, {
+      serviceId: svc.id, externalId, activeFrom: new Date(activeFrom),
+    });
+    return { id, external_id: externalId };
   }
 
   function futureIso(daysFromNow = 30): string {
@@ -248,9 +248,9 @@ describe('v8 — migración de unit entre planes', () => {
   it('G) target service pertenece a otro customer → 422', async () => {
     await seed();
     // Customer 2 con un service propio.
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c2', name: 'c2', currency: 'MXN', timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c2', name: 'c2', currency: 'MXN', timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -283,10 +283,9 @@ describe('v8 — migración de unit entre planes', () => {
   it('I) unit ya terminada → 409', async () => {
     await seed();
     const old = await createUnit('plan-premium', 'gps-009');
-    // Terminar manualmente
-    await h.app.inject({
-      method: 'PATCH', url: `/api/v1/units/${old.id}`, headers: h.authHeader(),
-      payload: { unit: { active_to: new Date().toISOString() } },
+    // Terminar manualmente (PATCH /units solo acepta `label`).
+    await h.prisma.unit.update({
+      where: { id: old.id }, data: { activeTo: new Date() },
     });
     const r = await h.app.inject({
       method: 'POST', url: `/api/v1/units/${old.id}/migrate`, headers: h.authHeader(),

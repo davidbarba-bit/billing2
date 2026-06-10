@@ -16,6 +16,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect, createUnitDirect } from '../helpers/factories.js';
 import { billingPeriodFor } from '../../src/services/billing-engine.js';
 
 describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
@@ -49,9 +50,9 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
   });
 
   it('one_off + next_cycle: 1 unit con 48 meses prepagados + setup → cycle invoice tiene 2 fees', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c1', name: 'C1', currency: 'MXN', timezone: 'America/Mexico_City', subscription_at: '2025-01-01T00:00:00Z' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c1', name: 'C1', currency: 'MXN', timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2025-01-01T00:00:00Z'),
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -94,9 +95,9 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
   });
 
   it('one_off + next_cycle: 3 units distintas → 6 fees (par setup+mensualidad por unit, una con N propio)', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'cM', name: 'Multi', currency: 'MXN', subscription_at: '2025-01-01T00:00:00Z' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'cM', name: 'Multi', currency: 'MXN',
+      subscriptionAt: new Date('2025-01-01T00:00:00Z'),
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -107,20 +108,31 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
       } },
     });
     const now = Math.floor(Date.now() / 1000);
-    // Unit A: usa default 48 meses
+    const svcMulti = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-multi' } },
+    });
+    // Unit A: usa default 48 meses → seguimos detonando con POST /events.
     await h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
       payload: { event: { transaction_id: 'tx-a', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-A', timestamp: now } },
     });
-    // Unit B: override 60 meses
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
-      payload: { event: { transaction_id: 'tx-b', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-B', prepaid_months: 60, timestamp: now } },
+    // Unit B: override 60 meses → pre-creamos en DB con prepaidMonths, luego event sin override.
+    await createUnitDirect(h.prisma, {
+      serviceId: svcMulti.id, externalId: 'u-B', prepaidMonths: 60,
+      activeFrom: new Date(now * 1000),
     });
-    // Unit C: override 24 meses
     await h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
-      payload: { event: { transaction_id: 'tx-c', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-C', prepaid_months: 24, timestamp: now } },
+      payload: { event: { transaction_id: 'tx-b', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-B', timestamp: now } },
+    });
+    // Unit C: override 24 meses → mismo patrón.
+    await createUnitDirect(h.prisma, {
+      serviceId: svcMulti.id, externalId: 'u-C', prepaidMonths: 24,
+      activeFrom: new Date(now * 1000),
+    });
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: { transaction_id: 'tx-c', service_code: 's-multi', operation_type: 'add', unit_external_id: 'u-C', timestamp: now } },
     });
 
     const r = await h.app.inject({
@@ -149,9 +161,8 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
   });
 
   it('one_off + immediate: POST /events emite invoice individual con 2 fees', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'c2', name: 'C2', currency: 'MXN', nonrecurring_trigger: 'immediate' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c2', name: 'C2', currency: 'MXN', nonrecurringTrigger: 'immediate',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -193,10 +204,9 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
     expect(body2.triggered_invoice_id).toBeUndefined();
   });
 
-  it('one_off + immediate: el POST /events con prepaid_months override usa ese valor', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'cO', name: 'Override', currency: 'MXN', nonrecurring_trigger: 'immediate' } },
+  it('one_off + immediate: el override de prepaid_months en la unit usa ese valor', async () => {
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'cO', name: 'Override', currency: 'MXN', nonrecurringTrigger: 'immediate',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -207,9 +217,17 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
       } },
     });
 
+    // El API ya no acepta prepaid_months en el event; pre-creamos la unit con
+    // el override (72) en DB y luego mandamos el evento limpio.
+    const svcOv = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-ov' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svcOv.id, externalId: 'u-ov', prepaidMonths: 72,
+    });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
-      payload: { event: { transaction_id: 'tx-ov', service_code: 's-ov', operation_type: 'add', unit_external_id: 'u-ov', prepaid_months: 72, timestamp: Math.floor(Date.now()/1000) } },
+      payload: { event: { transaction_id: 'tx-ov', service_code: 's-ov', operation_type: 'add', unit_external_id: 'u-ov', timestamp: Math.floor(Date.now()/1000) } },
     });
     expect(r.statusCode).toBe(200);
     const invId = (r.json() as { triggered_invoice_id: string }).triggered_invoice_id;
@@ -221,9 +239,8 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
   });
 
   it('error si prepaid_months no está definido ni en service ni en unit', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'cErr', name: 'E', currency: 'MXN', nonrecurring_trigger: 'immediate' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'cErr', name: 'E', currency: 'MXN', nonrecurringTrigger: 'immediate',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -246,9 +263,8 @@ describe('v6 — intervals + one_off prepagado (setup + N meses)', () => {
   });
 
   it('rechaza prepaid_months_default en service recurring', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: { external_id: 'cR', name: 'R', currency: 'MXN' } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'cR', name: 'R', currency: 'MXN',
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),

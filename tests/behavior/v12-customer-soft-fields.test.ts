@@ -16,6 +16,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v12 — editar soft fields del customer', () => {
   let h: Harness;
@@ -23,15 +24,12 @@ describe('v12 — editar soft fields del customer', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedCustomer(externalId = 'c-soft') {
-    const r = await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
-    expect(r.statusCode).toBe(200);
   }
 
   it('A) edita name, email, phone', async () => {
@@ -92,14 +90,14 @@ describe('v12 — editar soft fields del customer', () => {
     expect(r.statusCode).toBe(422);
   });
 
-  it('G) hard fields rechazados con use_billing_schedule_endpoint', async () => {
+  it('G) hard fields rechazados como unknown_field por PATCH /customers', async () => {
     await seedCustomer('c-G');
     const r = await h.app.inject({
       method: 'PATCH', url: '/api/v1/customers/c-G', headers: h.authHeader(),
       payload: { customer: { subscription_at: '2027-01-01T00:00:00Z' } },
     });
     expect(r.statusCode).toBe(422);
-    expect(r.body).toContain('use_billing_schedule_endpoint');
+    expect(r.body).toContain('unknown_field');
   });
 
   it('H) hard + soft mixed → 422, nada se aplica', async () => {
@@ -129,9 +127,11 @@ describe('v12 — editar soft fields del customer', () => {
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-j', customer_external_id: 'c-J', name: 's', monthly_unit_amount_cents: 50000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-j', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcJ = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-j' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcJ.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -155,9 +155,11 @@ describe('v12 — editar soft fields del customer', () => {
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-k', customer_external_id: 'c-K', name: 's', monthly_unit_amount_cents: 50000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-k', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcK = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-k' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcK.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',

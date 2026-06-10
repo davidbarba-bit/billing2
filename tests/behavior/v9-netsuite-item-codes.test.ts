@@ -21,6 +21,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v9 — códigos de producto NetSuite', () => {
   let h: Harness;
@@ -28,14 +29,12 @@ describe('v9 — códigos de producto NetSuite', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedCustomer(externalId = 'c-ns', nonrecurringTrigger?: 'immediate' | 'next_cycle') {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-        ...(nonrecurringTrigger ? { nonrecurring_trigger: nonrecurringTrigger } : {}),
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
+      ...(nonrecurringTrigger ? { nonrecurringTrigger } : {}),
     });
   }
 
@@ -157,9 +156,11 @@ describe('v9 — códigos de producto NetSuite', () => {
         netsuite_monthly_item_code: 'MON', netsuite_setup_item_code: 'SET',
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-prev', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcPrev = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-prev' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcPrev.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/customers/c-ns/add-ons', headers: h.authHeader(),
@@ -187,9 +188,11 @@ describe('v9 — códigos de producto NetSuite', () => {
         monthly_unit_amount_cents: 50000, // sin códigos
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-null', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcNull = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-null' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcNull.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
@@ -212,9 +215,11 @@ describe('v9 — códigos de producto NetSuite', () => {
         netsuite_monthly_item_code: 'MON-X', netsuite_setup_item_code: 'SET-X',
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-persist', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcPersist = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-persist' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcPersist.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -241,9 +246,11 @@ describe('v9 — códigos de producto NetSuite', () => {
         netsuite_monthly_item_code: 'ORIG',
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-snap', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcSnap = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-snap' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcSnap.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -279,9 +286,11 @@ describe('v9 — códigos de producto NetSuite', () => {
         netsuite_monthly_item_code: 'DISP-MON',
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-disp', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcDisp = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-disp' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcDisp.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),

@@ -5,6 +5,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect, createUnitDirect } from '../helpers/factories.js';
 
 describe('v22 — cycle invoice por razón social', () => {
   let h: Harness;
@@ -14,15 +15,12 @@ describe('v22 — cycle invoice por razón social', () => {
   // Setup: cliente con 2 razones sociales (default + filial) y 2 planes
   // (uno a cada razón social) con 1 unit activa cada uno.
   async function seed(externalId: string, cycleMode: 'unified' | 'split_by_kind' = 'unified') {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City',
-        subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-        cycle_invoice_mode: cycleMode,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
+      cycleInvoiceMode: cycleMode,
     });
     const customer = await h.prisma.customer.findFirstOrThrow({ where: { externalId } });
     const defaultTe = await h.prisma.taxEntity.findFirstOrThrow({ where: { customerId: customer.id, isDefault: true } });
@@ -55,13 +53,20 @@ describe('v22 — cycle invoice por razón social', () => {
       } },
     });
     // 1 unit a cada plan, vigente todo el ciclo (mayo 2026).
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: `${externalId}-a`, external_id: `${externalId}-u-a`, active_from: '2026-04-15T00:00:00Z', setup_already_billed: true } },
+    const svcA = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: `${externalId}-a` } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: `${externalId}-b`, external_id: `${externalId}-u-b`, active_from: '2026-04-15T00:00:00Z' } },
+    await createUnitDirect(h.prisma, {
+      serviceId: svcA.id, externalId: `${externalId}-u-a`,
+      activeFrom: new Date('2026-04-15T00:00:00Z'),
+      setupBilledAt: new Date('2026-04-15T00:00:00Z'),
+    });
+    const svcB = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: `${externalId}-b` } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svcB.id, externalId: `${externalId}-u-b`,
+      activeFrom: new Date('2026-04-15T00:00:00Z'),
     });
     return { customer, defaultTe, filialTe };
   }
@@ -134,14 +139,11 @@ describe('v22 — cycle invoice por razón social', () => {
   });
 
   it('cliente con UNA razón social: idempotency key sin sufijo te: (un solo grupo)', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-single', name: 'c-single', currency: 'MXN',
-        timezone: 'America/Mexico_City',
-        subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-single', name: 'c-single', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -150,9 +152,12 @@ describe('v22 — cycle invoice por razón social', () => {
         monthly_unit_amount_cents: 50000,
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-single', external_id: 'u-single', active_from: '2020-01-01T00:00:00Z' } },
+    const svcSingle = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-single' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svcSingle.id, externalId: 'u-single',
+      activeFrom: new Date('2020-01-01T00:00:00Z'),
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -175,9 +180,12 @@ describe('v22 — cycle invoice por razón social', () => {
     // segunda unit cuyo setup quede pendiente (saldrá como kind=setup → oneoff).
     const { customer } = await seed('c-split', 'split_by_kind');
     // Unit nueva con setup pendiente para el Plan A.
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 'c-split-a', external_id: 'c-split-u-a2', active_from: '2026-04-20T00:00:00Z' } },
+    const svcAddon = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 'c-split-a' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svcAddon.id, externalId: 'c-split-u-a2',
+      activeFrom: new Date('2026-04-20T00:00:00Z'),
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',

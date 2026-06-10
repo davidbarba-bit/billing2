@@ -18,6 +18,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect, createUnitDirect } from '../helpers/factories.js';
 
 describe('v8 — billing_starts_at (migración mid-mes)', () => {
   let h: Harness;
@@ -25,13 +26,11 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedRecurring(opts: { monthly?: number; setup?: number } = {}) {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-mig', name: 'Mig', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-mig', name: 'Mig', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -55,18 +54,22 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
     }).preview;
   }
 
+  async function migSvc() {
+    return h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-mig' } },
+    });
+  }
+
   // ===========================================================================
   // A — cobrar mes completo aunque la unit entre mid-mes
   // ===========================================================================
   it('A) billing_starts_at = inicio del mes → cobra mes completo', async () => {
     await seedRecurring({ monthly: 85000 });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: 's-mig', external_id: 'gps-001',
-        active_from: '2026-05-05T00:00:00Z',     // empezó a reportar el 5
-        billing_starts_at: '2026-05-01T06:00:00Z', // pero se factura desde el 1 CST
-      } },
+    const svc = await migSvc();
+    await createUnitDirect(h.prisma, {
+      serviceId: svc.id, externalId: 'gps-001',
+      activeFrom: new Date('2026-05-05T00:00:00Z'),
+      billingStartsAt: new Date('2026-05-01T06:00:00Z'),
     });
     const p = await preview('2026-05-01T06:00:00Z', '2026-06-01T05:59:59Z');
     const m = p.fees.find((f) => f.kind === 'monthly')!;
@@ -79,13 +82,11 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
   // ===========================================================================
   it('B) billing_starts_at = inicio del próximo mes → mayo no factura, junio sí', async () => {
     await seedRecurring({ monthly: 85000 });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: 's-mig', external_id: 'gps-002',
-        active_from: '2026-05-05T00:00:00Z',
-        billing_starts_at: '2026-06-01T06:00:00Z',
-      } },
+    const svc = await migSvc();
+    await createUnitDirect(h.prisma, {
+      serviceId: svc.id, externalId: 'gps-002',
+      activeFrom: new Date('2026-05-05T00:00:00Z'),
+      billingStartsAt: new Date('2026-06-01T06:00:00Z'),
     });
     // Mayo: no debe haber renglón monthly (la unit "no factura" en mayo).
     const may = await preview('2026-05-01T06:00:00Z', '2026-06-01T05:59:59Z');
@@ -102,13 +103,11 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
   // ===========================================================================
   it('C) billing_starts_at mid-mes → factor (días_restantes / días_del_mes)', async () => {
     await seedRecurring({ monthly: 85000 });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: 's-mig', external_id: 'gps-003',
-        active_from: '2026-05-05T00:00:00Z',
-        billing_starts_at: '2026-05-16T06:00:00Z', // factura desde el 16 CST
-      } },
+    const svc = await migSvc();
+    await createUnitDirect(h.prisma, {
+      serviceId: svc.id, externalId: 'gps-003',
+      activeFrom: new Date('2026-05-05T00:00:00Z'),
+      billingStartsAt: new Date('2026-05-16T06:00:00Z'),
     });
     const p = await preview('2026-05-01T06:00:00Z', '2026-06-01T05:59:59Z');
     const m = p.fees.find((f) => f.kind === 'monthly')!;
@@ -121,13 +120,11 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
   // ===========================================================================
   it('D) setup se difiere si billing_starts_at > periodEnd', async () => {
     await seedRecurring({ monthly: 85000, setup: 15000 });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: 's-mig', external_id: 'gps-004',
-        active_from: '2026-05-05T00:00:00Z',
-        billing_starts_at: '2026-06-01T06:00:00Z', // saltar mayo
-      } },
+    const svc = await migSvc();
+    await createUnitDirect(h.prisma, {
+      serviceId: svc.id, externalId: 'gps-004',
+      activeFrom: new Date('2026-05-05T00:00:00Z'),
+      billingStartsAt: new Date('2026-06-01T06:00:00Z'),
     });
     // Mayo: ni monthly ni setup.
     const may = await preview('2026-05-01T06:00:00Z', '2026-06-01T05:59:59Z');
@@ -144,14 +141,12 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
   // E — one_off + next_cycle decide cycle en base a billing_starts_at
   // ===========================================================================
   it('E) one_off + next_cycle: billing_starts_at decide en qué cycle entra la unit', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-oo', name: 'OneOff', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        nonrecurring_trigger: 'next_cycle',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-oo', name: 'OneOff', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      nonrecurringTrigger: 'next_cycle',
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -162,13 +157,13 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
         prepaid_months_default: 12,
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: 's-oo', external_id: 'gps-oo-1',
-        active_from: '2026-05-05T00:00:00Z',
-        billing_starts_at: '2026-06-15T00:00:00Z', // facturar en cycle de junio
-      } },
+    const svcOo = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-oo' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svcOo.id, externalId: 'gps-oo-1',
+      activeFrom: new Date('2026-05-05T00:00:00Z'),
+      billingStartsAt: new Date('2026-06-15T00:00:00Z'),
     });
     // Cycle mayo NO debe incluir la unit one_off.
     const may = await h.app.inject({
@@ -190,45 +185,20 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
   // ===========================================================================
   // F — PATCH /units/:id permite ajustar billing_starts_at
   // ===========================================================================
-  it('F) PATCH /units/:id permite ajustar y limpiar billing_starts_at', async () => {
-    await seedRecurring({ monthly: 85000 });
-    const created = await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: 's-mig', external_id: 'gps-005',
-        active_from: '2026-05-05T00:00:00Z',
-      } },
-    });
-    const unit = (created.json() as { unit: { id: string; billing_starts_at: string | null } }).unit;
-    expect(unit.billing_starts_at).toBeNull();
-
-    // SET billing_starts_at.
-    const patch1 = await h.app.inject({
-      method: 'PATCH', url: `/api/v1/units/${unit.id}`, headers: h.authHeader(),
-      payload: { unit: { billing_starts_at: '2026-06-01T06:00:00Z' } },
-    });
-    expect(patch1.statusCode).toBe(200);
-    expect((patch1.json() as { unit: { billing_starts_at: string } }).unit.billing_starts_at).toContain('2026-06-01');
-
-    // CLEAR billing_starts_at (null).
-    const patch2 = await h.app.inject({
-      method: 'PATCH', url: `/api/v1/units/${unit.id}`, headers: h.authHeader(),
-      payload: { unit: { billing_starts_at: null } },
-    });
-    expect((patch2.json() as { unit: { billing_starts_at: string | null } }).unit.billing_starts_at).toBeNull();
+  it.skip('F) PATCH /units/:id permite ajustar y limpiar billing_starts_at', async () => {
+    // TODO: PATCH /units/:id ya no acepta billing_starts_at (solo `label`).
+    // El ajuste de billing_starts_at vive ahora en el admin/DB directo.
   });
 
   // ===========================================================================
   // G — one_off + immediate con billing_starts_at futuro NO emite invoice
   // ===========================================================================
   it('G) one_off + immediate: billing_starts_at futuro defiere el ping (sin invoice)', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-imm', name: 'Imm', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        nonrecurring_trigger: 'immediate',
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-imm', name: 'Imm', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      nonrecurringTrigger: 'immediate',
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
@@ -238,14 +208,24 @@ describe('v8 — billing_starts_at (migración mid-mes)', () => {
         setup_unit_amount_cents: 0, prepaid_months_default: 6,
       } },
     });
-    // Ping con billing_starts_at futuro → no debe emitir invoice.
+    // Pre-creamos la unit con billing_starts_at futuro en DB (el API ya no
+    // acepta ese campo en POST /events ni en POST /units). Luego mandamos el
+    // event 'add' limpio: el handler debe respetar billing_starts_at y NO
+    // emitir invoice (defer).
+    const svcImm = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-imm' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svcImm.id, externalId: 'gps-imm-1',
+      activeFrom: new Date('2026-05-05T00:00:00Z'),
+      billingStartsAt: new Date('2026-06-01T06:00:00Z'),
+    });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
       payload: { event: {
         transaction_id: 'imm-deferred', service_code: 's-imm', operation_type: 'add',
         unit_external_id: 'gps-imm-1', unit_label: 'gps-imm-1',
         timestamp: Math.floor(new Date('2026-05-05T00:00:00Z').getTime() / 1000),
-        billing_starts_at: '2026-06-01T06:00:00Z',
       } },
     });
     expect(r.statusCode).toBe(200);

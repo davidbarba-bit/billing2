@@ -29,6 +29,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v11 — editar billing_schedule del customer post-creación', () => {
   let h: Harness;
@@ -36,16 +37,15 @@ describe('v11 — editar billing_schedule del customer post-creación', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedCustomer(externalId = 'c-sched', subscriptionAt = '2026-05-16T00:00:00Z') {
-    const r = await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City',
-        subscription_at: subscriptionAt,
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    const sub = new Date(subscriptionAt);
+    const isFuture = sub.getTime() > Date.now();
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: sub,
+      billingAnchorDay: 1, billingPeriodMonths: 1,
+      status: isFuture ? 'pending' : 'active',
     });
-    expect(r.statusCode).toBe(200);
   }
 
   function future(daysFromNow = 30): string {
@@ -130,9 +130,11 @@ describe('v11 — editar billing_schedule del customer post-creación', () => {
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-e', customer_external_id: 'c-E', name: 's', monthly_unit_amount_cents: 50000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-e', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcE = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-e' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcE.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -161,9 +163,11 @@ describe('v11 — editar billing_schedule del customer post-creación', () => {
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-f', customer_external_id: 'c-F', name: 's', monthly_unit_amount_cents: 50000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-f', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcF = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-f' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcF.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -190,9 +194,11 @@ describe('v11 — editar billing_schedule del customer post-creación', () => {
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-g', customer_external_id: 'c-G', name: 's', monthly_unit_amount_cents: 50000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-g', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcG = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-g' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcG.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     const inv = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',

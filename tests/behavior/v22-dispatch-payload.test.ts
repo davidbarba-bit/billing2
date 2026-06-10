@@ -10,6 +10,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { FakeNetSuiteDispatcher } from '../../src/services/netsuite-dispatcher.js';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect, createUnitDirect } from '../helpers/factories.js';
 
 describe('v22 fase 5 — dispatch payload usa external_id de la razón social', () => {
   let h: Harness;
@@ -17,12 +18,10 @@ describe('v22 fase 5 — dispatch payload usa external_id de la razón social', 
   afterAll(async () => { await closeHarness(h); });
 
   async function seed(customerExternalId: string, opts: { withFilial?: boolean; netsuiteInternalId?: string } = {}) {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: customerExternalId, name: customerExternalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: customerExternalId, name: customerExternalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
     });
     const customer = await h.prisma.customer.findFirstOrThrow({ where: { externalId: customerExternalId } });
     const defaultTe = await h.prisma.taxEntity.findFirstOrThrow({ where: { customerId: customer.id, isDefault: true } });
@@ -59,9 +58,11 @@ describe('v22 fase 5 — dispatch payload usa external_id de la razón social', 
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-2', customer_external_id: 'cust-2', name: 'S', monthly_unit_amount_cents: 30000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-2', external_id: 'u', active_from: '2020-01-01T00:00:00Z' } },
+    const svc2 = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-2' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svc2.id, externalId: 'u', activeFrom: new Date('2020-01-01T00:00:00Z'),
     });
     const r = await h.app.inject({
       method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
@@ -87,9 +88,11 @@ describe('v22 fase 5 — dispatch payload usa external_id de la razón social', 
         tax_entity_id: filial!.id,
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-3', external_id: 'u', active_from: '2020-01-01T00:00:00Z' } },
+    const svc3 = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-3' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svc3.id, externalId: 'u', activeFrom: new Date('2020-01-01T00:00:00Z'),
     });
     // El harness usa FakeNetSuiteDispatcher; captura el último payload.
     const r = await h.app.inject({
@@ -123,9 +126,11 @@ describe('v22 fase 5 — dispatch payload usa external_id de la razón social', 
         tax_entity_id: filial!.id,
       } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-4', external_id: 'u', active_from: '2020-01-01T00:00:00Z' } },
+    const svc4 = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-4' } },
+    });
+    await createUnitDirect(h.prisma, {
+      serviceId: svc4.id, externalId: 'u', activeFrom: new Date('2020-01-01T00:00:00Z'),
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',

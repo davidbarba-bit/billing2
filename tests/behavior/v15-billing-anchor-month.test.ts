@@ -17,6 +17,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { DateTime } from 'luxon';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 import { billingPeriodFor } from '../../src/services/billing-engine.js';
 
 // Helper: convierte una Date UTC al día calendar en la tz especificada.
@@ -109,13 +110,11 @@ describe('v15 — billing_anchor_month', () => {
   // E) PATCH /billing-schedule acepta anchor_month
   // ===========================================================================
   it('E) PATCH /billing-schedule setea anchor_month y se serializa', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-E', name: 'C', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2026-02-01T06:00:00Z',
-        billing_period_months: 3, billing_anchor_day: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-E', name: 'C', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2026-02-01T06:00:00Z'),
+      billingPeriodMonths: 3, billingAnchorDay: 1,
     });
     const r = await h.app.inject({
       method: 'PATCH', url: '/api/v1/customers/c-E/billing-schedule', headers: h.authHeader(),
@@ -130,12 +129,10 @@ describe('v15 — billing_anchor_month', () => {
   // F) Monthly + anchor_month → 422
   // ===========================================================================
   it('F) monthly + anchor_month → 422 not_applicable_to_monthly', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-F', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
-        subscription_at: '2020-01-01T00:00:00Z', billing_period_months: 1, billing_anchor_day: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-F', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingPeriodMonths: 1, billingAnchorDay: 1,
     });
     const r = await h.app.inject({
       method: 'PATCH', url: '/api/v1/customers/c-F/billing-schedule', headers: h.authHeader(),
@@ -149,12 +146,10 @@ describe('v15 — billing_anchor_month', () => {
   // G) anchor_month fuera de 1..12 → 422
   // ===========================================================================
   it('G) anchor_month=13 → 422 must_be_1_to_12', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-G', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
-        subscription_at: '2020-01-01T00:00:00Z', billing_period_months: 3, billing_anchor_day: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-G', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingPeriodMonths: 3, billingAnchorDay: 1,
     });
     const r = await h.app.inject({
       method: 'PATCH', url: '/api/v1/customers/c-G/billing-schedule', headers: h.authHeader(),
@@ -178,20 +173,20 @@ describe('v15 — billing_anchor_month', () => {
   // I) Gate: cambiar anchor_month con invoices existentes → 409
   // ===========================================================================
   it('I) cambiar anchor_month con invoice no-voided → 409', async () => {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-I', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
-        subscription_at: '2020-01-01T06:00:00Z', billing_period_months: 3, billing_anchor_day: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-I', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T06:00:00Z'),
+      billingPeriodMonths: 3, billingAnchorDay: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
       payload: { service: { code: 's-i', customer_external_id: 'c-I', name: 'svc', monthly_unit_amount_cents: 50000 } },
     });
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: 's-i', external_id: 'u1', active_from: '2020-01-01T00:00:00Z' } },
+    const svcI = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: 's-i' } },
+    });
+    await h.prisma.unit.create({
+      data: { serviceId: svcI.id, externalId: 'u1', activeFrom: new Date('2020-01-01T00:00:00Z') },
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/invoices',
@@ -214,12 +209,10 @@ describe('v15 — billing_anchor_month', () => {
   // ===========================================================================
   it('J) realinear: anchor_month=1 sobre cliente trimestral preserva semántica', async () => {
     // Cliente trimestral suscrito feb-1 sin anchor_month → cycles feb-abr.
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-J', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
-        subscription_at: '2026-02-01T06:00:00Z', billing_period_months: 3, billing_anchor_day: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-J', name: 'C', currency: 'MXN', timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2026-02-01T06:00:00Z'),
+      billingPeriodMonths: 3, billingAnchorDay: 1,
     });
     // PATCH anchor_month=1 → realinea a Ene/Abr/Jul/Oct.
     const r = await h.app.inject({

@@ -26,6 +26,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 
 describe('v18 — immediate billing modes for setup / removal', () => {
   let h: Harness;
@@ -33,13 +34,11 @@ describe('v18 — immediate billing modes for setup / removal', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedCustomer(externalId = 'c-1') {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
   }
 
@@ -63,20 +62,42 @@ describe('v18 — immediate billing modes for setup / removal', () => {
   }
 
   async function createUnit(svcCode: string, extId: string, opts: { activeFrom?: string; setupAlreadyBilled?: boolean } = {}) {
+    // El API ya no acepta active_from ni setup_already_billed. Para tests que
+    // necesitan setupAlreadyBilled (caso G), pre-creamos la unit en DB; para
+    // los demás, dejamos que POST /units detone el flujo immediate por sí solo.
+    if (opts.setupAlreadyBilled) {
+      const svc = await h.prisma.service.findUniqueOrThrow({
+        where: { organizationId_code: { organizationId: h.organization.id, code: svcCode } },
+      });
+      const activeFrom = new Date(opts.activeFrom ?? '2026-01-15T18:00:00Z');
+      const unit = await h.prisma.unit.create({
+        data: {
+          serviceId: svc.id, externalId: extId,
+          activeFrom, setupBilledAt: activeFrom,
+        },
+      });
+      return {
+        statusCode: 200,
+        json: () => ({ unit: { id: unit.id }, triggered_invoice_id: undefined }),
+      } as unknown as Awaited<ReturnType<typeof h.app.inject>>;
+    }
     return h.app.inject({
       method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: {
-        service_code: svcCode, external_id: extId,
-        active_from: opts.activeFrom ?? '2026-01-15T18:00:00Z',
-        ...(opts.setupAlreadyBilled ? { setup_already_billed: true } : {}),
-      } },
+      payload: { unit: { service_code: svcCode, external_id: extId } },
     });
   }
 
-  async function patchUnit(id: string, patch: Record<string, unknown>) {
+  // Termina una unit en DB (PATCH /units solo acepta label). Si el service
+  // tiene removal_billing_mode='immediate' usamos POST /events con
+  // operation_type='remove' para detonar el flujo real.
+  async function terminateUnitViaEvent(extId: string, svcCode: string, terminatedAt: string, txId = `rm-${extId}`) {
     return h.app.inject({
-      method: 'PATCH', url: `/api/v1/units/${id}`, headers: h.authHeader(),
-      payload: { unit: patch },
+      method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
+      payload: { event: {
+        transaction_id: txId, service_code: svcCode, operation_type: 'remove',
+        unit_external_id: extId,
+        timestamp: Math.floor(new Date(terminatedAt).getTime() / 1000),
+      } },
     });
   }
 
@@ -161,13 +182,13 @@ describe('v18 — immediate billing modes for setup / removal', () => {
   });
 
   // =========================================================================
-  it('E) PATCH active_to en service con removal_billing_mode=immediate → invoice removal al instante', async () => {
+  it('E) POST /events remove en service con removal_billing_mode=immediate → invoice removal al instante', async () => {
     await seedCustomer('c-E');
     await seedService('s-E', 'c-E', { setup: 0, removal: 5000, removalMode: 'immediate' });
     const u = await createUnit('s-E', 'u-1');
     const unitId = (u.json() as { unit: { id: string } }).unit.id;
 
-    const r = await patchUnit(unitId, { active_to: '2026-06-20T18:00:00Z' });
+    const r = await terminateUnitViaEvent('u-1', 's-E', '2026-06-20T18:00:00Z');
     expect(r.statusCode).toBe(200);
     const body = r.json() as { triggered_invoice_id?: string };
     expect(body.triggered_invoice_id).toBeTruthy();
@@ -188,8 +209,8 @@ describe('v18 — immediate billing modes for setup / removal', () => {
   it('F) cycle invoice posterior NO incluye fee removal (ya emitido immediate)', async () => {
     await seedCustomer('c-F');
     await seedService('s-F', 'c-F', { removal: 5000, removalMode: 'immediate' });
-    const u = await createUnit('s-F', 'u-1');
-    await patchUnit((u.json() as { unit: { id: string } }).unit.id, { active_to: '2026-06-20T18:00:00Z' });
+    await createUnit('s-F', 'u-1');
+    await terminateUnitViaEvent('u-1', 's-F', '2026-06-20T18:00:00Z');
 
     const p = await preview('c-F', '2026-06-01T06:00:00Z', '2026-07-01T05:59:59Z');
     expect(p.fees.find((f) => f.kind === 'removal')).toBeUndefined();

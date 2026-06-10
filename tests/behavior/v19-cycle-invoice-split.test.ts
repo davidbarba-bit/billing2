@@ -20,6 +20,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect, createUnitDirect } from '../helpers/factories.js';
 
 describe('v19 — cycle invoice split', () => {
   let h: Harness;
@@ -27,14 +28,12 @@ describe('v19 — cycle invoice split', () => {
   afterAll(async () => { await closeHarness(h); });
 
   async function seedCustomer(externalId: string, mode: 'unified' | 'split_by_kind' = 'unified') {
-    return h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: externalId, name: externalId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-        cycle_invoice_mode: mode,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId, name: externalId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
+      cycleInvoiceMode: mode,
     });
   }
 
@@ -53,9 +52,11 @@ describe('v19 — cycle invoice split', () => {
   }
 
   async function seedUnit(svcCode: string, extId: string, activeFrom = '2026-01-15T18:00:00Z') {
-    return h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: svcCode, external_id: extId, active_from: activeFrom } },
+    const svc = await h.prisma.service.findUniqueOrThrow({
+      where: { organizationId_code: { organizationId: h.organization.id, code: svcCode } },
+    });
+    return createUnitDirect(h.prisma, {
+      serviceId: svc.id, externalId: extId, activeFrom: new Date(activeFrom),
     });
   }
 
@@ -224,15 +225,11 @@ describe('v19 — cycle invoice split', () => {
   });
 
   // =========================================================================
-  it('I) cycle_invoice_mode con valor inválido → 422', async () => {
+  it('I) cycle_invoice_mode con valor inválido → 422 (via PATCH /billing-schedule)', async () => {
+    await seedCustomer('c-I', 'unified');
     const r = await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-I', name: 'c-I', currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-        cycle_invoice_mode: 'something_invalid',
-      } },
+      method: 'PATCH', url: '/api/v1/customers/c-I/billing-schedule', headers: h.authHeader(),
+      payload: { billing_schedule: { cycle_invoice_mode: 'something_invalid' } },
     });
     expect(r.statusCode).toBe(422);
     expect(JSON.stringify(r.json())).toContain('must_be_unified_or_split_by_kind');
@@ -262,29 +259,24 @@ describe('v19 — cycle invoice split', () => {
   // =========================================================================
 
   async function seedImmediateOneOffCustomer(extId: string, mode: 'unified' | 'split_by_kind') {
-    return h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: extId, name: extId, currency: 'MXN',
-        timezone: 'America/Mexico_City', subscription_at: '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-        nonrecurring_trigger: 'immediate',
-        cycle_invoice_mode: mode,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: extId, name: extId, currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date('2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
+      nonrecurringTrigger: 'immediate',
+      cycleInvoiceMode: mode,
     });
   }
 
   // Helper: crea unit y dispara el evento 'add' que detona el ping immediate.
+  // El evento 'add' por sí mismo upserta la unit, así que no hace falta el POST /units previo.
   async function createUnitAndPing(svcCode: string, extId: string, txId: string, ts = '2026-06-15T18:00:00Z') {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
-      payload: { unit: { service_code: svcCode, external_id: extId, active_from: ts } },
-    });
     return h.app.inject({
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
       payload: { event: {
         transaction_id: txId, service_code: svcCode, unit_external_id: extId,
-        operation_type: 'add', timestamp: ts,
+        operation_type: 'add', timestamp: Math.floor(new Date(ts).getTime() / 1000),
       } },
     });
   }
@@ -360,7 +352,8 @@ describe('v19 — cycle invoice split', () => {
       method: 'POST', url: '/api/v1/events', headers: h.authHeader(),
       payload: { event: {
         transaction_id: 'tx-M-dup', service_code: 's-M', unit_external_id: 'u-1',
-        operation_type: 'add', timestamp: '2026-06-15T19:00:00Z',
+        operation_type: 'add',
+        timestamp: Math.floor(new Date('2026-06-15T19:00:00Z').getTime() / 1000),
       } },
     });
     const after = await h.prisma.invoice.count({ where: { customer: { externalId: 'c-M' } } });

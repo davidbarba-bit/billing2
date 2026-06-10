@@ -15,6 +15,7 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestHarness, closeHarness, type Harness } from '../helpers/server.js';
+import { createCustomerDirect } from '../helpers/factories.js';
 import { calendarMonthFraction } from '../../src/services/billing-engine.js';
 
 describe('v8 — calendar-month proration', () => {
@@ -26,14 +27,11 @@ describe('v8 — calendar-month proration', () => {
   async function seedCustomerWithService(opts: {
     monthly?: number; subscriptionAt?: string;
   } = {}) {
-    await h.app.inject({
-      method: 'POST', url: '/api/v1/customers', headers: h.authHeader(),
-      payload: { customer: {
-        external_id: 'c-v8', name: 'C8', currency: 'MXN',
-        timezone: 'America/Mexico_City',
-        subscription_at: opts.subscriptionAt ?? '2020-01-01T00:00:00Z',
-        billing_anchor_day: 1, billing_period_months: 1,
-      } },
+    await createCustomerDirect(h.prisma, h.organization, {
+      externalId: 'c-v8', name: 'C8', currency: 'MXN',
+      timezone: 'America/Mexico_City',
+      subscriptionAt: new Date(opts.subscriptionAt ?? '2020-01-01T00:00:00Z'),
+      billingAnchorDay: 1, billingPeriodMonths: 1,
     });
     await h.app.inject({
       method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
