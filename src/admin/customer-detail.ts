@@ -822,9 +822,14 @@ function renderCargosExtras(args: {
 }): string {
   const activeCatalog = args.catalogEvents.filter((e) => e.active);
   const pricingByEventId = new Map(args.pricings.map((p) => [p.catalogEventId, p] as const));
-  const eventsWithPricing = activeCatalog.filter((e) => pricingByEventId.has(e.id));
+  // Un evento es "registrable" si tiene precio pactado para este cliente O
+  // si el catálogo le tiene default. Sin ninguna de las dos, no podemos
+  // resolver monto al crear la ocurrencia.
+  const eventsRegistrables = activeCatalog.filter((e) =>
+    pricingByEventId.has(e.id) || e.defaultAmountCents !== null
+  );
 
-  const newButton = eventsWithPricing.length > 0 && args.customer.status !== 'terminated'
+  const newButton = eventsRegistrables.length > 0 && args.customer.status !== 'terminated'
     ? modalTrigger({ modalId: 'modal-new-cargo-extra', label: '+ Registrar evento' })
     : '';
 
@@ -854,17 +859,17 @@ function renderCargosExtras(args: {
         ],
       });
 
-  const formModal = eventsWithPricing.length > 0 && args.customer.status !== 'terminated'
-    ? renderCargoExtraModal({ customer: args.customer, catalogEvents: eventsWithPricing, pricingByEventId })
+  const formModal = eventsRegistrables.length > 0 && args.customer.status !== 'terminated'
+    ? renderCargoExtraModal({ customer: args.customer, catalogEvents: eventsRegistrables, pricingByEventId })
     : '';
 
   let description: string;
   if (activeCatalog.length === 0) {
     description = 'No hay eventos activos en el catálogo. Define al menos uno en <a class="hover:underline" style="color: var(--accent-deep);" href="/admin/catalogo-eventos">Catálogo de eventos facturables</a> antes de registrar cargos extras.';
-  } else if (eventsWithPricing.length === 0) {
-    description = 'Ningún evento del catálogo tiene precio pactado para este cliente. Configura precios en la tab <strong>Precios de eventos</strong> antes de registrar cargos.';
+  } else if (eventsRegistrables.length === 0) {
+    description = 'Ningún evento activo tiene precio resolvible: ni hay precio pactado con este cliente ni default en el catálogo. Configura uno de los dos antes de registrar cargos.';
   } else {
-    description = 'Cargos puntuales registrados para este cliente. El monto y el modo de facturación los toma del precio pactado para este cliente (tab "Precios de eventos").';
+    description = 'Cargos puntuales registrados para este cliente. Si pactaste un precio específico para este cliente, ese se usa. Si no, se usa el default del catálogo del evento.';
   }
 
   return panel({
@@ -880,13 +885,16 @@ function renderCargoExtraModal(args: {
   catalogEvents: CatalogEvent[];
   pricingByEventId: Map<string, CustomerCatalogEventPricingRow>;
 }): string {
-  // Cada option muestra el precio pactado del cliente para ese evento (el
-  // pricing es por (customer, catalog_event)). El monto y modo de facturación
-  // no se editan aquí — se configuran en la tab "Precios de eventos".
+  // Cada option muestra el precio efectivo: el pactado para este cliente si
+  // existe, o el default del catálogo si no. El monto y modo no se editan
+  // aquí — se configuran en "Precios de eventos" (cliente) o en el catálogo.
   const eventOptions = args.catalogEvents.map((e) => {
-    const p = args.pricingByEventId.get(e.id)!;
-    const modeLabel = p.billingMode === 'immediate' ? 'inmediato' : 'próximo ciclo';
-    const label = `${e.name} — ${fmtMoney(p.amountCents, args.customer.currency)} (${modeLabel})`;
+    const p = args.pricingByEventId.get(e.id);
+    const amount = p ? p.amountCents : (e.defaultAmountCents ?? 0);
+    const mode = p ? p.billingMode : e.defaultBillingMode;
+    const source = p ? 'pactado' : 'default del catálogo';
+    const modeLabel = mode === 'immediate' ? 'inmediato' : 'próximo ciclo';
+    const label = `${e.name} — ${fmtMoney(amount, args.customer.currency)} (${modeLabel}, ${source})`;
     return `<option value="${escapeHtml(e.code)}">${escapeHtml(label)}</option>`;
   }).join('');
 
@@ -897,7 +905,7 @@ function renderCargoExtraModal(args: {
           label: 'Evento del catálogo',
           required: true,
           span: 2,
-          hint: 'El precio y modo de facturación se toman del precio pactado para este cliente.',
+          hint: 'Si el cliente tiene precio pactado se usa ese. Si no, se usa el default del catálogo del evento.',
           input: `<select required name="catalog_event_code" class="${INPUT_CLASS}"><option value="">— elegir evento —</option>${eventOptions}</select>`,
         })}
         ${formField({

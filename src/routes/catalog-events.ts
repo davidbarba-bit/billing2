@@ -155,19 +155,30 @@ export function registerCatalogEventRoutes(
       });
       if (!customer) throw notFound('customer');
 
-      // Precio + modo vienen del pricing pactado del cliente para este evento.
-      // Si no está configurado el admin debe crearlo primero (UI en customer
-      // detail → "Precios de eventos facturables").
+      // Resolución de precio + modo:
+      //   1. Si el cliente tiene precio pactado para este evento → usa ese.
+      //   2. Si no, usa el default del catálogo (default_amount_cents +
+      //      default_billing_mode del CatalogEvent).
+      //   3. Si tampoco hay default → 422 catalog_event_no_pricing — el
+      //      admin debe configurar al menos un default en el catálogo o un
+      //      precio pactado para este cliente.
       const pricing = await prisma.customerCatalogEventPricing.findUnique({
         where: { customerId_catalogEventId: { customerId: customer.id, catalogEventId: event.id } },
       });
-      if (!pricing) {
-        throw validation({
-          catalog_event_code: ['customer_catalog_event_pricing_not_set'],
-        });
+      let amount: number;
+      let billingMode: 'immediate' | 'next_cycle';
+      if (pricing) {
+        amount = pricing.amountCents;
+        billingMode = pricing.billingMode as 'immediate' | 'next_cycle';
+      } else {
+        if (event.defaultAmountCents === null) {
+          throw validation({
+            catalog_event_code: ['catalog_event_no_pricing'],
+          });
+        }
+        amount = event.defaultAmountCents;
+        billingMode = event.defaultBillingMode as 'immediate' | 'next_cycle';
       }
-      const amount = pricing.amountCents;
-      const billingMode = pricing.billingMode as 'immediate' | 'next_cycle';
 
       const occurredAt = payload.occurred_at ? new Date(payload.occurred_at) : new Date();
       if (Number.isNaN(occurredAt.getTime())) {

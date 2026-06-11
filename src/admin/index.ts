@@ -2845,9 +2845,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     });
     if (result.statusCode !== 200) {
       const parsed = (() => { try { return JSON.parse(result.body) as { code?: string; error_details?: Record<string, string[]> }; } catch { return null; } })();
-      const isMissingPricing = parsed?.error_details?.catalog_event_code?.includes('customer_catalog_event_pricing_not_set');
-      setFlash(reply, 'error', isMissingPricing
-        ? 'Este cliente no tiene precio pactado para ese evento. Configúralo en la tab "Precios".'
+      const noPricing = parsed?.error_details?.catalog_event_code?.includes('catalog_event_no_pricing');
+      setFlash(reply, 'error', noPricing
+        ? 'Este evento no tiene precio: ni hay precio pactado con el cliente ni default en el catálogo. Configura uno de los dos.'
         : `Rechazado: ${result.body.slice(0, 240)}`);
     } else {
       const parsed = (() => { try { return JSON.parse(result.body) as { catalog_event_occurrence?: { billing_mode?: string } }; } catch { return null; } })();
