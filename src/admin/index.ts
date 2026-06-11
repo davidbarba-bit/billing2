@@ -27,6 +27,7 @@ import type { AppConfig } from '../config.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { seedNumaris } from './seed.js';
 import { resetOrganizationData } from '../services/reset.js';
+import { createCustomerFull } from '../services/customer.js';
 import { billingPeriodFor } from '../services/billing-engine.js';
 import { buildSignatureHeader } from '../services/hmac.js';
 import { isValidIanaTimezone } from '../services/tz.js';
@@ -413,10 +414,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const form = (request.body ?? {}) as Record<string, string | undefined>;
 
-    // Transformar el form (todos los campos llegan como string) al payload
-    // del API. Sólo incluimos campos con valor — así los `undefined` dejan
-    // que el API aplique sus defaults sin enviar `null` y disparar
-    // validaciones innecesarias.
+    // Transformar el form (todos los campos llegan como string). El admin
+    // escribe directo a BD via createCustomerFull — el API público no acepta
+    // configuración de facturación, pero acá sí porque es el flujo donde el
+    // equipo Numaris la define al onboarding.
     const get = (k: string): string | undefined => {
       const v = form[k];
       return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
@@ -425,97 +426,93 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const v = get(k);
       return v === undefined ? undefined : Number(v);
     };
-    const customerPayload: Record<string, unknown> = {};
+
     const externalId = get('external_id');
-    if (externalId) customerPayload.external_id = externalId;
     const name = get('name');
-    if (name) customerPayload.name = name;
-    const currency = get('currency');
-    if (currency) customerPayload.currency = currency.toUpperCase();
-    const subAt = get('subscription_at');
-    if (subAt) {
-      const displayTz = adminContextStorage.getStore()?.displayTz ?? org.timezone;
-      customerPayload.subscription_at = dtLocalInTzToUtcIso(subAt, displayTz);
-    }
-    const periodMonths = num('billing_period_months');
-    if (periodMonths) customerPayload.billing_period_months = periodMonths;
-    const anchorDay = num('billing_anchor_day');
-    if (anchorDay) customerPayload.billing_anchor_day = anchorDay;
-    const anchorMonth = num('billing_anchor_month');
-    if (anchorMonth) customerPayload.billing_anchor_month = anchorMonth;
-    const trigger = get('nonrecurring_trigger');
-    if (trigger) customerPayload.nonrecurring_trigger = trigger;
-    const cycleMode = get('cycle_invoice_mode');
-    if (cycleMode) customerPayload.cycle_invoice_mode = cycleMode;
-    const tz = get('timezone');
-    if (tz) customerPayload.timezone = tz;
+    const currency = get('currency')?.toUpperCase();
+    const subAtRaw = get('subscription_at');
+    const displayTz = adminContextStorage.getStore()?.displayTz ?? org.timezone;
+    const subscriptionAt = subAtRaw ? new Date(dtLocalInTzToUtcIso(subAtRaw, displayTz)) : undefined;
+    const billingPeriodMonths = num('billing_period_months');
+    const billingAnchorDay = num('billing_anchor_day');
+    const billingAnchorMonth = num('billing_anchor_month');
+    const nonrecurringTriggerRaw = get('nonrecurring_trigger');
+    const cycleInvoiceModeRaw = get('cycle_invoice_mode');
+    const timezone = get('timezone');
 
-    // El endpoint /api/v1/customers hace upsert por external_id; desde la
-    // UI eso confunde — si el operador escribe un id que ya existe quiere
-    // saberlo, no actualizar al cliente silenciosamente. Validación previa
-    // para reportar conflicto explícito.
-    if (typeof customerPayload.external_id === 'string') {
-      const dup = await prisma.customer.findUnique({
-        where: { organizationId_externalId: { organizationId: org.id, externalId: customerPayload.external_id } },
-        select: { name: true, externalId: true },
-      });
-      if (dup) {
-        const msg = `Ya existe un cliente con identificador "${dup.externalId}" (${dup.name}). Elige otro identificador o edita el existente.`;
-        reply.status(409).type('text/html').send(layout({
-          title: 'Nuevo cliente',
-          active: '/admin/customers',
-          orgSlug: org.slug,
-          flash: { kind: 'error', message: msg },
-          body: renderNewCustomerForm(form, { displayTz: adminContextStorage.getStore()?.displayTz ?? org.timezone, orgTimezone: org.timezone }),
-        }));
-        return;
-      }
+    // Validaciones mínimas — el form ya restringe selects, pero defendemos
+    // contra POST manual.
+    const errors: Record<string, string[]> = {};
+    if (!externalId) errors.external_id = ['value_is_mandatory'];
+    else if (!/^[A-Za-z0-9._-]+$/.test(externalId)) errors.external_id = ['must_be_ascii_slug'];
+    if (!name) errors.name = ['value_is_mandatory'];
+    if (billingPeriodMonths !== undefined && ![1, 3, 6, 12].includes(billingPeriodMonths)) {
+      errors.billing_period_months = ['must_be_1_3_6_or_12'];
+    }
+    if (billingAnchorDay !== undefined && (billingAnchorDay < 1 || billingAnchorDay > 28)) {
+      errors.billing_anchor_day = ['must_be_1_to_28'];
+    }
+    if (nonrecurringTriggerRaw !== undefined && nonrecurringTriggerRaw !== 'immediate' && nonrecurringTriggerRaw !== 'next_cycle') {
+      errors.nonrecurring_trigger = ['value_is_invalid'];
+    }
+    if (cycleInvoiceModeRaw !== undefined && cycleInvoiceModeRaw !== 'unified' && cycleInvoiceModeRaw !== 'split_by_kind') {
+      errors.cycle_invoice_mode = ['must_be_unified_or_split_by_kind'];
     }
 
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/customers',
-      headers: {
-        authorization: `Bearer ${org.apiKey}`,
-        'content-type': 'application/json',
-      },
-      payload: { customer: customerPayload },
+    if (Object.keys(errors).length > 0) {
+      const msg = Object.entries(errors).map(([k, v]) => `${k}: ${v.join(', ')}`).join(' · ');
+      reply.status(422).type('text/html').send(layout({
+        title: 'Nuevo cliente',
+        active: '/admin/customers',
+        orgSlug: org.slug,
+        flash: { kind: 'error', message: msg },
+        body: renderNewCustomerForm(form, { displayTz, orgTimezone: org.timezone }),
+      }));
+      return;
+    }
+
+    // Verificación de duplicado antes de intentar el insert (UX explícita).
+    const dup = await prisma.customer.findUnique({
+      where: { organizationId_externalId: { organizationId: org.id, externalId: externalId! } },
+      select: { name: true, externalId: true },
     });
-
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      const result = response.json() as { customer: { external_id: string; name: string } };
-      // v22: la razón social default la crea el API de customers en la misma
-      // transacción del alta — el admin no necesita hacer nada extra acá.
-      setFlash(reply, 'success', `Cliente "${result.customer.name}" creado.`);
-      return reply.redirect(`/admin/customers/${encodeURIComponent(result.customer.external_id)}`);
+    if (dup) {
+      const msg = `Ya existe un cliente con identificador "${dup.externalId}" (${dup.name}). Elige otro identificador o edita el existente.`;
+      reply.status(409).type('text/html').send(layout({
+        title: 'Nuevo cliente',
+        active: '/admin/customers',
+        orgSlug: org.slug,
+        flash: { kind: 'error', message: msg },
+        body: renderNewCustomerForm(form, { displayTz, orgTimezone: org.timezone }),
+      }));
+      return;
     }
 
-    // Error: re-renderizar el form con los valores capturados y el
-    // mensaje del API (validación o conflict).
-    type ApiError = { error_details?: Record<string, string[]>; code?: string; error?: string };
-    let parsed: ApiError = {};
     try {
-      parsed = response.json() as ApiError;
-    } catch {
-      // body no era JSON (raro pero defensivo)
+      const result = await createCustomerFull(prisma, org, {
+        externalId: externalId!,
+        name: name!,
+        currency,
+        timezone,
+        subscriptionAt,
+        billingPeriodMonths,
+        billingAnchorDay,
+        billingAnchorMonth,
+        nonrecurringTrigger: nonrecurringTriggerRaw as 'immediate' | 'next_cycle' | undefined,
+        cycleInvoiceMode: cycleInvoiceModeRaw as 'unified' | 'split_by_kind' | undefined,
+      });
+      setFlash(reply, 'success', `Cliente "${name}" creado.`);
+      return reply.redirect(`/admin/customers/${encodeURIComponent(result.externalId)}`);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'No se pudo crear el cliente.';
+      reply.status(500).type('text/html').send(layout({
+        title: 'Nuevo cliente',
+        active: '/admin/customers',
+        orgSlug: org.slug,
+        flash: { kind: 'error', message: errorMsg },
+        body: renderNewCustomerForm(form, { displayTz, orgTimezone: org.timezone }),
+      }));
     }
-    let errorMsg = 'No se pudo crear el cliente.';
-    if (parsed.error_details && Object.keys(parsed.error_details).length > 0) {
-      errorMsg = Object.entries(parsed.error_details)
-        .map(([k, v]) => `${k}: ${v.join(', ')}`)
-        .join(' · ');
-    } else if (parsed.code) {
-      errorMsg = parsed.code;
-    } else if (parsed.error) {
-      errorMsg = parsed.error;
-    }
-    reply.status(response.statusCode).type('text/html').send(layout({
-      title: 'Nuevo cliente',
-      active: '/admin/customers',
-      orgSlug: org.slug,
-      flash: { kind: 'error', message: errorMsg },
-      body: renderNewCustomerForm(form, { displayTz: adminContextStorage.getStore()?.displayTz ?? org.timezone, orgTimezone: org.timezone }),
-    }));
   });
 
 

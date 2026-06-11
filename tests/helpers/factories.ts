@@ -11,75 +11,38 @@
 // public API entirely.
 
 import type { Organization, Prisma, PrismaClient } from '@prisma/client';
-import { buildCustomerSlug } from '../../src/services/slug.js';
+import { createCustomerFull, type CreateCustomerFullInput } from '../../src/services/customer.js';
 
-export type CreateCustomerDirectOpts = {
-  externalId: string;
-  name?: string;
-  currency?: string;
-  timezone?: string | null;
-  billingPeriodMonths?: number;
-  billingAnchorDay?: number;
-  billingAnchorMonth?: number | null;
-  nonrecurringTrigger?: 'immediate' | 'next_cycle';
-  cycleInvoiceMode?: 'unified' | 'split_by_kind';
-  subscriptionAt?: Date;
+export type CreateCustomerDirectOpts = CreateCustomerFullInput & {
+  // Tests pueden necesitar forzar status='pending' o 'terminated' después
+  // del create — el helper público lo deriva de subscriptionAt vs now.
   status?: 'pending' | 'active' | 'terminated';
-  email?: string | null;
-  phone?: string | null;
-  metadata?: Prisma.InputJsonValue;
 };
 
 // Creates a customer with billing configuration via prisma, plus its default
-// tax entity. Use this in tests that need specific billing config (the public
-// API no longer accepts those fields).
+// tax entity. Wrapper sobre createCustomerFull (que comparte la lógica con
+// el admin UI). Use this in tests that need specific billing config — the
+// public API no longer accepts those fields.
 export async function createCustomerDirect(
   prisma: PrismaClient,
   org: Organization,
   opts: CreateCustomerDirectOpts,
 ): Promise<{ id: string; externalId: string }> {
-  const subscriptionAt = opts.subscriptionAt ?? new Date();
-  return prisma.$transaction(async (tx) => {
-    const orgUpdated = await tx.organization.update({
-      where: { id: org.id },
-      data: { customerCounter: { increment: 1 } },
-      select: { customerCounter: true, slug: true },
-    });
-    const sequentialId = orgUpdated.customerCounter;
-    const created = await tx.customer.create({
-      data: {
-        organizationId: org.id,
-        externalId: opts.externalId,
-        sequentialId,
-        slug: buildCustomerSlug(orgUpdated.slug, sequentialId),
-        name: opts.name ?? opts.externalId,
-        email: opts.email ?? null,
-        phone: opts.phone ?? null,
-        currency: opts.currency ?? 'MXN',
-        timezone: opts.timezone ?? null,
-        billingPeriodMonths: opts.billingPeriodMonths ?? 1,
-        billingAnchorDay: opts.billingAnchorDay ?? 1,
-        billingAnchorMonth: opts.billingAnchorMonth ?? null,
-        nonrecurringTrigger: opts.nonrecurringTrigger ?? 'next_cycle',
-        cycleInvoiceMode: opts.cycleInvoiceMode ?? 'unified',
-        subscriptionAt,
-        startedAt: opts.status === 'pending' ? null : subscriptionAt,
-        status: opts.status ?? 'active',
-        metadata: opts.metadata ?? {},
-      },
-    });
-    await tx.taxEntity.create({
-      data: {
-        organizationId: org.id,
-        customerId: created.id,
-        externalId: created.externalId,
-        legalName: created.name,
-        isDefault: true,
-        active: true,
-      },
-    });
-    return { id: created.id, externalId: created.externalId };
+  const { status, ...input } = opts;
+  const result = await createCustomerFull(prisma, org, {
+    ...input,
+    name: input.name ?? input.externalId,
   });
+  if (status !== undefined && status !== 'active') {
+    await prisma.customer.update({
+      where: { id: result.id },
+      data: {
+        status,
+        ...(status === 'terminated' ? { terminatedAt: new Date() } : {}),
+      },
+    });
+  }
+  return result;
 }
 
 export type CreateUnitDirectOpts = {
