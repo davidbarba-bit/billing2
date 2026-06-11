@@ -882,6 +882,14 @@
             "type": "object",
             "additionalProperties": true,
             "description": "Bag libre opcional. Se almacena tal cual; útil para correlacionar con IDs internos del cliente."
+          },
+          "setup_already_billed": {
+            "type": "boolean",
+            "description": "Flag de migración legacy. Solo aplica a planes recurring con setup > 0. Si `true`, marca el gate de setup como ya cobrado (la unidad nunca genera fee de setup). Útil al migrar unidades desde un sistema previo donde el setup ya se cobró. En planes one_off se ignora silenciosamente."
+          },
+          "one_off_already_billed": {
+            "type": "boolean",
+            "description": "Flag de migración legacy. Solo aplica a planes one_off (prepago). Si `true`, marca el gate one_off como ya cobrado (la unidad nunca entra a la facturación). Útil al migrar unidades cuyo paquete prepago ya se cobró afuera. En planes recurring se ignora silenciosamente."
           }
         }
       },
@@ -1065,6 +1073,14 @@
             "type": "object",
             "additionalProperties": true,
             "description": "Bag libre — propaga al EventLog."
+          },
+          "setup_already_billed": {
+            "type": "boolean",
+            "description": "Flag de migración legacy. Solo aplica al CREATE de la unidad (si el evento crea una unidad nueva) y en planes recurring con setup > 0. Si `true`, marca el gate de setup como ya cobrado. Si la unidad ya existe, el flag se ignora."
+          },
+          "one_off_already_billed": {
+            "type": "boolean",
+            "description": "Flag de migración legacy. Solo aplica al CREATE de la unidad y en planes one_off. Si `true`, marca el gate one_off como ya cobrado. Si la unidad ya existe, el flag se ignora."
           }
         }
       },

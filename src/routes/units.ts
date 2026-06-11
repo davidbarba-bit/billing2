@@ -20,11 +20,14 @@ import {
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { rejectUnknownFields } from '../services/payload.js';
 
-// El API público solo expone los campos comerciales de una unidad. Gates de
-// facturación inicial (setup_already_billed, oneoff_already_billed, billing_starts_at,
-// prepaid_months) son configuración del modelo de facturación y los administra
-// Numaris desde el admin.
-const CREATE_ALLOWED_FIELDS = ['service_code', 'external_id', 'label', 'metadata'] as const;
+// El API público acepta los campos comerciales de la unidad + dos flags de
+// migración legacy ("ya pagado afuera"). Otras configuraciones de
+// facturación (ciclo, ventana, prepaid_months, billing_starts_at) las
+// administra Numaris desde el admin.
+const CREATE_ALLOWED_FIELDS = [
+  'service_code', 'external_id', 'label', 'metadata',
+  'setup_already_billed', 'one_off_already_billed',
+] as const;
 // PATCH solo cambia el nombre legible. Para dar de baja una unidad usa
 // `POST /api/v1/events` con operation_type='remove'.
 const PATCH_ALLOWED_FIELDS = ['label'] as const;
@@ -33,6 +36,16 @@ type UnitPayload = {
   service_code?: string;
   external_id?: string;
   label?: string | null;
+  // Flags de migración legacy: indican que el setup / one_off de esta unidad
+  // ya fue cobrado afuera de Numaris Billing (típicamente en un sistema
+  // previo durante un onboarding masivo). Marcan los gates de facturación
+  // inicial para que la unidad nunca genere el fee correspondiente.
+  //   - setup_already_billed (recurring): preestablece setup_billed_at.
+  //   - one_off_already_billed (one_off): preestablece oneoff_billed_at.
+  // Si se envía el flag "equivocado" para el pricing_model del plan, se
+  // ignora silenciosamente.
+  setup_already_billed?: boolean;
+  one_off_already_billed?: boolean;
   metadata?: Record<string, unknown>;
 };
 
@@ -69,12 +82,24 @@ export function registerUnitRoutes(
 
       const activeFrom = new Date();
 
+      // Gates pre-pagados ("ya pagado afuera") — solo aplican al matching
+      // pricing_model. El flag opuesto se ignora silenciosamente.
+      const isOneOff = service.pricingModel === 'one_off';
+      const setupBilledAt = (!isOneOff && payload.setup_already_billed === true)
+        ? activeFrom
+        : null;
+      const oneoffBilledAt = (isOneOff && payload.one_off_already_billed === true)
+        ? activeFrom
+        : null;
+
       const unit = await prisma.unit.create({
         data: {
           serviceId: service.id,
           externalId: payload.external_id,
           label: payload.label ?? null,
           activeFrom,
+          setupBilledAt,
+          oneoffBilledAt,
           metadata: (payload.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
