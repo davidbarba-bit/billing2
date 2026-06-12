@@ -2780,24 +2780,22 @@
                   "value": {
                     "customer": {
                       "external_id": "transportes-marva",
-                      "name": "Transportes MARVA SA de CV",
-                      "currency": "MXN"
+                      "name": "Transportes MARVA SA de CV"
                     }
                   }
                 },
-                "completo": {
-                  "summary": "Con calendario explícito",
+                "con_contacto": {
+                  "summary": "Con datos de contacto",
                   "value": {
                     "customer": {
                       "external_id": "cust-001",
                       "name": "Empresa Demo",
-                      "currency": "MXN",
-                      "timezone": "America/Mexico_City",
-                      "billing_period_months": 1,
-                      "billing_anchor_day": 1,
-                      "nonrecurring_trigger": "next_cycle",
-                      "cycle_invoice_mode": "unified",
-                      "subscription_at": "2026-06-01T06:00:00Z"
+                      "email": "facturacion@empresa.mx",
+                      "phone": "+52 55 1234 5678",
+                      "metadata": {
+                        "source": "numaris-crm",
+                        "erp_id": "A-9821"
+                      }
                     }
                   }
                 }
@@ -2959,6 +2957,29 @@
                     "$ref": "#/components/schemas/UnitWriteable"
                   }
                 }
+              },
+              "examples": {
+                "alta_normal": {
+                  "summary": "Alta normal (la unidad espera primer ping)",
+                  "value": {
+                    "unit": {
+                      "service_code": "gps-mensual",
+                      "external_id": "gps-001",
+                      "label": "Camión 001"
+                    }
+                  }
+                },
+                "migracion_setup_pagado": {
+                  "summary": "Migración legacy — setup ya cobrado afuera",
+                  "value": {
+                    "unit": {
+                      "service_code": "gps-mensual",
+                      "external_id": "gps-legacy-099",
+                      "label": "Camión 099",
+                      "setup_already_billed": true
+                    }
+                  }
+                }
               }
             }
           }
@@ -3104,6 +3125,16 @@
                     "$ref": "#/components/schemas/UnitPatchWriteable"
                   }
                 }
+              },
+              "examples": {
+                "cambio_nombre": {
+                  "summary": "Cambiar el nombre de la unidad",
+                  "value": {
+                    "unit": {
+                      "label": "Camión 001 — Placas XYZ-456"
+                    }
+                  }
+                }
               }
             }
           }
@@ -3160,56 +3191,41 @@
                 }
               },
               "examples": {
-                "add_unit_recurring": {
-                  "summary": "Activar unidad en plan recurrente",
+                "primer_ping": {
+                  "summary": "Primer ping (activación)",
                   "value": {
                     "event": {
                       "transaction_id": "tx-2026-06-15-001",
-                      "service_code": "combustible-mensual",
+                      "service_code": "gps-mensual",
                       "operation_type": "add",
                       "unit_external_id": "gps-001",
-                      "unit_label": "Camión 001 — Placas ABC-123",
-                      "timestamp": 1781884800,
-                      "kind": "first_ping"
+                      "unit_label": "Camión 001",
+                      "timestamp": 1781884800
                     }
                   }
                 },
-                "add_unit_oneoff_immediate": {
-                  "summary": "Activar en plan prepago (detona invoice inmediata)",
-                  "value": {
-                    "event": {
-                      "transaction_id": "tx-2026-06-15-002",
-                      "service_code": "gps-instalacion",
-                      "operation_type": "add",
-                      "unit_external_id": "gps-002",
-                      "timestamp": 1781884800,
-                      "prepaid_months": 48
-                    }
-                  }
-                },
-                "remove_unit": {
-                  "summary": "Desactivar (cerrar Unit)",
+                "baja": {
+                  "summary": "Baja de unidad",
                   "value": {
                     "event": {
                       "transaction_id": "tx-2026-09-30-099",
-                      "service_code": "combustible-mensual",
+                      "service_code": "gps-mensual",
                       "operation_type": "remove",
                       "unit_external_id": "gps-001",
                       "timestamp": 1790000000
                     }
                   }
                 },
-                "migrate_legacy_already_billed": {
-                  "summary": "Importar unidad legacy ya cobrada en otro sistema",
+                "migracion_legacy": {
+                  "summary": "Migración legacy — primer ping con setup ya cobrado",
                   "value": {
                     "event": {
                       "transaction_id": "tx-legacy-import-gps-099",
-                      "service_code": "combustible-mensual",
+                      "service_code": "gps-mensual",
                       "operation_type": "add",
                       "unit_external_id": "gps-099",
                       "timestamp": 1746057600,
-                      "setup_already_billed": true,
-                      "billing_starts_at": "2026-07-01T06:00:00Z"
+                      "setup_already_billed": true
                     }
                   }
                 }
@@ -3351,27 +3367,24 @@
                 }
               },
               "examples": {
-                "revision_inmediata": {
-                  "summary": "Revisión de campo facturada al instante",
+                "ocurrencia_simple": {
+                  "summary": "Registrar una ocurrencia (precio toma del pricing del cliente o default)",
                   "value": {
                     "catalog_event_occurrence": {
-                      "catalog_event_code": "revision-campo",
+                      "catalog_event_code": "revision-tecnica",
                       "customer_external_id": "transportes-marva",
-                      "billing_mode": "immediate",
-                      "unit_external_id": "gps-001",
                       "reference": "ticket-3421"
                     }
                   }
                 },
-                "capacitacion_next_cycle": {
-                  "summary": "Capacitación cobrada en el próximo cierre",
+                "con_unidad": {
+                  "summary": "Ocurrencia asociada a una unidad específica",
                   "value": {
                     "catalog_event_occurrence": {
-                      "catalog_event_code": "capacitacion",
+                      "catalog_event_code": "reinstalacion",
                       "customer_external_id": "transportes-marva",
-                      "billing_mode": "next_cycle",
-                      "amount_cents": 250000,
-                      "reference": "curso 2 horas"
+                      "unit_external_id": "gps-001",
+                      "reference": "orden-9988"
                     }
                   }
                 }
