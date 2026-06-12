@@ -1073,14 +1073,6 @@
             "type": "object",
             "additionalProperties": true,
             "description": "Bag libre — propaga al EventLog."
-          },
-          "setup_already_billed": {
-            "type": "boolean",
-            "description": "Flag de migración legacy. Solo aplica al CREATE de la unidad (si el evento crea una unidad nueva) y en planes recurring con setup > 0. Si `true`, marca el gate de setup como ya cobrado. Si la unidad ya existe, el flag se ignora."
-          },
-          "one_off_already_billed": {
-            "type": "boolean",
-            "description": "Flag de migración legacy. Solo aplica al CREATE de la unidad y en planes one_off. Si `true`, marca el gate one_off como ya cobrado. Si la unidad ya existe, el flag se ignora."
           }
         }
       },
@@ -2975,7 +2967,7 @@
                     "unit": {
                       "service_code": "combustible-carga-express-mx",
                       "external_id": "unit-camion-098",
-                      "label": "Camión 098",
+                      "label": "Camión 098 — Placas DEF-789",
                       "setup_already_billed": true
                     }
                   }
@@ -3174,7 +3166,7 @@
           "events"
         ],
         "summary": "Registrar un evento (add/remove) — primario para integraciones",
-        "description": "Endpoint principal para que el sistema del cliente reporte el ciclo de vida de cada unidad. Idempotente por `transaction_id`.\n\n**Operaciones:**\n- `add`: activa la unidad (primer ping). Si la unidad no existía, la crea; si estaba dada de baja, la reactiva.\n- `remove`: da de baja la unidad (setea su fecha de fin).\n\n**Idempotencia:** reintentar con el mismo `transaction_id` devuelve el evento original sin efectos secundarios.",
+        "description": "Endpoint principal para que el sistema del cliente reporte el ciclo de vida de cada unidad. Idempotente por `transaction_id`.\n\n**Operaciones:**\n- `add`: activa la unidad (primer ping). Si la unidad no existía, la crea con setup pendiente; si estaba dada de baja, la reactiva.\n- `remove`: da de baja la unidad (setea su fecha de fin).\n\n**Idempotencia:** reintentar con el mismo `transaction_id` devuelve el evento original sin efectos secundarios.\n\n**Migración legacy:** si necesitas alta con setup ya cobrado afuera, usa primero `POST /api/v1/units` con `setup_already_billed: true` para crear la unidad pre-cobrada, y después `POST /api/v1/events add` para el primer ping.",
         "requestBody": {
           "required": true,
           "content": {
@@ -3213,19 +3205,6 @@
                       "operation_type": "remove",
                       "unit_external_id": "unit-camion-099",
                       "timestamp": 1790000000
-                    }
-                  }
-                },
-                "migracion_legacy": {
-                  "summary": "Migración legacy — primer ping con setup ya cobrado",
-                  "value": {
-                    "event": {
-                      "transaction_id": "tx-legacy-097",
-                      "service_code": "combustible-carga-express-mx",
-                      "operation_type": "add",
-                      "unit_external_id": "unit-camion-097",
-                      "timestamp": 1746057600,
-                      "setup_already_billed": true
                     }
                   }
                 }

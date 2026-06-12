@@ -41,16 +41,14 @@ import { emitImmediateInvoice } from '../services/immediate-invoice.js';
 import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { rejectUnknownFields } from '../services/payload.js';
 
-// El API público acepta los campos comerciales del evento + dos flags de
-// migración legacy ("ya pagado afuera") que solo aplican al CREATE de la
-// unidad. Si el evento llega para una unidad que ya existe, los flags se
-// ignoran (la unidad mantiene su estado actual). Otras configuraciones de
-// facturación (billing_starts_at, prepaid_months) las administra Numaris
-// desde el admin.
+// El API público acepta solo los campos del evento de ciclo de vida.
+// Información estática sobre la unidad (setup_already_billed,
+// one_off_already_billed, billing_starts_at, prepaid_months) vive en
+// `POST /api/v1/units` — el alta de la unidad es donde tiene sentido
+// declararla, no en cada ping.
 const ALLOWED_FIELDS = [
   'transaction_id', 'service_code', 'operation_type', 'unit_external_id',
   'unit_label', 'timestamp', 'kind', 'properties',
-  'setup_already_billed', 'one_off_already_billed',
 ] as const;
 
 type EventPayload = {
@@ -59,12 +57,6 @@ type EventPayload = {
   operation_type?: 'add' | 'remove';
   unit_external_id?: string;
   unit_label?: string | null;
-  // Flags de migración legacy. Solo aplican si el evento CAUSA el create de
-  // la unidad. Si la unidad ya existe, los flags se ignoran silenciosamente.
-  //   - setup_already_billed (recurring): preestablece setup_billed_at.
-  //   - one_off_already_billed (one_off): preestablece oneoff_billed_at.
-  setup_already_billed?: boolean;
-  one_off_already_billed?: boolean;
   timestamp?: number | string;
   kind?: string | null;
   properties?: Record<string, unknown>;
@@ -129,17 +121,6 @@ export function registerEventRoutes(
 
       const timestamp = new Date(payload.timestamp * 1000);
 
-      // Gates pre-pagados ("ya pagado afuera"). Solo aplican al CREATE de la
-      // unidad y solo al pricing_model matching (recurring para setup, one_off
-      // para one_off). Si la unidad ya existe, los flags se ignoran.
-      const isOneOffService = service.pricingModel === 'one_off';
-      const setupAlreadyBilled = !isOneOffService && payload.setup_already_billed === true
-        ? timestamp
-        : null;
-      const oneOffAlreadyBilled = isOneOffService && payload.one_off_already_billed === true
-        ? timestamp
-        : null;
-
       const result = await prisma.$transaction(async (tx) => {
         // Snapshot del estado previo de la unidad — necesario para detectar
         // la transición "estaba activa → se acaba de dar de baja" y disparar
@@ -156,8 +137,6 @@ export function registerEventRoutes(
             label: payload.unit_label ?? null,
             activeFrom: timestamp,
             activeTo: op === 'remove' ? timestamp : null,
-            setupBilledAt: setupAlreadyBilled,
-            oneoffBilledAt: oneOffAlreadyBilled,
           },
           update: op === 'add'
             ? { activeTo: null, ...(payload.unit_label !== undefined ? { label: payload.unit_label } : {}) }
