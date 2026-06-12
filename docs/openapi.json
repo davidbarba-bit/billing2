@@ -2963,9 +2963,9 @@
                   "summary": "Alta normal (la unidad espera primer ping)",
                   "value": {
                     "unit": {
-                      "service_code": "gps-mensual",
-                      "external_id": "gps-001",
-                      "label": "Camión 001"
+                      "service_code": "combustible-carga-express-mx",
+                      "external_id": "unit-camion-099",
+                      "label": "Camión 099"
                     }
                   }
                 },
@@ -2973,9 +2973,9 @@
                   "summary": "Migración legacy — setup ya cobrado afuera",
                   "value": {
                     "unit": {
-                      "service_code": "gps-mensual",
-                      "external_id": "gps-legacy-099",
-                      "label": "Camión 099",
+                      "service_code": "combustible-carga-express-mx",
+                      "external_id": "unit-camion-098",
+                      "label": "Camión 098",
                       "setup_already_billed": true
                     }
                   }
@@ -3131,7 +3131,7 @@
                   "summary": "Cambiar el nombre de la unidad",
                   "value": {
                     "unit": {
-                      "label": "Camión 001 — Placas XYZ-456"
+                      "label": "Camión 099 — Placas XYZ-456"
                     }
                   }
                 }
@@ -3195,11 +3195,11 @@
                   "summary": "Primer ping (activación)",
                   "value": {
                     "event": {
-                      "transaction_id": "tx-2026-06-15-001",
-                      "service_code": "gps-mensual",
+                      "transaction_id": "tx-primer-ping-099",
+                      "service_code": "combustible-carga-express-mx",
                       "operation_type": "add",
-                      "unit_external_id": "gps-001",
-                      "unit_label": "Camión 001",
+                      "unit_external_id": "unit-camion-099",
+                      "unit_label": "Camión 099",
                       "timestamp": 1781884800
                     }
                   }
@@ -3208,10 +3208,10 @@
                   "summary": "Baja de unidad",
                   "value": {
                     "event": {
-                      "transaction_id": "tx-2026-09-30-099",
-                      "service_code": "gps-mensual",
+                      "transaction_id": "tx-baja-099",
+                      "service_code": "combustible-carga-express-mx",
                       "operation_type": "remove",
-                      "unit_external_id": "gps-001",
+                      "unit_external_id": "unit-camion-099",
                       "timestamp": 1790000000
                     }
                   }
@@ -3220,10 +3220,10 @@
                   "summary": "Migración legacy — primer ping con setup ya cobrado",
                   "value": {
                     "event": {
-                      "transaction_id": "tx-legacy-import-gps-099",
-                      "service_code": "gps-mensual",
+                      "transaction_id": "tx-legacy-097",
+                      "service_code": "combustible-carga-express-mx",
                       "operation_type": "add",
-                      "unit_external_id": "gps-099",
+                      "unit_external_id": "unit-camion-097",
                       "timestamp": 1746057600,
                       "setup_already_billed": true
                     }
@@ -3368,11 +3368,11 @@
               },
               "examples": {
                 "ocurrencia_simple": {
-                  "summary": "Registrar una ocurrencia (precio toma del pricing del cliente o default)",
+                  "summary": "Registrar una ocurrencia (precio del pactado o default del catálogo)",
                   "value": {
                     "catalog_event_occurrence": {
                       "catalog_event_code": "revision-tecnica",
-                      "customer_external_id": "transportes-marva",
+                      "customer_external_id": "carga-express-mx",
                       "reference": "ticket-3421"
                     }
                   }
@@ -3382,8 +3382,8 @@
                   "value": {
                     "catalog_event_occurrence": {
                       "catalog_event_code": "reinstalacion",
-                      "customer_external_id": "transportes-marva",
-                      "unit_external_id": "gps-001",
+                      "customer_external_id": "carga-express-mx",
+                      "unit_external_id": "unit-camion-001",
                       "reference": "orden-9988"
                     }
                   }
