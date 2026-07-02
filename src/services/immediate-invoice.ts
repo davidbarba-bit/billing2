@@ -138,6 +138,7 @@ export function dispatchInvoiceInBackground(
           fee_id: f.id, service_id: f.serviceId, kind: f.kind,
           description: f.description, units: f.units,
           unit_amount_cents: f.unitAmountCents, amount_cents: f.amountCents,
+          netsuite_item_code: f.netsuiteItemCode,
           billed_units_detail: f.billedUnitsDetail,
         })),
         units_annex: invoice.unitsAnnex,

@@ -45,6 +45,7 @@ const NAV_SECTIONS: NavSection[] = [
     heading: 'Sistema',
     items: [
       { href: '/presentacion.html', label: 'Presentación', target: '_blank' },
+      { href: '/admin/netsuite', label: 'NetSuite' },
       { href: '/admin/settings', label: 'Ajustes' },
     ],
   },

@@ -2396,6 +2396,159 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
   });
 
   // ------------------------------------------------------------------
+  // NetSuite — credenciales (TBA) + config del dispatch de factura estándar.
+  // ------------------------------------------------------------------
+  app.get('/admin/netsuite', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const cfg = (org.netsuiteConfig ?? {}) as {
+      subsidiaryId?: string; entityRefMode?: string; itemRefMode?: string;
+      currencyRef?: Record<string, string>;
+    };
+
+    const dispatchOn = deps.config.featureNetsuiteDispatchEnabled;
+    const credsComplete = Boolean(
+      org.netsuiteAccountId && org.netsuiteConsumerKey && org.netsuiteConsumerSecret
+      && org.netsuiteTokenKey && org.netsuiteTokenSecret && org.netsuiteRestBase,
+    );
+
+    // Estado: badge de flag + de credenciales.
+    const statusRow = `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-px surface-card mb-6" style="border-radius: 6px; overflow: hidden;">
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Envío a NetSuite</div>
+          ${dispatchOn
+            ? `<span class="pill pill-success">activo</span>`
+            : `<span class="pill pill-warn">apagado (modo simulación)</span>`}
+          <div class="text-xs ink-faint mt-2">Se controla con la variable de entorno <code class="font-mono-pro">FEATURE_NETSUITE_DISPATCH_ENABLED</code> en Railway. Cambiarla requiere redeploy.</div>
+        </div>
+        <div class="px-6 py-5 surface-card">
+          <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-2">Credenciales</div>
+          ${credsComplete
+            ? `<span class="pill pill-success">completas</span>`
+            : `<span class="pill pill-warn">incompletas</span>`}
+          <div class="text-xs ink-faint mt-2">Todas las llaves TBA + REST base deben estar configuradas para poder enviar.</div>
+        </div>
+      </div>
+    `;
+
+    // Campos secretos: nunca renderizamos el valor. Mostramos si está o no
+    // configurado; dejar el campo vacío conserva el valor actual.
+    const secretField = (name: string, label: string, isSet: boolean): string => formField({
+      label,
+      hint: isSet ? 'Configurado — deja vacío para conservarlo.' : 'No configurado.',
+      input: `<input type="password" name="${name}" autocomplete="off" placeholder="${isSet ? '••••••••' : ''}" class="${INPUT_CLASS_MONO}">`,
+    });
+    const textField = (name: string, label: string, value: string | null | undefined, placeholder: string, hint?: string): string => formField({
+      label,
+      hint,
+      input: `<input name="${name}" value="${escapeHtml(value ?? '')}" placeholder="${escapeHtml(placeholder)}" class="${INPUT_CLASS_MONO}">`,
+    });
+    const modeSelect = (name: string, current: string | undefined, def: string): string => {
+      const val = current ?? def;
+      return `<select name="${name}" class="${INPUT_CLASS}">
+        <option value="internal" ${val === 'internal' ? 'selected' : ''}>Internal ID (el valor ya es el id interno de NetSuite)</option>
+        <option value="external" ${val === 'external' ? 'selected' : ''}>External ID (se referencia como eid:&lt;valor&gt;)</option>
+      </select>`;
+    };
+
+    const credentialsPanel = panel({
+      title: 'Credenciales (Token-Based Auth)',
+      description: 'Las llaves de acceso de tu cuenta NetSuite. Se piden en NetSuite → Setup → Integration (consumer key/secret) y Access Tokens (token key/secret). Usa las de tu <strong>sandbox</strong> para pruebas.',
+      body: `
+        <form method="post" action="/admin/netsuite" class="space-y-0">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+            ${textField('rest_base', 'REST base URL', org.netsuiteRestBase, 'https://<account>.suitetalk.api.netsuite.com', 'Dominio SuiteTalk de tu cuenta (el sandbox suele llevar "-sb1").')}
+            ${textField('account_id', 'Account ID (realm)', org.netsuiteAccountId, '1234567_SB1', 'El id de cuenta; en sandbox termina en "_SB1" o similar.')}
+            ${secretField('consumer_key', 'Consumer Key', Boolean(org.netsuiteConsumerKey))}
+            ${secretField('consumer_secret', 'Consumer Secret', Boolean(org.netsuiteConsumerSecret))}
+            ${secretField('token_key', 'Token ID', Boolean(org.netsuiteTokenKey))}
+            ${secretField('token_secret', 'Token Secret', Boolean(org.netsuiteTokenSecret))}
+            ${secretField('callback_secret', 'Callback Secret (folio CFDI)', Boolean(org.netsuiteCallbackSecret))}
+          </div>
+          <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+            ${primaryButton('Guardar credenciales')}
+          </div>
+        </form>
+      `,
+    });
+
+    const configPanel = panel({
+      title: 'Mapeo de la factura estándar',
+      description: 'Cómo se referencian cliente, ítems, moneda y subsidiaria al crear la factura estándar en NetSuite. Estos valores dependen de tu cuenta — confírmalo con quien administra NetSuite. Se afinan probando contra el sandbox.',
+      body: `
+        <form method="post" action="/admin/netsuite/config" class="space-y-0">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
+            ${textField('subsidiary_id', 'Subsidiaria (internal id)', cfg.subsidiaryId, 'ej. 1', 'Obligatorio en cuentas OneWorld. Déjalo vacío si tu cuenta no usa subsidiarias.')}
+            ${textField('currency_mxn', 'Moneda MXN (internal id)', cfg.currencyRef?.MXN, 'ej. 1', 'Internal id de la moneda MXN en NetSuite. Si lo dejas vacío se intenta por nombre ("MXN").')}
+            ${formField({ label: 'Referencia del cliente', hint: '¿Cómo existe el cliente en NetSuite?', input: modeSelect('entity_ref_mode', cfg.entityRefMode, 'internal') })}
+            ${formField({ label: 'Referencia de los ítems', hint: '¿Cómo están dados de alta los ítems (códigos de producto) en NetSuite?', input: modeSelect('item_ref_mode', cfg.itemRefMode, 'external') })}
+          </div>
+          <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
+            ${primaryButton('Guardar mapeo')}
+          </div>
+        </form>
+      `,
+    });
+
+    const flash = readFlash(request, reply);
+    reply.type('text/html').send(layout({
+      title: 'NetSuite', active: '/admin/netsuite', orgSlug: org.slug, flash,
+      body: pageTitle({
+        eyebrow: 'Sistema',
+        title: 'NetSuite',
+        description: 'Credenciales y mapeo para enviar las facturas a NetSuite. Empieza siempre con una cuenta sandbox.',
+      }) + statusRow + credentialsPanel + configPanel,
+    }));
+  });
+
+  app.post('/admin/netsuite', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const body = (request.body ?? {}) as Record<string, string>;
+    const get = (k: string): string | undefined => {
+      const v = body[k];
+      return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+    };
+    const data: Record<string, unknown> = {};
+    // No-secretos: se actualizan si vienen; vacío conserva el actual.
+    const restBase = get('rest_base'); if (restBase) data.netsuiteRestBase = restBase;
+    const accountId = get('account_id'); if (accountId) data.netsuiteAccountId = accountId;
+    // Secretos: solo se sobreescriben si el usuario escribió algo.
+    const ck = get('consumer_key'); if (ck) data.netsuiteConsumerKey = ck;
+    const cs = get('consumer_secret'); if (cs) data.netsuiteConsumerSecret = cs;
+    const tk = get('token_key'); if (tk) data.netsuiteTokenKey = tk;
+    const ts = get('token_secret'); if (ts) data.netsuiteTokenSecret = ts;
+    const cbs = get('callback_secret'); if (cbs) data.netsuiteCallbackSecret = cbs;
+
+    await prisma.organization.update({ where: { id: org.id }, data });
+    setFlash(reply, 'success', 'Credenciales de NetSuite guardadas.');
+    reply.redirect('/admin/netsuite');
+  });
+
+  app.post('/admin/netsuite/config', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const body = (request.body ?? {}) as Record<string, string>;
+    const get = (k: string): string | undefined => {
+      const v = body[k];
+      return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+    };
+    const cfg: Record<string, unknown> = {};
+    const subsidiary = get('subsidiary_id'); if (subsidiary) cfg.subsidiaryId = subsidiary;
+    cfg.entityRefMode = body.entity_ref_mode === 'external' ? 'external' : 'internal';
+    cfg.itemRefMode = body.item_ref_mode === 'internal' ? 'internal' : 'external';
+    const mxn = get('currency_mxn'); if (mxn) cfg.currencyRef = { MXN: mxn };
+
+    await prisma.organization.update({
+      where: { id: org.id },
+      data: { netsuiteConfig: cfg as Prisma.InputJsonValue },
+    });
+    setFlash(reply, 'success', 'Mapeo de la factura estándar guardado.');
+    reply.redirect('/admin/netsuite');
+  });
+
+  // ------------------------------------------------------------------
   // Settings.
   // ------------------------------------------------------------------
   app.get('/admin/settings', async (request, reply) => {

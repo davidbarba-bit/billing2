@@ -29,12 +29,10 @@ CALLBACK_BASE_URL=https://billing.numaris.com
 
 # NetSuite (apaga el dispatcher si todavía no integras).
 FEATURE_NETSUITE_DISPATCH_ENABLED=false       # poner true cuando NetSuite esté listo
-# NETSUITE_ACCOUNT_ID=...
-# NETSUITE_CONSUMER_KEY=...
-# NETSUITE_CONSUMER_SECRET=...
-# NETSUITE_TOKEN_KEY=...
-# NETSUITE_TOKEN_SECRET=...
-# NETSUITE_REST_BASE=https://<account>.suitetalk.api.netsuite.com
+# Las credenciales TBA y el mapeo (subsidiaria, referencias, moneda) se
+# capturan por organización en el admin: /admin/netsuite. NO se leen de env
+# vars — cada org guarda las suyas. El dispatcher emite una factura ESTÁNDAR
+# (POST /record/v1/invoice); empieza siempre contra un sandbox.
 
 # Admin UI (Google OAuth).
 ADMIN_AUTH_MODE=google

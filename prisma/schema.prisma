@@ -32,6 +32,13 @@ model Organization {
   netsuiteTokenSecret    String?  @map("netsuite_token_secret")
   netsuiteRestBase       String?  @map("netsuite_rest_base")
   netsuiteCallbackSecret String?  @map("netsuite_callback_secret")
+  // v24: config extra para el dispatch de factura estándar (subsidiaria,
+  // modo de referencia de entity/item, mapeo de moneda). Bag JSON para
+  // iterar contra el sandbox sin migraciones nuevas. Shape esperado:
+  //   { subsidiaryId?: string, entityRefMode?: 'internal'|'external',
+  //     itemRefMode?: 'internal'|'external', currencyRef?: {MXN: '1', USD: '2'},
+  //     department?: string, location?: string }
+  netsuiteConfig         Json     @default("{}") @map("netsuite_config")
   customerCounter        Int      @default(0) @map("customer_counter")
   invoiceCounter         Int      @default(0) @map("invoice_counter")
   creditNoteCounter      Int      @default(0) @map("credit_note_counter")
