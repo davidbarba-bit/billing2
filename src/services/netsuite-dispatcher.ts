@@ -342,7 +342,12 @@ function buildOauthHeader(args: {
   const signature = createHmac('sha256', signingKey).update(baseString).digest('base64');
   oauthParams.oauth_signature = signature;
 
-  const header = `OAuth realm="${args.realm}", ` + Object.entries(oauthParams)
+  // NetSuite exige el account id (realm) en MAYÚSCULAS. Un realm en minúsculas
+  // provoca 401 INVALID_LOGIN_ATTEMPT aunque las llaves sean correctas. El
+  // account id es dígitos + sufijo tipo _SB1, así que forzar mayúsculas es
+  // seguro y es lo que NetSuite espera.
+  const realm = args.realm.toUpperCase();
+  const header = `OAuth realm="${realm}", ` + Object.entries(oauthParams)
     .map(([k, v]) => `${percent(k)}="${percent(v)}"`)
     .join(', ');
   return header;
