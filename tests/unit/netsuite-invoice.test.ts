@@ -62,7 +62,7 @@ describe('buildStandardInvoice', () => {
 
   it('falla claro si una línea no tiene código de ítem', () => {
     const bad = baseCanonical();
-    bad.lines[0].netsuite_item_code = null as unknown as string;
+    bad.lines = [{ ...bad.lines[0]!, netsuite_item_code: null as unknown as string }];
     expect(() => buildStandardInvoice(bad, {})).toThrow(/missing_item_code/);
   });
 

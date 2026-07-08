@@ -262,6 +262,53 @@ function safeJson(text: string): Record<string, unknown> | null {
   }
 }
 
+// Pre-flight: valida credenciales TBA sin crear nada. Firma un GET autenticado
+// de solo lectura (`/record/v1/invoice?limit=1`) y reporta el resultado. Sirve
+// para confirmar account id + REST base + llaves + firma antes de generar una
+// factura. Independiente del feature flag de dispatch.
+export async function testNetSuiteConnection(
+  org: Organization,
+): Promise<{ ok: boolean; detail: string }> {
+  const required: Array<keyof Organization> = [
+    'netsuiteAccountId', 'netsuiteConsumerKey', 'netsuiteConsumerSecret',
+    'netsuiteTokenKey', 'netsuiteTokenSecret', 'netsuiteRestBase',
+  ];
+  for (const key of required) {
+    if (!org[key]) return { ok: false, detail: `Falta credencial: ${key}` };
+  }
+
+  const url = `${org.netsuiteRestBase}/services/rest/record/v1/invoice?limit=1`;
+  const auth = buildOauthHeader({
+    method: 'GET',
+    url,
+    consumerKey: org.netsuiteConsumerKey!,
+    consumerSecret: org.netsuiteConsumerSecret!,
+    tokenKey: org.netsuiteTokenKey!,
+    tokenSecret: org.netsuiteTokenSecret!,
+    realm: org.netsuiteAccountId!,
+  });
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', authorization: auth },
+    });
+    if (response.ok) {
+      return { ok: true, detail: `Conexión OK (HTTP ${response.status}). Las credenciales funcionan.` };
+    }
+    const text = (await response.text()).slice(0, 400);
+    let hint = '';
+    if (response.status === 401 || response.status === 403) {
+      hint = ' — revisa consumer/token key+secret y el account id (realm).';
+    } else if (response.status === 404) {
+      hint = ' — revisa la REST base URL.';
+    }
+    return { ok: false, detail: `HTTP ${response.status}${hint} · ${text}` };
+  } catch (err) {
+    return { ok: false, detail: `No se pudo conectar: ${err instanceof Error ? err.message : String(err)} — revisa la REST base URL.` };
+  }
+}
+
 // OAuth 1.0a HMAC-SHA256 signature (TBA). Implementation per RFC 5849 + the
 // NetSuite Token-Based Authentication guide.
 function buildOauthHeader(args: {

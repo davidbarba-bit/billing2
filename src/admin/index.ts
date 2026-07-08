@@ -24,7 +24,7 @@ import formbody from '@fastify/formbody';
 import type { Organization, Prisma, PrismaClient } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import type { AppConfig } from '../config.js';
-import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
+import { testNetSuiteConnection, type NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { seedNumaris } from './seed.js';
 import { resetOrganizationData } from '../services/reset.js';
 import { createCustomerFull } from '../services/customer.js';
@@ -2470,6 +2470,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             ${primaryButton('Guardar credenciales')}
           </div>
         </form>
+        <form method="post" action="/admin/netsuite/test" class="mt-3">
+          <button type="submit" class="px-3 py-1.5 rounded text-sm font-medium" style="border: 1px solid var(--rule); color: var(--accent-deep);">Probar conexión</button>
+          <span class="text-xs ink-faint ml-2">Hace una llamada de solo lectura a NetSuite para validar las llaves. No crea nada.</span>
+        </form>
       `,
     });
 
@@ -2523,6 +2527,14 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
 
     await prisma.organization.update({ where: { id: org.id }, data });
     setFlash(reply, 'success', 'Credenciales de NetSuite guardadas.');
+    reply.redirect('/admin/netsuite');
+  });
+
+  app.post('/admin/netsuite/test', async (request, reply) => {
+    const org = await getOrg(prisma);
+    if (!org) return reply.redirect('/admin');
+    const result = await testNetSuiteConnection(org);
+    setFlash(reply, result.ok ? 'success' : 'error', result.detail);
     reply.redirect('/admin/netsuite');
   });
 
