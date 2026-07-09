@@ -2432,13 +2432,29 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       </div>
     `;
 
-    // Campos secretos: nunca renderizamos el valor. Mostramos si está o no
-    // configurado; dejar el campo vacío conserva el valor actual.
-    const secretField = (name: string, label: string, isSet: boolean): string => formField({
-      label,
-      hint: isSet ? 'Configurado — deja vacío para conservarlo.' : 'No configurado.',
-      input: `<input type="password" name="${name}" autocomplete="off" placeholder="${isSet ? '••••••••' : ''}" class="${INPUT_CLASS_MONO}">`,
-    });
+    // Campos secretos: nunca renderizamos el valor, pero SÍ su longitud
+    // (server-side) — las 4 llaves TBA de NetSuite miden 64 caracteres; un
+    // valor cortado/traslapado al pegar es causa clásica de INVALID_LOGIN.
+    // expectLen=64 marca en rojo si no cuadra; expectLen=null omite el chequeo
+    // (callback secret no tiene longitud fija).
+    const secretField = (name: string, label: string, value: string | null | undefined, expectLen: number | null = 64): string => {
+      const isSet = Boolean(value);
+      const len = value ? value.length : 0;
+      const lenWarn = isSet && expectLen !== null && len !== expectLen;
+      let hint: string;
+      if (!isSet) {
+        hint = 'No configurado.';
+      } else if (expectLen !== null) {
+        hint = `Configurado · ${len} caracteres${lenWarn ? ` ⚠ se esperan ${expectLen}` : ' ✓'}. Deja vacío para conservarlo.`;
+      } else {
+        hint = `Configurado · ${len} caracteres. Deja vacío para conservarlo.`;
+      }
+      return formField({
+        label,
+        hint,
+        input: `<input type="password" name="${name}" autocomplete="off" placeholder="${isSet ? '••••••••' : ''}" class="${INPUT_CLASS_MONO}${lenWarn ? ' ring-1 ring-red-400' : ''}">`,
+      });
+    };
     const textField = (name: string, label: string, value: string | null | undefined, placeholder: string, hint?: string): string => formField({
       label,
       hint,
@@ -2454,17 +2470,17 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
 
     const credentialsPanel = panel({
       title: 'Credenciales (Token-Based Auth)',
-      description: 'Las llaves de acceso de tu cuenta NetSuite. Se piden en NetSuite → Setup → Integration (consumer key/secret) y Access Tokens (token key/secret). Usa las de tu <strong>sandbox</strong> para pruebas.',
+      description: 'Las llaves de acceso de tu cuenta NetSuite. Consumer Key/Secret vienen del Integration Record; Token ID/Secret del Access Token. Las 4 miden <strong>64 caracteres</strong> — el sistema te avisa si alguna no cuadra (señal de un pegado cortado).',
       body: `
         <form method="post" action="/admin/netsuite" class="space-y-0">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
-            ${textField('rest_base', 'REST base URL', org.netsuiteRestBase, 'https://<account>.suitetalk.api.netsuite.com', 'Dominio SuiteTalk de tu cuenta (el sandbox suele llevar "-sb1").')}
-            ${textField('account_id', 'Account ID (realm)', org.netsuiteAccountId, '1234567_SB1', 'El id de cuenta; en sandbox termina en "_SB1" o similar.')}
-            ${secretField('consumer_key', 'Consumer Key', Boolean(org.netsuiteConsumerKey))}
-            ${secretField('consumer_secret', 'Consumer Secret', Boolean(org.netsuiteConsumerSecret))}
-            ${secretField('token_key', 'Token ID', Boolean(org.netsuiteTokenKey))}
-            ${secretField('token_secret', 'Token Secret', Boolean(org.netsuiteTokenSecret))}
-            ${secretField('callback_secret', 'Callback Secret (folio CFDI)', Boolean(org.netsuiteCallbackSecret))}
+            ${textField('rest_base', 'REST base URL', org.netsuiteRestBase, 'https://<account>.suitetalk.api.netsuite.com', 'Dominio SuiteTalk de tu cuenta.')}
+            ${textField('account_id', 'Account ID (realm)', org.netsuiteAccountId, '11098183', 'El id de cuenta tal cual lo da tu proveedor NetSuite (ej. "11098183"). No es el subdominio de la REST base.')}
+            ${secretField('consumer_key', 'Consumer Key', org.netsuiteConsumerKey)}
+            ${secretField('consumer_secret', 'Consumer Secret', org.netsuiteConsumerSecret)}
+            ${secretField('token_key', 'Token ID / Access Token', org.netsuiteTokenKey)}
+            ${secretField('token_secret', 'Token Secret', org.netsuiteTokenSecret)}
+            ${secretField('callback_secret', 'Callback Secret (folio CFDI)', org.netsuiteCallbackSecret, null)}
           </div>
           <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
             ${primaryButton('Guardar credenciales')}
