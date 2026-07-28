@@ -243,8 +243,6 @@ export function renderServiceNewForm(args: {
           const el = form.querySelector('input[name="' + name + '"]');
           return el ? (parseFloat(el.value) || 0) : 0;
         };
-        const setupItemCodeField = document.getElementById('setup-item-code-field');
-        const removalItemCodeField = document.getElementById('removal-item-code-field');
         const refresh = () => {
           const checked = form.querySelector('input[name="pricing_model"]:checked');
           const recurring = !checked || checked.value === 'recurring';
@@ -255,13 +253,23 @@ export function renderServiceNewForm(args: {
           section.style.display = (showSetup || showRemoval) ? '' : 'none';
           // Los item codes siguen a sus cargos: sin monto no hay línea que
           // mapear. El setup sí aplica en prepago (el paquete puede llevarlo);
-          // la baja solo en recurrentes.
-          setupItemCodeField.style.display = money('setup_unit_amount') > 0 ? '' : 'none';
-          removalItemCodeField.style.display = showRemoval ? '' : 'none';
+          // la baja solo en recurrentes. Se resuelven aquí (no al cargar el
+          // script) porque la sección de NetSuite se renderiza después.
+          const setupItemCodeField = document.getElementById('setup-item-code-field');
+          const removalItemCodeField = document.getElementById('removal-item-code-field');
+          if (setupItemCodeField) setupItemCodeField.style.display = money('setup_unit_amount') > 0 ? '' : 'none';
+          if (removalItemCodeField) removalItemCodeField.style.display = showRemoval ? '' : 'none';
         };
         form.addEventListener('input', refresh);
         form.addEventListener('change', refresh);
-        refresh();
+        // Al cargar, la sección de NetSuite (que va después en el DOM) aún no
+        // existe — el refresh inicial corre cuando el documento termina de
+        // parsearse.
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', refresh);
+        } else {
+          refresh();
+        }
       })();
     </script>
   `;
@@ -279,14 +287,14 @@ export function renderServiceNewForm(args: {
           hint: 'Recurrente: cada periodo. Prepago: las N mensualidades pagadas por adelantado.',
           input: `<input name="netsuite_monthly_item_code" value="${v('netsuite_monthly_item_code')}" placeholder="SUB-MONTHLY" class="${INPUT_CLASS_MONO}">`,
         })}
-        <div id="setup-item-code-field">
+        <div id="setup-item-code-field" style="display: none;">
           ${formField({
     label: 'Item code · setup',
     hint: 'Cargo único por unidad al instalar.',
     input: `<input name="netsuite_setup_item_code" value="${v('netsuite_setup_item_code')}" placeholder="SUB-SETUP" class="${INPUT_CLASS_MONO}">`,
   })}
         </div>
-        <div id="removal-item-code-field">
+        <div id="removal-item-code-field" style="display: none;">
           ${formField({
     label: 'Item code · baja',
     hint: 'Cargo único por unidad al desinstalar.',
