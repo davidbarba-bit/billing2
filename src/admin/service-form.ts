@@ -204,24 +204,60 @@ export function renderServiceNewForm(args: {
     { value: 'next_cycle', label: 'Al cierre del periodo (consolidado con la renta del periodo de la baja)' },
     { value: 'immediate', label: 'Inmediato (factura individual al dar de baja)' },
   ];
-  const emissionSection = formSection({
-    title: 'Emisión de cargos no recurrentes',
-    description: 'Cuándo emitir factura para setup y baja.',
+  // Solo visible cuando hay algo que decidir: plan recurrente con setup y/o
+  // baja mayores a 0. El setup y la baja son cargos únicos por unidad (a
+  // diferencia de la renta); esta sección define cuándo se emite su factura.
+  // En prepago no aplica: el paquete completo se emite según la configuración
+  // del cliente. El JS de abajo la muestra/oculta según los montos.
+  const emissionSection = `
+    <div id="emission-section" style="display: none;">
+      ${formSection({
+    title: 'Emisión del setup y la baja',
+    description: 'El setup y la baja se cobran una sola vez por unidad, a diferencia de la renta. Aquí eliges si su factura se consolida con el cierre del periodo o se emite individual al momento del evento.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
-        ${formField({
-          label: 'Cuándo emitir el setup',
-          hint: 'Solo aplica si el monto de setup es mayor a 0.',
-          input: renderSelect('setup_billing_mode', setupModeOptions, form.setup_billing_mode ?? 'next_cycle'),
-        })}
-        ${formField({
-          label: 'Cuándo emitir la baja',
-          hint: 'Solo aplica a planes recurrentes con monto de baja mayor a 0.',
-          input: renderSelect('removal_billing_mode', removalModeOptions, form.removal_billing_mode ?? 'next_cycle'),
-        })}
+        <div id="setup-emission-field">
+          ${formField({
+    label: 'Cuándo emitir el setup',
+    input: renderSelect('setup_billing_mode', setupModeOptions, form.setup_billing_mode ?? 'next_cycle'),
+  })}
+        </div>
+        <div id="removal-emission-field">
+          ${formField({
+    label: 'Cuándo emitir la baja',
+    input: renderSelect('removal_billing_mode', removalModeOptions, form.removal_billing_mode ?? 'next_cycle'),
+  })}
+        </div>
       </div>
     `,
-  });
+  })}
+    </div>
+    <script>
+      (() => {
+        const section = document.getElementById('emission-section');
+        if (!section) return;
+        const form = section.closest('form');
+        const setupField = document.getElementById('setup-emission-field');
+        const removalField = document.getElementById('removal-emission-field');
+        const money = (name) => {
+          const el = form.querySelector('input[name="' + name + '"]');
+          return el ? (parseFloat(el.value) || 0) : 0;
+        };
+        const refresh = () => {
+          const checked = form.querySelector('input[name="pricing_model"]:checked');
+          const recurring = !checked || checked.value === 'recurring';
+          const showSetup = recurring && money('setup_unit_amount') > 0;
+          const showRemoval = recurring && money('removal_unit_amount') > 0;
+          setupField.style.display = showSetup ? '' : 'none';
+          removalField.style.display = showRemoval ? '' : 'none';
+          section.style.display = (showSetup || showRemoval) ? '' : 'none';
+        };
+        form.addEventListener('input', refresh);
+        form.addEventListener('change', refresh);
+        refresh();
+      })();
+    </script>
+  `;
 
   // Sección "Integración con NetSuite" — los 3 item codes mapeados a líneas
   // de factura. Se puede dejar vacío en demos / staging, pero NetSuite

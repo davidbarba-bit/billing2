@@ -229,14 +229,14 @@ function renderResumen(service: ServiceWithRelations, customerTaxEntities: TaxEn
             hint: 'Texto interno. No se muestra al cliente.',
             input: `<input name="description" value="${escapeHtml(service.description ?? '')}" class="${INPUT_CLASS}">`,
           })}
-          ${formField({
-            label: 'Emisión de setup',
-            hint: 'Solo aplica si el monto de setup es mayor a 0.',
+          ${(!isOneOff && service.setupUnitAmountCents > 0) ? formField({
+            label: 'Emisión del setup',
+            hint: 'El setup es un cargo único por unidad: consolidado al cierre o factura individual al instalar.',
             input: renderSelect('setup_billing_mode', setupModeOptions, service.setupBillingMode),
-          })}
-          ${!isOneOff ? formField({
-            label: 'Emisión de baja',
-            hint: 'Solo aplica si el monto de baja es mayor a 0.',
+          }) : ''}
+          ${(!isOneOff && service.removalUnitAmountCents > 0) ? formField({
+            label: 'Emisión de la baja',
+            hint: 'La baja es un cargo único por unidad: consolidada al cierre o factura individual al dar de baja.',
             input: renderSelect('removal_billing_mode', removalModeOptions, service.removalBillingMode),
           }) : ''}
           ${isOneOff ? formField({
