@@ -1748,12 +1748,18 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const { code: svcCode } = request.params as { code: string };
     const body = request.body as Record<string, string>;
-    // Solo enviamos los campos que el form expone (según pricingModel).
-    const payload: Record<string, unknown> = {
-      netsuite_setup_item_code: body.netsuite_setup_item_code ?? '',
-    };
+    // Solo enviamos los campos que el form expone (según pricingModel y
+    // montos) — un campo oculto no viene en el POST y no debe borrar el
+    // código guardado.
+    const payload: Record<string, unknown> = {};
     if (body.netsuite_monthly_item_code !== undefined) {
       payload.netsuite_monthly_item_code = body.netsuite_monthly_item_code;
+    }
+    if (body.netsuite_setup_item_code !== undefined) {
+      payload.netsuite_setup_item_code = body.netsuite_setup_item_code;
+    }
+    if (body.netsuite_removal_item_code !== undefined) {
+      payload.netsuite_removal_item_code = body.netsuite_removal_item_code;
     }
     const result = await app.inject({
       method: 'PATCH',

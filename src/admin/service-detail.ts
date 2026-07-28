@@ -302,15 +302,15 @@ function renderResumen(service: ServiceWithRelations, customerTaxEntities: TaxEn
           input: `<input name="netsuite_monthly_item_code" value="${escapeHtml(service.netsuiteMonthlyItemCode ?? '')}" placeholder="SUB-MONTHLY" class="${INPUT_CLASS_MONO}">`,
           hint: isOneOff ? 'Se usa para las N mensualidades prepagadas.' : 'Se usa cada periodo.',
         })}
-        ${formField({
+        ${service.setupUnitAmountCents > 0 ? formField({
           label: 'Item code setup',
           input: `<input name="netsuite_setup_item_code" value="${escapeHtml(service.netsuiteSetupItemCode ?? '')}" placeholder="SUB-SETUP" class="${INPUT_CLASS_MONO}">`,
-          hint: 'Aplica si hay monto de setup mayor a 0.',
-        })}
-        ${!isOneOff ? formField({
+          hint: 'Mapea el cargo único de instalación.',
+        }) : ''}
+        ${(!isOneOff && service.removalUnitAmountCents > 0) ? formField({
           label: 'Item code baja',
           input: `<input name="netsuite_removal_item_code" value="${escapeHtml(service.netsuiteRemovalItemCode ?? '')}" placeholder="SUB-BAJA" class="${INPUT_CLASS_MONO}">`,
-          hint: 'Aplica si hay monto de baja mayor a 0.',
+          hint: 'Mapea el cargo único de la baja.',
         }) : ''}
       </div>
       <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">

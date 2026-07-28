@@ -243,6 +243,8 @@ export function renderServiceNewForm(args: {
           const el = form.querySelector('input[name="' + name + '"]');
           return el ? (parseFloat(el.value) || 0) : 0;
         };
+        const setupItemCodeField = document.getElementById('setup-item-code-field');
+        const removalItemCodeField = document.getElementById('removal-item-code-field');
         const refresh = () => {
           const checked = form.querySelector('input[name="pricing_model"]:checked');
           const recurring = !checked || checked.value === 'recurring';
@@ -251,6 +253,11 @@ export function renderServiceNewForm(args: {
           setupField.style.display = showSetup ? '' : 'none';
           removalField.style.display = showRemoval ? '' : 'none';
           section.style.display = (showSetup || showRemoval) ? '' : 'none';
+          // Los item codes siguen a sus cargos: sin monto no hay línea que
+          // mapear. El setup sí aplica en prepago (el paquete puede llevarlo);
+          // la baja solo en recurrentes.
+          setupItemCodeField.style.display = money('setup_unit_amount') > 0 ? '' : 'none';
+          removalItemCodeField.style.display = showRemoval ? '' : 'none';
         };
         form.addEventListener('input', refresh);
         form.addEventListener('change', refresh);
@@ -272,16 +279,20 @@ export function renderServiceNewForm(args: {
           hint: 'Recurrente: cada periodo. Prepago: las N mensualidades pagadas por adelantado.',
           input: `<input name="netsuite_monthly_item_code" value="${v('netsuite_monthly_item_code')}" placeholder="SUB-MONTHLY" class="${INPUT_CLASS_MONO}">`,
         })}
-        ${formField({
-          label: 'Item code · setup',
-          hint: 'Cargo único por unidad al instalar.',
-          input: `<input name="netsuite_setup_item_code" value="${v('netsuite_setup_item_code')}" placeholder="SUB-SETUP" class="${INPUT_CLASS_MONO}">`,
-        })}
-        ${formField({
-          label: 'Item code · baja',
-          hint: 'Cargo único por unidad al desinstalar.',
-          input: `<input name="netsuite_removal_item_code" value="${v('netsuite_removal_item_code')}" placeholder="SUB-BAJA" class="${INPUT_CLASS_MONO}">`,
-        })}
+        <div id="setup-item-code-field">
+          ${formField({
+    label: 'Item code · setup',
+    hint: 'Cargo único por unidad al instalar.',
+    input: `<input name="netsuite_setup_item_code" value="${v('netsuite_setup_item_code')}" placeholder="SUB-SETUP" class="${INPUT_CLASS_MONO}">`,
+  })}
+        </div>
+        <div id="removal-item-code-field">
+          ${formField({
+    label: 'Item code · baja',
+    hint: 'Cargo único por unidad al desinstalar.',
+    input: `<input name="netsuite_removal_item_code" value="${v('netsuite_removal_item_code')}" placeholder="SUB-BAJA" class="${INPUT_CLASS_MONO}">`,
+  })}
+        </div>
       </div>
     `,
   });
