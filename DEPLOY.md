@@ -1,6 +1,6 @@
 # Deploy a Railway
 
-mini-Lago corre como un único servicio Node + Postgres en Railway. El
+Numaris Billing corre como un único servicio Node + Postgres en Railway. El
 build usa el `Dockerfile` del repo (multi-stage Node 20 Alpine) y la
 migración Prisma se aplica al iniciar (`CMD ["sh", "-c", "npx prisma
 migrate deploy && node dist/server.js"]`).

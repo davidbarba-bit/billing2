@@ -1,7 +1,7 @@
 {
-  "name": "mini-lago",
+  "name": "numaris-billing",
   "version": "1.0.0",
-  "description": "mini-Lago — motor de calculo de facturacion por uso real + dispatcher NetSuite",
+  "description": "Numaris Billing — motor de calculo de facturacion por uso real + dispatcher NetSuite",
   "type": "module",
   "private": true,
   "engines": {

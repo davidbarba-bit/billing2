@@ -361,7 +361,7 @@ function dispatchInBackground(
       const te = invoice.taxEntity;
       const dispatchPayload = {
         external_id: invoice.id,
-        minilago_invoice_id: invoice.id,
+        numaris_invoice_id: invoice.id,
         issued_at: invoice.createdAt.toISOString(),
         currency: invoice.currency,
         customer: {

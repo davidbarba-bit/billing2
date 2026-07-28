@@ -120,7 +120,7 @@ export function dispatchInvoiceInBackground(
       const te = invoice.taxEntity;
       const dispatchPayload = {
         external_id: invoice.id,
-        minilago_invoice_id: invoice.id,
+        numaris_invoice_id: invoice.id,
         issued_at: invoice.createdAt.toISOString(),
         currency: invoice.currency,
         // v22/fase5: customer del payload = razón social (igual que cycle).

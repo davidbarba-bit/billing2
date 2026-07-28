@@ -6,7 +6,7 @@
 // the standard NetSuite invoice record (`/record/v1/invoice`).
 //
 // v24: we now emit a STANDARD NetSuite invoice (not a custom staging record).
-// The call sites keep building a canonical mini-Lago payload; this dispatcher
+// The call sites keep building a canonical Numaris Billing payload; this dispatcher
 // translates it into the standard `/record/v1/invoice` body. Account-specific
 // bits (subsidiary, entity/item reference mode, currency internal ids) come
 // from `organization.netsuite_config` and are meant to be tuned against the
@@ -45,7 +45,7 @@ type NetSuiteConfig = {
 // Shape (parcial) del payload canónico que arman los call sites.
 type CanonicalInvoice = {
   external_id?: string;
-  minilago_invoice_id?: string;
+  numaris_invoice_id?: string;
   issued_at?: string;
   currency?: string;
   customer?: {
@@ -176,7 +176,7 @@ export class RealNetSuiteDispatcher implements NetSuiteDispatcher {
   }
 }
 
-// Traduce el payload canónico de mini-Lago a un body de invoice estándar de
+// Traduce el payload canónico de Numaris Billing a un body de invoice estándar de
 // NetSuite (`POST /record/v1/invoice`). Envía montos NETOS por línea; NetSuite
 // aplica impuestos según la configuración fiscal del customer/item.
 //
@@ -224,7 +224,7 @@ export function buildStandardInvoice(
   });
 
   const record: Record<string, unknown> = {
-    // externalId liga la factura NetSuite con la de mini-Lago (idempotencia +
+    // externalId liga la factura NetSuite con la de Numaris Billing (idempotencia +
     // lookup). Si se reintenta con el mismo externalId, NetSuite lo rechaza en
     // vez de duplicar.
     externalId: payload.external_id,
@@ -246,7 +246,7 @@ export function buildStandardInvoice(
   if (config.location) record.location = { id: config.location };
 
   const memoParts = ['Numaris Billing'];
-  if (payload.minilago_invoice_id) memoParts.push(payload.minilago_invoice_id);
+  if (payload.numaris_invoice_id) memoParts.push(payload.numaris_invoice_id);
   const period = payload.billing_period;
   if (period?.from && period?.to) memoParts.push(`${String(period.from).slice(0, 10)}..${String(period.to).slice(0, 10)}`);
   record.memo = memoParts.join(' · ');

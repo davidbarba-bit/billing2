@@ -35,7 +35,7 @@ describe('v3 billing (customer-level invoice)', () => {
     expect(kinds).toContain('service_addon');
     expect(kinds).toContain('customer_addon');
 
-    // v5: mini-Lago no calcula impuestos; el invoice solo expone el neto.
+    // v5: Numaris Billing no calcula impuestos; el invoice solo expone el neto.
     const sumFees = inv.fees.reduce((a, f) => a + f.amount_cents, 0);
     expect(sumFees).toBe(inv.fees_amount_cents);
   });

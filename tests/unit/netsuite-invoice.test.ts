@@ -6,7 +6,7 @@ import { buildStandardInvoice } from '../../src/services/netsuite-dispatcher.js'
 
 const baseCanonical = () => ({
   external_id: 'inv-abc',
-  minilago_invoice_id: 'inv-abc',
+  numaris_invoice_id: 'inv-abc',
   issued_at: '2026-06-12T18:30:00.000Z',
   currency: 'MXN',
   customer: {

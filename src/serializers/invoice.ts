@@ -58,7 +58,7 @@ export function serializeInvoice(invoice: InvoiceWithRelations) {
       external_dispatch_error: invoice.externalDispatchError ?? null,
       payment_status: invoice.paymentStatus,
       currency: invoice.currency,
-      // v5: NetSuite calcula los impuestos. mini-Lago solo reporta
+      // v5: NetSuite calcula los impuestos. Numaris Billing solo reporta
       // `fees_amount_cents` (suma neta de partidas, sin IVA). El folio fiscal
       // del CFDI con taxes incluidos llega de NetSuite vía /external-confirm.
       fees_amount_cents: invoice.feesAmountCents,

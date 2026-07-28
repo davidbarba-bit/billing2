@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 
 process.env.NODE_ENV = 'test';
 if (!process.env.DATABASE_URL) {
-  process.env.DATABASE_URL = 'postgresql://minilago:minilago@localhost:5432/minilago_test?schema=public';
+  process.env.DATABASE_URL = 'postgresql://numaris:numaris@localhost:5432/numaris_billing_test?schema=public';
 }
 if (!process.env.LOG_LEVEL) {
   process.env.LOG_LEVEL = 'silent';

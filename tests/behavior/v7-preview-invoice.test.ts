@@ -203,13 +203,13 @@ describe('v7 — preview (dry-run) de cycle invoice', () => {
     });
     // v22: el payload vive bajo invoices[i].netsuite_payload (uno por razón social).
     const ns = (r.json() as { preview: { invoices: Array<{ netsuite_payload: {
-      external_id: null; minilago_invoice_id: null;
+      external_id: null; numaris_invoice_id: null;
       customer: { external_id: string };
       billing_period: { from: string; to: string };
       lines: Array<{ fee_id: null; kind: string }>;
     } }> } }).preview.invoices[0]!.netsuite_payload;
     expect(ns.external_id).toBeNull();
-    expect(ns.minilago_invoice_id).toBeNull();
+    expect(ns.numaris_invoice_id).toBeNull();
     expect(ns.customer.external_id).toBe('c-prev');
     expect(ns.lines.every((l) => l.fee_id === null)).toBe(true);
   });

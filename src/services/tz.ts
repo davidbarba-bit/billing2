@@ -1,4 +1,4 @@
-// Timezone helpers. mini-Lago aligns billing periods to the customer's
+// Timezone helpers. Numaris Billing aligns billing periods to the customer's
 // `applicable_timezone` (D4), not UTC.
 
 import { DateTime, IANAZone } from 'luxon';

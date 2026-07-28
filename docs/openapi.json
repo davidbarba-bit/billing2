@@ -2007,7 +2007,7 @@
           "external_id": {
             "type": "null"
           },
-          "minilago_invoice_id": {
+          "numaris_invoice_id": {
             "type": "null"
           },
           "issued_at": {

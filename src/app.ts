@@ -94,7 +94,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   app.get('/health', async () => ({ status: 'ok' }));
 
   // Friendly landing: hitting the root sends you to the admin back-office
-  // (the human-facing UI of mini-Lago). /docs is the OpenAPI playground for
+  // (the human-facing UI of Numaris Billing). /docs is the OpenAPI playground for
   // machines, /admin is for humans.
   app.get('/', async (_request, reply) => {
     reply.redirect('/admin', 302);

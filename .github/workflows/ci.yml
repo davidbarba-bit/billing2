@@ -1,4 +1,4 @@
-# Continuous Integration for mini-Lago.
+# Continuous Integration for Numaris Billing.
 #
 # Runs on every push and PR. Spins up Postgres 16 as a service container,
 # applies Prisma migrations, runs typecheck + the full Vitest suite (50
@@ -30,19 +30,19 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: minilago
-          POSTGRES_PASSWORD: minilago
-          POSTGRES_DB: minilago_test
+          POSTGRES_USER: numaris
+          POSTGRES_PASSWORD: numaris
+          POSTGRES_DB: numaris_billing_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U minilago"
+          --health-cmd "pg_isready -U numaris"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://minilago:minilago@localhost:5432/minilago_test?schema=public
+      DATABASE_URL: postgresql://numaris:numaris@localhost:5432/numaris_billing_test?schema=public
       NODE_ENV: test
 
     steps:
@@ -90,6 +90,6 @@ jobs:
           context: .
           push: false
           load: true
-          tags: minilago:ci
+          tags: numaris-billing:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -76,7 +76,7 @@ export function registerCreditNoteRoutes(
         }
       }
 
-      // v5: mini-Lago no calcula impuestos. El total es la suma neta de items;
+      // v5: Numaris Billing no calcula impuestos. El total es la suma neta de items;
       // NetSuite calcula los taxes al emitir el CFDI de la credit note.
       const totalAmountCents = payload.items.reduce((acc, i) => acc + i.amount_cents, 0);
 

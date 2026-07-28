@@ -1,6 +1,6 @@
 // Cron de cierre de ciclo — el "auto-biller".
 //
-// Cambio vs v3 (D9 original): mini-Lago YA NO espera que alguien externo dispare
+// Cambio vs v3 (D9 original): Numaris Billing YA NO espera que alguien externo dispare
 // las facturas. Este cron se encarga del ciclo completo:
 //
 //   1. Activa customers `pending` cuyo `subscription_at` ya pasó.

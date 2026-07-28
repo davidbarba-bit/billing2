@@ -8,7 +8,7 @@
 //   - Service `instalacion-gps` (one_off, $3500/u).
 //   - 3 units con intervalos sobrepuestos para prorrateo no trivial.
 //
-// v5: mini-Lago NO calcula impuestos — NetSuite los agrega cuando emite el CFDI.
+// v5: Numaris Billing NO calcula impuestos — NetSuite los agrega cuando emite el CFDI.
 
 import type { Organization, PrismaClient } from '@prisma/client';
 import { DateTime } from 'luxon';

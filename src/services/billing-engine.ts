@@ -370,7 +370,7 @@ function buildOneOffFeesForUnit(service: Service, unit: Unit): ComputedFee[] {
 }
 
 // ---------------------------------------------------------------------------
-// Finalize: arma units_annex. mini-Lago NO calcula impuestos — NetSuite los
+// Finalize: arma units_annex. Numaris Billing NO calcula impuestos — NetSuite los
 // agrega cuando emite el CFDI según la configuración fiscal del cliente.
 // ---------------------------------------------------------------------------
 function finalize(fees: ComputedFee[]): ComputedInvoice {

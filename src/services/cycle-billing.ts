@@ -289,7 +289,7 @@ async function dispatchCycleInvoice(
     const te = hydrated.taxEntity;
     const dispatchPayload = {
       external_id: hydrated.id,
-      minilago_invoice_id: hydrated.id,
+      numaris_invoice_id: hydrated.id,
       issued_at: hydrated.createdAt.toISOString(),
       currency: hydrated.currency,
       // v22/fase5: el "customer" del payload es la RAZÓN SOCIAL (NetSuite ve
@@ -430,7 +430,7 @@ type PreviewFee = {
 
 type PreviewNetSuitePayload = {
   external_id: null;
-  minilago_invoice_id: null;
+  numaris_invoice_id: null;
   issued_at: string;
   currency: string;
   customer: {
@@ -592,7 +592,7 @@ export async function previewCycleInvoiceForCustomer(
     }));
     const netsuite_payload: PreviewNetSuitePayload = {
       external_id: null,
-      minilago_invoice_id: null,
+      numaris_invoice_id: null,
       issued_at: now.toISOString(),
       currency: customer.currency,
       // v22/fase5: el customer del payload es la razón social (cada una es

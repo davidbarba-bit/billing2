@@ -3,7 +3,7 @@
 // Spec §8 "Regla canónica del comparador golden":
 //   1. Strip-list (volatile fields).
 //   2. Normalization-table (deterministic transforms from the appendix
-//      "Divergencias mini-Lago vs captura Lago Cloud").
+//      "Divergencias Numaris Billing vs captura Lago Cloud").
 //   3. Deep-equal strict.
 
 const STRIP_KEYS = new Set<string>([

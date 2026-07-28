@@ -1,16 +1,16 @@
-# mini-Lago — billing engine para Numaris
+# Numaris Billing — billing engine para Numaris
 
-![CI](https://github.com/davidbarba-bit/games/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/davidbarba-bit/billing2/actions/workflows/ci.yml/badge.svg)
 
 Motor de facturación domain-specific para **Numaris** (rastreo flotillas en LATAM).
 Calcula invoices por uso real + las despacha a NetSuite. Construido v1 contra el
-spec `mini-lago-handoff/mini-lago-spec.md`, evolucionado a **v6 Numaris-native**:
+spec original del handoff, evolucionado a **v6 Numaris-native**:
 un solo invoice por cliente por periodo agregando cargos de todos sus servicios
 recurrentes + add-ons, **más servicios prepagados** (setup + N mensualidades por
 adelantado al primer ping de cada unit) en dos modos: emisión inmediata por
 ping o acumulación al cierre del ciclo.
 
-**Impuestos**: mini-Lago **NO calcula impuestos**. Los invoices contienen solo
+**Impuestos**: Numaris Billing **NO calcula impuestos**. Los invoices contienen solo
 montos netos por partida (`fees_amount_cents`). NetSuite calcula IVA, IEPS,
 retenciones, etc. según la configuración fiscal de cada cliente y emite el CFDI
 con esos cargos incluidos. El folio fiscal final llega de vuelta vía
@@ -64,7 +64,7 @@ Organization (Numaris)
                └── ej. "10 reglas de evento +$1000/periodo"
 ```
 
-**Sin tabla de Tax**: mini-Lago no calcula impuestos. Solo envía partidas
+**Sin tabla de Tax**: Numaris Billing no calcula impuestos. Solo envía partidas
 netas a NetSuite, que aplica los taxes al emitir el CFDI según la
 configuración fiscal del cliente (IVA, IEPS, retenciones, etc.).
 
@@ -355,7 +355,7 @@ Las decisiones del spec original que siguen vigentes:
 - **NetSuite outbound** con OAuth 1.0a/TBA HMAC-SHA256, detrás del feature flag `FEATURE_NETSUITE_DISPATCH_ENABLED`.
 - **Callback `/external-confirm`** autentica con HMAC-SHA256 timing-safe (`X-NetSuite-Signature`). Fail-closed sin secret. Idempotente por `(invoice_id, folio)`; folio distinto → `409 conflict_folio_changed`.
 - **Anexo de unidades** en dos niveles: `fee.billed_units_detail[]` y `invoice.units_annex[]`. `billed_fraction` = string decimal de 4 dígitos. Residuo asignado a la unidad con mayor fracción.
-- **Cron auto-billing** (cambio en v4 — antes era D9 "solo roll-over"): cada 60 segundos escanea customers y (a) activa los `pending` cuyo `subscription_at` ya pasó; (b) para cada `active` con `current_billing_period_ending_at <= now`, emite la cycle invoice + dispatch a NetSuite + avanza el periodo. Idempotente por `(customer_id, period_from, period_to)` — re-correr el cron no produce duplicados. Esto significa que mini-Lago **no espera que nadie externo dispare la facturación recurrente**: el sistema se factura solo.
+- **Cron auto-billing** (cambio en v4 — antes era D9 "solo roll-over"): cada 60 segundos escanea customers y (a) activa los `pending` cuyo `subscription_at` ya pasó; (b) para cada `active` con `current_billing_period_ending_at <= now`, emite la cycle invoice + dispatch a NetSuite + avanza el periodo. Idempotente por `(customer_id, period_from, period_to)` — re-correr el cron no produce duplicados. Esto significa que Numaris Billing **no espera que nadie externo dispare la facturación recurrente**: el sistema se factura solo.
 - **PUT `/api/v1/customers/:external_id`** responde `404 resource_not_found`.
 
 ---
@@ -367,7 +367,7 @@ Requiere Postgres en `localhost:5432`. Con Docker:
 ```
 docker compose up -d postgres
 cp .env.example .env
-DATABASE_URL='postgresql://minilago:minilago@localhost:5432/minilago?schema=public' \
+DATABASE_URL='postgresql://numaris:numaris@localhost:5432/numaris_billing?schema=public' \
   npx prisma migrate deploy
 npm run dev
 ```
@@ -376,13 +376,13 @@ Sin Docker (Ubuntu/Debian):
 
 ```
 sudo service postgresql start
-sudo -u postgres psql -c "CREATE USER minilago WITH PASSWORD 'minilago' SUPERUSER;"
-sudo -u postgres psql -c "CREATE DATABASE minilago OWNER minilago;"
-sudo -u postgres psql -c "CREATE DATABASE minilago_test OWNER minilago;"
+sudo -u postgres psql -c "CREATE USER numaris WITH PASSWORD 'numaris' SUPERUSER;"
+sudo -u postgres psql -c "CREATE DATABASE numaris_billing OWNER numaris;"
+sudo -u postgres psql -c "CREATE DATABASE numaris_billing_test OWNER numaris;"
 cp .env.example .env
-DATABASE_URL='postgresql://minilago:minilago@localhost:5432/minilago?schema=public' \
+DATABASE_URL='postgresql://numaris:numaris@localhost:5432/numaris_billing?schema=public' \
   npx prisma migrate deploy
-DATABASE_URL='postgresql://minilago:minilago@localhost:5432/minilago_test?schema=public' \
+DATABASE_URL='postgresql://numaris:numaris@localhost:5432/numaris_billing_test?schema=public' \
   npx prisma migrate deploy
 npm run dev
 ```
@@ -457,7 +457,7 @@ Tiempo total ~2 min. Costo: 0 en repos públicos.
 - `20260513_v2_numaris_native` — v2: drop Lago, modelo Numaris-native (Service con billing fields, AddOn unificado).
 - `20260514_v3_customer_invoices` — v3: invoices por Customer, billing fields se mueven a Customer, AddOn se separa en ServiceAddOn + CustomerAddOn.
 - `20260514_v4_intervals_and_oneoff` — v4: drop `billing_time`. Customer gana `billing_period_months` (1/3/6/12), `billing_anchor_day` (1-28), `nonrecurring_trigger`. Service gana `pricing_model` (recurring/one_off). Unit gana `oneoff_billed_at`. Fee.kind gana `one_off`.
-- `20260514_v5_drop_tax` — v5: drop `Tax`, `CustomerTaxLink`, `ServiceTaxLink`, `AppliedTax`, `CreditNoteAppliedTax`. Drop columnas tax en Invoice/Fee/CreditNote (`taxes_amount_cents`, `taxes_rate`, `total_amount_cents`). mini-Lago solo expone montos netos; NetSuite calcula impuestos al emitir el CFDI.
+- `20260514_v5_drop_tax` — v5: drop `Tax`, `CustomerTaxLink`, `ServiceTaxLink`, `AppliedTax`, `CreditNoteAppliedTax`. Drop columnas tax en Invoice/Fee/CreditNote (`taxes_amount_cents`, `taxes_rate`, `total_amount_cents`). Numaris Billing solo expone montos netos; NetSuite calcula impuestos al emitir el CFDI.
 - `20260514_v6_prepaid_months` — v6: agrega `Service.prepaid_months_default` y `Unit.prepaid_months` para modelar servicios prepagados (cliente paga setup + N meses por adelantado al primer ping de cada unit). Relaja la validación de `setup_unit_amount_cents` en `pricing_model=one_off` (antes se forzaba a 0, ahora se permite el cargo único por unit).
 
 Cada migración es destructiva sobre la anterior. En prod, después de aplicar v4 ejecuta el **Hard reset** desde el admin y re-seedea para tener data limpia.
