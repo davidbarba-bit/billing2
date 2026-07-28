@@ -1101,6 +1101,7 @@ function renderDatos(customer: CustomerWithRelations): string {
           </div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
+          <div><span class="text-[10px] uppercase tracking-wider ink-faint">NetSuite internal id</span><div class="ink font-mono-pro">${e.netsuiteInternalId ? escapeHtml(e.netsuiteInternalId) : `<span class="pill pill-warn">sin capturar</span> <span class="text-xs ink-faint">se usará eid:${escapeHtml(e.externalId)}</span>`}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Identificador externo</span><div class="ink font-mono-pro">${escapeHtml(e.externalId)}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Régimen</span><div class="ink">${e.taxRegime ? escapeHtml(e.taxRegime) : '<span class="ink-faint">—</span>'}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Uso CFDI</span><div class="ink">${e.cfdiUse ? escapeHtml(e.cfdiUse) : '<span class="ink-faint">—</span>'}</div></div>
