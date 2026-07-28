@@ -1309,7 +1309,7 @@ export function renderNewCustomerForm(
 
   const identificationSection = formSection({
     title: 'Identificación',
-    description: 'Datos básicos del cliente. El ID interno se genera automáticamente a partir del nombre; el identificador que ve NetSuite es el de la razón social.',
+    description: 'Datos básicos del cliente. El ID interno se genera automáticamente a partir del nombre.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
         ${formField({
@@ -1317,12 +1317,6 @@ export function renderNewCustomerForm(
           required: true,
           span: 2,
           input: `<input required name="name" value="${v('name')}" placeholder="Transportes MARVA S.A. de C.V." class="${INPUT_CLASS}">`,
-        })}
-        ${formField({
-          label: 'Identificador externo (razón social)',
-          span: 2,
-          hint: 'Slug ASCII (letras, números, <code>-</code>, <code>_</code>, <code>.</code>). Se asigna a la razón social default y es lo que se envía a NetSuite como external id del customer. Opcional: si se omite, hereda el ID interno del cliente y se puede editar después en Datos fiscales.',
-          input: `<input name="tax_entity_external_id" value="${v('tax_entity_external_id')}" pattern="[A-Za-z0-9._-]+" placeholder="ej. 1894 o transportes-marva" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
         })}
         ${formField({
           label: 'Moneda',
@@ -1333,8 +1327,29 @@ export function renderNewCustomerForm(
         ${formField({
           label: 'Timezone (IANA)',
           span: 2,
-          hint: 'Determina cómo se interpreta el día de corte. Los datos fiscales (RFC, dirección) se configuran después en Datos fiscales.',
+          hint: 'Determina cómo se interpreta el día de corte.',
           input: `<input name="timezone" value="${v('timezone')}" placeholder="${escapeHtml(orgTimezone)} (default de la organización)" class="${INPUT_CLASS_MONO}">`,
+        })}
+      </div>
+    `,
+  });
+
+  const taxEntitySection = formSection({
+    title: 'Razón social default',
+    description: 'Un cliente puede tener varias razones sociales; cada una corresponde a un customer distinto en NetSuite. El alta crea la primera (la default) — el RFC, dirección y NetSuite internal id se completan después en Datos fiscales.',
+    body: `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+        ${formField({
+          label: 'Razón social',
+          span: 2,
+          hint: 'Como aparece en la Constancia de Situación Fiscal. Opcional: si se omite, se usa el nombre comercial y se puede corregir después.',
+          input: `<input name="tax_entity_legal_name" value="${v('tax_entity_legal_name')}" placeholder="Aditivos y Vitaminas Mexicanas S.A. de C.V." class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Identificador externo',
+          span: 2,
+          hint: 'Slug ASCII (letras, números, <code>-</code>, <code>_</code>, <code>.</code>) de esta razón social; es lo que se envía a NetSuite como external id del customer. Opcional: si se omite, hereda el ID interno del cliente.',
+          input: `<input name="tax_entity_external_id" value="${v('tax_entity_external_id')}" pattern="[A-Za-z0-9._-]+" placeholder="ej. 1894" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
         })}
       </div>
     `,
@@ -1400,6 +1415,7 @@ export function renderNewCustomerForm(
   const form_ = `
     <form method="post" action="/admin/customers/new" class="space-y-0">
       ${identificationSection}
+      ${taxEntitySection}
       ${calendarSection}
       ${billingSection}
       ${actions}

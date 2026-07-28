@@ -22,6 +22,9 @@ export type CreateCustomerFullInput = {
   // NetSuite como external id del customer). Default: el externalId del
   // cliente, editable después en el admin.
   defaultTaxEntityExternalId?: string | null;
+  // Razón social (legal) de la tax entity default. Default: el nombre
+  // comercial del cliente, editable después en el admin.
+  defaultTaxEntityLegalName?: string | null;
   name: string;
   email?: string | null;
   phone?: string | null;
@@ -123,7 +126,7 @@ export async function createCustomerFull(
         organizationId: org.id,
         customerId: created.id,
         externalId: input.defaultTaxEntityExternalId ?? created.externalId,
-        legalName: created.name,
+        legalName: input.defaultTaxEntityLegalName ?? created.name,
         isDefault: true,
         active: true,
       },

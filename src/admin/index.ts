@@ -432,6 +432,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     // que NetSuite ve. Se sigue aceptando external_id por POST manual.
     const externalId = get('external_id');
     const taxEntityExternalId = get('tax_entity_external_id');
+    const taxEntityLegalName = get('tax_entity_legal_name');
     const name = get('name');
     const currency = get('currency')?.toUpperCase();
     const subAtRaw = get('subscription_at');
@@ -517,6 +518,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const result = await createCustomerFull(prisma, org, {
         externalId,
         defaultTaxEntityExternalId: taxEntityExternalId ?? null,
+        defaultTaxEntityLegalName: taxEntityLegalName ?? null,
         name: name!,
         currency,
         timezone,

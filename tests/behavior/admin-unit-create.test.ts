@@ -100,6 +100,7 @@ describe('admin — alta de unidades desde el form', () => {
       payload: new URLSearchParams({
         name: 'Aditivos y Vitaminas Mexicanas',
         currency: 'MXN',
+        tax_entity_legal_name: 'Aditivos y Vitaminas Mexicanas S.A. de C.V.',
         tax_entity_external_id: '1894',
       }).toString(),
     });
@@ -112,6 +113,7 @@ describe('admin — alta de unidades desde el form', () => {
     });
     expect(customer.taxEntities).toHaveLength(1);
     expect(customer.taxEntities[0]!.externalId).toBe('1894');
+    expect(customer.taxEntities[0]!.legalName).toBe('Aditivos y Vitaminas Mexicanas S.A. de C.V.');
     expect(customer.taxEntities[0]!.isDefault).toBe(true);
   });
 
