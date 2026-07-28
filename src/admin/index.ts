@@ -1368,23 +1368,8 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       setFlash(reply, 'error', 'Plan no seleccionado');
       return reply.redirect(`/admin/customers/${externalId}?tab=unidades`);
     }
-    const payload: Record<string, unknown> = {
-      service_code: svcCode,
-      external_id: body.external_id,
-      active_from: toUtcIso(body.active_from ?? ''),
-    };
-    if (body.label) payload.label = body.label;
-    if (body.billing_starts_at) payload.billing_starts_at = toUtcIso(body.billing_starts_at);
-    if (body.prepaid_months) payload.prepaid_months = Number(body.prepaid_months);
-    if (body.setup_already_billed === '1') payload.setup_already_billed = true;
-    if (body.one_off_already_billed === '1') payload.one_off_already_billed = true;
-    const result = await app.inject({
-      method: 'POST',
-      url: '/api/v1/units',
-      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
-      payload: { unit: payload },
-    });
-    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
+    const result = await createUnitFromAdmin(svcCode, body);
+    if (!result.ok) setFlash(reply, 'error', result.error);
     else setFlash(reply, 'success', `Unit ${body.external_id} creada en plan ${svcCode}.`);
     reply.redirect(`/admin/customers/${externalId}?tab=unidades`);
   });
@@ -1395,14 +1380,28 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     if (!org) return reply.redirect('/admin');
     const { code: svcCode } = request.params as { code: string };
     const body = request.body as Record<string, string>;
+    const result = await createUnitFromAdmin(svcCode, body);
+    if (!result.ok) setFlash(reply, 'error', result.error);
+    else setFlash(reply, 'success', `Unit ${body.external_id} creada.`);
+    reply.redirect(`/admin/services/${svcCode}?tab=unidades`);
+  });
+
+  // El API público solo acepta los campos comerciales de la unidad; los
+  // campos de configuración de facturación (active_from retroactivo,
+  // billing_starts_at, prepaid_months) los administra Numaris desde aquí.
+  // Por eso el alta va en dos pasos: POST al API (validaciones + setup
+  // inmediato + dispatch) y luego update directo a BD con los campos admin.
+  async function createUnitFromAdmin(
+    svcCode: string,
+    body: Record<string, string>,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const org = await getOrg(prisma);
+    if (!org) return { ok: false, error: 'Organización no encontrada' };
     const payload: Record<string, unknown> = {
       service_code: svcCode,
       external_id: body.external_id,
-      active_from: toUtcIso(body.active_from ?? ''),
     };
     if (body.label) payload.label = body.label;
-    if (body.billing_starts_at) payload.billing_starts_at = toUtcIso(body.billing_starts_at);
-    if (body.prepaid_months) payload.prepaid_months = Number(body.prepaid_months);
     if (body.setup_already_billed === '1') payload.setup_already_billed = true;
     if (body.one_off_already_billed === '1') payload.one_off_already_billed = true;
     const result = await app.inject({
@@ -1411,10 +1410,18 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
       payload: { unit: payload },
     });
-    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
-    else setFlash(reply, 'success', `Unit ${body.external_id} creada.`);
-    reply.redirect(`/admin/services/${svcCode}?tab=unidades`);
-  });
+    if (result.statusCode !== 200) return { ok: false, error: result.body.slice(0, 240) };
+
+    const adminData: Prisma.UnitUpdateInput = {};
+    if (body.active_from) adminData.activeFrom = new Date(toUtcIso(body.active_from));
+    if (body.billing_starts_at) adminData.billingStartsAt = new Date(toUtcIso(body.billing_starts_at));
+    if (body.prepaid_months) adminData.prepaidMonths = Number(body.prepaid_months);
+    if (Object.keys(adminData).length > 0) {
+      const { unit } = result.json() as { unit: { id: string } };
+      await prisma.unit.update({ where: { id: unit.id }, data: adminData });
+    }
+    return { ok: true };
+  }
 
   // v8: pantalla simple para editar una unit (label, billing_starts_at, active_to).
   app.get('/admin/units/:id/edit', async (request, reply) => {
@@ -1612,18 +1619,17 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const body = request.body as Record<string, string>;
     const unit = await prisma.unit.findFirst({ where: { id, service: { organizationId: org.id } }, include: { service: true } });
     if (!unit) return reply.redirect('/admin/units');
-    const patch: Record<string, unknown> = {};
-    patch.label = body.label ?? '';
+    // billing_starts_at es campo de administración interna — el API público
+    // (PATCH /units) solo acepta label, así que el admin escribe directo a BD.
     // Vacío → null (limpia el override).
-    patch.billing_starts_at = body.billing_starts_at ? toUtcIso(body.billing_starts_at) : null;
-    const result = await app.inject({
-      method: 'PATCH',
-      url: `/api/v1/units/${id}`,
-      headers: { authorization: `Bearer ${org.apiKey}`, 'content-type': 'application/json' },
-      payload: { unit: patch },
+    await prisma.unit.update({
+      where: { id: unit.id },
+      data: {
+        label: body.label ?? '',
+        billingStartsAt: body.billing_starts_at ? new Date(toUtcIso(body.billing_starts_at)) : null,
+      },
     });
-    if (result.statusCode !== 200) setFlash(reply, 'error', result.body.slice(0, 240));
-    else setFlash(reply, 'success', `Unit ${unit.externalId} actualizada.`);
+    setFlash(reply, 'success', `Unit ${unit.externalId} actualizada.`);
     reply.redirect(`/admin/services/${unit.service.code}`);
   });
 

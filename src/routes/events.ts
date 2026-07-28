@@ -42,10 +42,10 @@ import type { NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { rejectUnknownFields } from '../services/payload.js';
 
 // El API público acepta solo los campos del evento de ciclo de vida.
-// Información estática sobre la unidad (setup_already_billed,
-// one_off_already_billed, billing_starts_at, prepaid_months) vive en
-// `POST /api/v1/units` — el alta de la unidad es donde tiene sentido
-// declararla, no en cada ping.
+// Los flags de migración legacy (setup_already_billed, one_off_already_billed)
+// viven en `POST /api/v1/units` — el alta de la unidad es donde tiene sentido
+// declararlos, no en cada ping. El resto de la configuración de facturación
+// (billing_starts_at, prepaid_months) la administra Numaris desde el admin.
 const ALLOWED_FIELDS = [
   'transaction_id', 'service_code', 'operation_type', 'unit_external_id',
   'unit_label', 'timestamp', 'kind', 'properties',
