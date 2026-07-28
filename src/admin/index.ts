@@ -2078,6 +2078,23 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         </div>`
       : '';
 
+    // El FakeNetSuiteDispatcher (flag de dispatch apagado) genera ids
+    // "rec-xxxxxxxx". Si la factura quedó dispatched con uno de esos, NUNCA
+    // llegó a NetSuite — hay que decirlo fuerte, no dejar el badge engañoso.
+    const simulatedDispatch = invoice.netsuiteDispatchId?.startsWith('rec-') ?? false;
+    const dispatchBanner = simulatedDispatch
+      ? `<div class="rounded p-4 mb-6" style="background: var(--warn-soft, #FEF3C7); border: 1px solid var(--warn, #D97706);">
+          <div class="text-[10px] uppercase tracking-[0.14em] font-medium mb-2" style="color: var(--warn, #92400E);">Dispatch simulado — NO llegó a NetSuite</div>
+          <div class="text-sm ink">Esta factura se despachó con <code class="font-mono-pro">FEATURE_NETSUITE_DISPATCH_ENABLED</code> apagado (modo simulación). El id <code class="font-mono-pro">${escapeHtml(invoice.netsuiteDispatchId ?? '')}</code> es ficticio. Activa el flag en Railway, redeploy, y vuelve a emitir.</div>
+        </div>`
+      : (invoice.netsuiteDispatchId
+        ? `<div class="rounded p-4 mb-6 surface-card" style="border: 1px solid var(--rule);">
+            <div class="text-[10px] uppercase tracking-[0.14em] ink-faint mb-1">NetSuite internal id de la factura</div>
+            <code class="font-mono-pro text-sm ink">${escapeHtml(invoice.netsuiteDispatchId)}</code>
+            <span class="text-xs ink-faint ml-2">— ábrela en NetSuite: /app/accounting/transactions/custinvc.nl?id=${escapeHtml(invoice.netsuiteDispatchId)}</span>
+          </div>`
+        : '');
+
     // Líneas de la factura.
     const feesTable = invoice.fees.length === 0
       ? '<div class="text-sm ink-faint italic py-6 text-center">Sin líneas en esta factura.</div>'
@@ -2176,6 +2193,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       body: header
         + metricsRow
         + errorBanner
+        + dispatchBanner
         + panel({ title: `Líneas · ${invoice.fees.length}`, description: 'Conceptos cobrados. Los impuestos los calcula NetSuite al emitir el CFDI.', body: feesTable })
         + panel({ title: 'Información fiscal · NetSuite', body: externalBlock })
         + panel({
