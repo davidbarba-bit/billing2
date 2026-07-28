@@ -92,6 +92,59 @@ describe('admin — alta de unidades desde el form', () => {
     expect(unit.oneoffBilledAt).not.toBeNull();
   });
 
+  it('POST /admin/customers/new sin external_id genera slug del nombre y asigna el id de la razón social', async () => {
+    const r = await h.app.inject({
+      method: 'POST',
+      url: '/admin/customers/new',
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({
+        name: 'Aditivos y Vitaminas Mexicanas',
+        currency: 'MXN',
+        tax_entity_external_id: '1894',
+      }).toString(),
+    });
+    expect(r.statusCode).toBe(302);
+    expect(r.headers.location).toBe('/admin/customers/aditivos-y-vitaminas-mexicanas');
+
+    const customer = await h.prisma.customer.findFirstOrThrow({
+      where: { externalId: 'aditivos-y-vitaminas-mexicanas' },
+      include: { taxEntities: true },
+    });
+    expect(customer.taxEntities).toHaveLength(1);
+    expect(customer.taxEntities[0]!.externalId).toBe('1894');
+    expect(customer.taxEntities[0]!.isDefault).toBe(true);
+  });
+
+  it('POST /admin/customers/new con id de razón social duplicado → 409 con mensaje claro', async () => {
+    const r = await h.app.inject({
+      method: 'POST',
+      url: '/admin/customers/new',
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({
+        name: 'Otro Cliente',
+        currency: 'MXN',
+        tax_entity_external_id: '1894',
+      }).toString(),
+    });
+    expect(r.statusCode).toBe(409);
+    expect(r.body).toContain('1894');
+    expect(r.body).toContain('razón social');
+  });
+
+  it('POST /admin/customers/new con nombre repetido genera slug con sufijo', async () => {
+    const r = await h.app.inject({
+      method: 'POST',
+      url: '/admin/customers/new',
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({
+        name: 'Aditivos y Vitaminas Mexicanas',
+        currency: 'MXN',
+      }).toString(),
+    });
+    expect(r.statusCode).toBe(302);
+    expect(r.headers.location).toBe('/admin/customers/aditivos-y-vitaminas-mexicanas-2');
+  });
+
   it('POST /admin/units/:id/edit actualiza label y billing_starts_at directo a BD', async () => {
     const unit = await h.prisma.unit.findFirstOrThrow({ where: { externalId: 'u-admin-1' } });
     const r = await h.app.inject({

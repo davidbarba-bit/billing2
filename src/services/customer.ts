@@ -9,12 +9,19 @@
 // flujo.
 
 import type { Organization, Prisma, PrismaClient } from '@prisma/client';
-import { buildCustomerSlug } from './slug.js';
+import { buildCustomerSlug, slugifyName } from './slug.js';
 import { applicableTimezone } from './tz.js';
 import { billingPeriodFor } from './billing-engine.js';
 
 export type CreateCustomerFullInput = {
-  externalId: string;
+  // ID interno del cliente en Numaris Billing (API, URLs del admin). Si se
+  // omite, se genera un slug único a partir del nombre. NO viaja a NetSuite —
+  // la referencia externa vive en la razón social.
+  externalId?: string;
+  // Identificador externo de la razón social default (el que se envía a
+  // NetSuite como external id del customer). Default: el externalId del
+  // cliente, editable después en el admin.
+  defaultTaxEntityExternalId?: string | null;
   name: string;
   email?: string | null;
   phone?: string | null;
@@ -54,6 +61,30 @@ export async function createCustomerFull(
   } as unknown as import('@prisma/client').Customer;
   const period = isFuture ? null : billingPeriodFor(tempForPeriod, tz, now);
 
+  // Sin externalId explícito, se genera un slug único a partir del nombre
+  // (aditivos-y-vitaminas, aditivos-y-vitaminas-2, ...).
+  let externalId = input.externalId;
+  if (!externalId) {
+    const base = slugifyName(input.name);
+    externalId = base;
+    for (let n = 2; ; n += 1) {
+      // El slug también sirve de externalId para la razón social default
+      // (unique por organización), así que debe estar libre en ambas tablas.
+      const [clashCustomer, clashTaxEntity] = await Promise.all([
+        prisma.customer.findUnique({
+          where: { organizationId_externalId: { organizationId: org.id, externalId } },
+          select: { id: true },
+        }),
+        prisma.taxEntity.findUnique({
+          where: { organizationId_externalId: { organizationId: org.id, externalId } },
+          select: { id: true },
+        }),
+      ]);
+      if (!clashCustomer && (!clashTaxEntity || input.defaultTaxEntityExternalId)) break;
+      externalId = `${base}-${n}`;
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     const orgUpdated = await tx.organization.update({
       where: { id: org.id },
@@ -64,7 +95,7 @@ export async function createCustomerFull(
     const created = await tx.customer.create({
       data: {
         organizationId: org.id,
-        externalId: input.externalId,
+        externalId,
         sequentialId,
         slug: buildCustomerSlug(orgUpdated.slug, sequentialId),
         name: input.name,
@@ -91,7 +122,7 @@ export async function createCustomerFull(
       data: {
         organizationId: org.id,
         customerId: created.id,
-        externalId: created.externalId,
+        externalId: input.defaultTaxEntityExternalId ?? created.externalId,
         legalName: created.name,
         isDefault: true,
         active: true,

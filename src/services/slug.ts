@@ -9,3 +9,18 @@ export function buildCustomerSlug(orgSlug: string, sequentialId: number): string
   const padded = sequentialId.toString().padStart(3, '0');
   return `${orgSlug}-${padded}`;
 }
+
+// Deriva un slug ASCII a partir del nombre comercial. Se usa para generar el
+// external_id interno del cliente cuando el operador no captura uno (el admin
+// ya no lo pide: el identificador que importa hacia afuera es el de la razón
+// social). Sin garantía de unicidad — el caller la resuelve.
+export function slugifyName(name: string): string {
+  const slug = name
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/, '');
+  return slug || 'cliente';
+}

@@ -1309,21 +1309,20 @@ export function renderNewCustomerForm(
 
   const identificationSection = formSection({
     title: 'Identificación',
-    description: 'Datos básicos del cliente. El identificador externo es inmutable; el resto se puede editar después.',
+    description: 'Datos básicos del cliente. El ID interno se genera automáticamente a partir del nombre; el identificador que ve NetSuite es el de la razón social.',
     body: `
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
-        ${formField({
-          label: 'Identificador externo',
-          required: true,
-          span: 2,
-          hint: 'Slug ASCII (letras, números, <code>-</code>, <code>_</code>, <code>.</code>) — sin espacios ni acentos. Es el ID estable para mapear con sistemas externos (Numaris, NetSuite); único por organización y no se puede cambiar.',
-          input: `<input required name="external_id" value="${v('external_id')}" pattern="[A-Za-z0-9._-]+" placeholder="ej. transportes-marva o cust-001" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
-        })}
         ${formField({
           label: 'Nombre comercial',
           required: true,
           span: 2,
           input: `<input required name="name" value="${v('name')}" placeholder="Transportes MARVA S.A. de C.V." class="${INPUT_CLASS}">`,
+        })}
+        ${formField({
+          label: 'Identificador externo (razón social)',
+          span: 2,
+          hint: 'Slug ASCII (letras, números, <code>-</code>, <code>_</code>, <code>.</code>). Se asigna a la razón social default y es lo que se envía a NetSuite como external id del customer. Opcional: si se omite, hereda el ID interno del cliente y se puede editar después en Datos fiscales.',
+          input: `<input name="tax_entity_external_id" value="${v('tax_entity_external_id')}" pattern="[A-Za-z0-9._-]+" placeholder="ej. 1894 o transportes-marva" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
         })}
         ${formField({
           label: 'Moneda',

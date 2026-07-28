@@ -427,7 +427,11 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return v === undefined ? undefined : Number(v);
     };
 
+    // v25: el admin ya no pide el ID interno del cliente (se genera del
+    // nombre). El identificador que se captura es el de la razón social — el
+    // que NetSuite ve. Se sigue aceptando external_id por POST manual.
     const externalId = get('external_id');
+    const taxEntityExternalId = get('tax_entity_external_id');
     const name = get('name');
     const currency = get('currency')?.toUpperCase();
     const subAtRaw = get('subscription_at');
@@ -443,8 +447,10 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     // Validaciones mínimas — el form ya restringe selects, pero defendemos
     // contra POST manual.
     const errors: Record<string, string[]> = {};
-    if (!externalId) errors.external_id = ['value_is_mandatory'];
-    else if (!/^[A-Za-z0-9._-]+$/.test(externalId)) errors.external_id = ['must_be_ascii_slug'];
+    if (externalId !== undefined && !/^[A-Za-z0-9._-]+$/.test(externalId)) errors.external_id = ['must_be_ascii_slug'];
+    if (taxEntityExternalId !== undefined && !/^[A-Za-z0-9._-]+$/.test(taxEntityExternalId)) {
+      errors.tax_entity_external_id = ['must_be_ascii_slug'];
+    }
     if (!name) errors.name = ['value_is_mandatory'];
     if (billingPeriodMonths !== undefined && ![1, 3, 6, 12].includes(billingPeriodMonths)) {
       errors.billing_period_months = ['must_be_1_3_6_or_12'];
@@ -471,11 +477,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       return;
     }
 
-    // Verificación de duplicado antes de intentar el insert (UX explícita).
-    const dup = await prisma.customer.findUnique({
-      where: { organizationId_externalId: { organizationId: org.id, externalId: externalId! } },
-      select: { name: true, externalId: true },
-    });
+    // Verificación de duplicados antes de intentar el insert (UX explícita).
+    const dup = externalId
+      ? await prisma.customer.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId } },
+        select: { name: true, externalId: true },
+      })
+      : null;
     if (dup) {
       const msg = `Ya existe un cliente con identificador "${dup.externalId}" (${dup.name}). Elige otro identificador o edita el existente.`;
       reply.status(409).type('text/html').send(layout({
@@ -487,10 +495,28 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       }));
       return;
     }
+    if (taxEntityExternalId) {
+      const teDup = await prisma.taxEntity.findUnique({
+        where: { organizationId_externalId: { organizationId: org.id, externalId: taxEntityExternalId } },
+        include: { customer: { select: { name: true, externalId: true } } },
+      });
+      if (teDup) {
+        const msg = `El identificador de razón social "${taxEntityExternalId}" ya lo usa "${teDup.legalName}" del cliente ${teDup.customer.name}. Cada razón social debe tener un identificador único.`;
+        reply.status(409).type('text/html').send(layout({
+          title: 'Nuevo cliente',
+          active: '/admin/customers',
+          orgSlug: org.slug,
+          flash: { kind: 'error', message: msg },
+          body: renderNewCustomerForm(form, { displayTz, orgTimezone: org.timezone }),
+        }));
+        return;
+      }
+    }
 
     try {
       const result = await createCustomerFull(prisma, org, {
-        externalId: externalId!,
+        externalId,
+        defaultTaxEntityExternalId: taxEntityExternalId ?? null,
         name: name!,
         currency,
         timezone,
