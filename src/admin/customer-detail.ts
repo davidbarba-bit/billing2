@@ -1102,7 +1102,7 @@ function renderDatos(customer: CustomerWithRelations): string {
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">NetSuite internal id</span><div class="ink font-mono-pro">${e.netsuiteInternalId ? escapeHtml(e.netsuiteInternalId) : `<span class="pill pill-warn">sin capturar</span> <span class="text-xs ink-faint">se usará eid:${escapeHtml(e.externalId)}</span>`}</div></div>
-          <div><span class="text-[10px] uppercase tracking-wider ink-faint">Identificador externo</span><div class="ink font-mono-pro">${escapeHtml(e.externalId)}</div></div>
+          <div><span class="text-[10px] uppercase tracking-wider ink-faint">External NetSuite ID (Zoho)</span><div class="ink font-mono-pro">${escapeHtml(e.externalId)}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Régimen</span><div class="ink">${e.taxRegime ? escapeHtml(e.taxRegime) : '<span class="ink-faint">—</span>'}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">Uso CFDI</span><div class="ink">${e.cfdiUse ? escapeHtml(e.cfdiUse) : '<span class="ink-faint">—</span>'}</div></div>
           <div><span class="text-[10px] uppercase tracking-wider ink-faint">CP</span><div class="ink font-mono-pro">${e.zipcode ? escapeHtml(e.zipcode) : '<span class="ink-faint">—</span>'}</div></div>
@@ -1171,10 +1171,13 @@ function renderTaxEntityForm(customer: CustomerWithRelations, e: TaxEntityWithCo
         ${formField({ label: 'Razón social', required: true, span: 2,
           hint: 'Como aparece en la Constancia de Situación Fiscal.',
           input: `<input required name="legal_name" value="${v(e?.legalName)}" placeholder="Transportes Pilot SA de CV" class="${INPUT_CLASS}">` })}
-        ${formField({ label: 'Identificador externo', span: 2,
+        ${formField({ label: 'NetSuite Internal ID', span: 2,
+          hint: 'El número del registro del customer en NetSuite — el <code>id=</code> que aparece en la URL (ej. 1894). Es la referencia preferida al enviar facturas; si está vacío se usa el External ID como fallback.',
+          input: `<input name="netsuite_internal_id" value="${v(e?.netsuiteInternalId)}" placeholder="ej. 1894" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'External NetSuite ID (Zoho Customer ID)', span: 2,
           hint: e
-            ? 'Slug ASCII estable que se envía a NetSuite como external_id del customer. Cambiarlo después de que NetSuite ya lo creó rompe el mapeo.'
-            : 'Slug ASCII estable para NetSuite (letras, números, <code>-</code>, <code>_</code>, <code>.</code>). Si lo dejas vacío se autogenera como <code>' + escapeHtml(customer.externalId) + '-N</code>.',
+            ? 'Corresponde al campo External ID del customer en NetSuite — que en nuestra cuenta guarda el Customer ID de Zoho. Solo se usa como referencia (<code>eid:</code>) cuando el NetSuite internal id no está capturado. Cambiarlo después de que NetSuite ya mapeó el registro rompe el cruce.'
+            : 'Corresponde al campo External ID del customer en NetSuite — que en nuestra cuenta guarda el Customer ID de Zoho. Solo se usa como referencia cuando el NetSuite internal id no está capturado. Si lo dejas vacío se autogenera como <code>' + escapeHtml(customer.externalId) + '-N</code>.',
           input: `<input name="external_id" value="${v(e?.externalId)}" pattern="[A-Za-z0-9._-]+" placeholder="${escapeHtml(customer.externalId)}-filial" class="${INPUT_CLASS_MONO}">` })}
         ${formField({ label: 'RFC',
           input: `<input name="tax_identification_number" value="${v(e?.taxIdentificationNumber)}" class="${INPUT_CLASS_MONO} uppercase">` })}
@@ -1196,9 +1199,6 @@ function renderTaxEntityForm(customer: CustomerWithRelations, e: TaxEntityWithCo
           input: `<input name="zipcode" value="${v(e?.zipcode)}" class="${INPUT_CLASS_MONO}">` })}
         ${formField({ label: 'País (ISO 2 letras)',
           input: `<input name="country" value="${v(e?.country)}" maxlength="2" placeholder="MX" class="${INPUT_CLASS_MONO} uppercase">` })}
-        ${techOnly(formField({ label: 'NetSuite internal ID', span: 2,
-          hint: 'Internal id del customer en NetSuite para esta razón social. Vacío = dispatch por external id.',
-          input: `<input name="netsuite_internal_id" value="${v(e?.netsuiteInternalId)}" placeholder="ej. 614" class="${INPUT_CLASS_MONO}">` }))}
         ${!e ? formField({ label: 'Marcar como default', span: 2,
           hint: 'La razón social default la heredan los planes nuevos. Si es la primera del cliente, se marca default automáticamente.',
           input: `<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" name="is_default" value="1"> <span class="text-sm ink-soft">Usar como razón social default del cliente</span></label>` }) : ''}
@@ -1347,10 +1347,10 @@ export function renderNewCustomerForm(
           input: `<input name="tax_entity_legal_name" value="${v('tax_entity_legal_name')}" placeholder="Aditivos y Vitaminas Mexicanas S.A. de C.V." class="${INPUT_CLASS}">`,
         })}
         ${formField({
-          label: 'Identificador externo',
+          label: 'External NetSuite ID (Zoho Customer ID)',
           span: 2,
-          hint: 'Slug ASCII (letras, números, <code>-</code>, <code>_</code>, <code>.</code>) de esta razón social; es lo que se envía a NetSuite como external id del customer. Opcional: si se omite, hereda el ID interno del cliente.',
-          input: `<input name="tax_entity_external_id" value="${v('tax_entity_external_id')}" pattern="[A-Za-z0-9._-]+" placeholder="ej. 1894" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
+          hint: 'Corresponde al campo External ID del customer en NetSuite — que en nuestra cuenta guarda el Customer ID de Zoho. Opcional: si se omite, hereda el ID interno del cliente. El NetSuite internal id (la referencia preferida) se captura después en Datos fiscales.',
+          input: `<input name="tax_entity_external_id" value="${v('tax_entity_external_id')}" pattern="[A-Za-z0-9._-]+" title="Solo letras, números y - _ ." class="${INPUT_CLASS_MONO}">`,
         })}
       </div>
     `,
