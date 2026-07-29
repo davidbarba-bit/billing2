@@ -133,6 +133,11 @@ export function dispatchInvoiceInBackground(
           netsuite_entity_handle: te.netsuiteInternalId ?? `eid:${te.externalId}`,
           customer_external_id: invoice.customer.externalId,
         },
+        segmentation: {
+          location: te.netsuiteLocationId,
+          department: te.netsuiteDepartmentId,
+          class: te.netsuiteClassId,
+        },
         billing_period: { from: invoice.periodFrom, to: invoice.periodTo },
         lines: invoice.fees.map((f) => ({
           fee_id: f.id, service_id: f.serviceId, kind: f.kind,

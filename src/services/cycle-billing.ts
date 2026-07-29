@@ -307,6 +307,11 @@ async function dispatchCycleInvoice(
           : `eid:${te.externalId}`,
         customer_external_id: hydrated.customer.externalId,
       },
+      segmentation: {
+        location: te.netsuiteLocationId,
+        department: te.netsuiteDepartmentId,
+        class: te.netsuiteClassId,
+      },
       billing_period: { from: hydrated.periodFrom, to: hydrated.periodTo },
       lines: hydrated.fees.map((f) => ({
         fee_id: f.id, service_id: f.serviceId,
@@ -441,6 +446,11 @@ type PreviewNetSuitePayload = {
     netsuite_internal_id: string | null;
     netsuite_entity_handle: string;
     customer_external_id: string;
+  };
+  segmentation: {
+    location: string | null;
+    department: string | null;
+    class: string | null;
   };
   billing_period: { from: Date; to: Date };
   lines: Array<{
@@ -605,6 +615,11 @@ export async function previewCycleInvoiceForCustomer(
         netsuite_internal_id: te.netsuiteInternalId,
         netsuite_entity_handle: te.netsuiteInternalId ?? `eid:${te.externalId}`,
         customer_external_id: customer.externalId,
+      },
+      segmentation: {
+        location: te.netsuiteLocationId,
+        department: te.netsuiteDepartmentId,
+        class: te.netsuiteClassId,
       },
       billing_period: { from: period.start, to: period.end },
       lines: group.invoice.fees.map((f) => ({

@@ -587,6 +587,12 @@ model TaxEntity {
   // NetSuite. Si está vacío el dispatch usa "eid:<external_id>" (el de la
   // razón social, no el del cliente comercial).
   netsuiteInternalId      String?  @map("netsuite_internal_id")
+  // v25: segmentación contable de NetSuite. Las Locations están amarradas a
+  // la subsidiaria del customer, así que viven aquí y no en la config global
+  // (que queda como fallback). Internal ids de NetSuite.
+  netsuiteLocationId      String?  @map("netsuite_location_id")
+  netsuiteDepartmentId    String?  @map("netsuite_department_id")
+  netsuiteClassId         String?  @map("netsuite_class_id")
   // Una (y solo una) razón social del cliente es la default — la que heredan
   // los planes/add-ons al crearse si no se especifica otra.
   isDefault               Boolean  @default(false) @map("is_default")

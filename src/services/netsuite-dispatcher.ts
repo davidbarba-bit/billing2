@@ -54,6 +54,13 @@ type CanonicalInvoice = {
     netsuite_entity_handle?: string;
   };
   billing_period?: { from?: string | null; to?: string | null };
+  // v25: segmentación contable de la razón social (internal ids). Tiene
+  // precedencia sobre los defaults de organization.netsuite_config.
+  segmentation?: {
+    location?: string | null;
+    department?: string | null;
+    class?: string | null;
+  };
   lines?: Array<{
     fee_id?: string;
     kind?: string;
@@ -242,8 +249,13 @@ export function buildStandardInvoice(
   }
 
   if (config.subsidiaryId) record.subsidiary = { id: config.subsidiaryId };
-  if (config.department) record.department = { id: config.department };
-  if (config.location) record.location = { id: config.location };
+  // Segmentación: lo de la razón social manda; la config global es fallback.
+  const seg = payload.segmentation ?? {};
+  const department = seg.department ?? config.department;
+  const location = seg.location ?? config.location;
+  if (department) record.department = { id: department };
+  if (location) record.location = { id: location };
+  if (seg.class) record.class = { id: seg.class };
 
   const memoParts = ['Numaris Billing'];
   if (payload.numaris_invoice_id) memoParts.push(payload.numaris_invoice_id);

@@ -1174,6 +1174,15 @@ function renderTaxEntityForm(customer: CustomerWithRelations, e: TaxEntityWithCo
         ${formField({ label: 'NetSuite Internal ID', span: 2,
           hint: 'El número del registro del customer en NetSuite — el <code>id=</code> que aparece en la URL (ej. 1894). Es la referencia preferida al enviar facturas; si está vacío se usa el External ID como fallback.',
           input: `<input name="netsuite_internal_id" value="${v(e?.netsuiteInternalId)}" placeholder="ej. 1894" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'Ubicación NetSuite (internal id)',
+          hint: 'La Location debe pertenecer a la subsidiaria del customer en NetSuite. Vacío = usa el default global de /admin/netsuite.',
+          input: `<input name="netsuite_location_id" value="${v(e?.netsuiteLocationId)}" placeholder="ej. 2" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'Departamento NetSuite (internal id)',
+          hint: 'Vacío = usa el default global.',
+          input: `<input name="netsuite_department_id" value="${v(e?.netsuiteDepartmentId)}" placeholder="ej. 3" class="${INPUT_CLASS_MONO}">` })}
+        ${formField({ label: 'Clase NetSuite (internal id)', span: 2,
+          hint: 'Línea de negocio para reportes. Vacío = no se envía.',
+          input: `<input name="netsuite_class_id" value="${v(e?.netsuiteClassId)}" placeholder="ej. 3" class="${INPUT_CLASS_MONO}">` })}
         ${formField({ label: 'External NetSuite ID (Zoho Customer ID)', span: 2,
           hint: e
             ? 'Corresponde al campo External ID del customer en NetSuite — que en nuestra cuenta guarda el Customer ID de Zoho. Solo se usa como referencia (<code>eid:</code>) cuando el NetSuite internal id no está capturado. Cambiarlo después de que NetSuite ya mapeó el registro rompe el cruce.'

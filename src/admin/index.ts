@@ -1094,6 +1094,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     city: body.city?.trim() || null,
     country: body.country?.trim().toUpperCase() || null,
     netsuiteInternalId: body.netsuite_internal_id?.trim() || null,
+    netsuiteLocationId: body.netsuite_location_id?.trim() || null,
+    netsuiteDepartmentId: body.netsuite_department_id?.trim() || null,
+    netsuiteClassId: body.netsuite_class_id?.trim() || null,
   });
 
   // Crear razón social.

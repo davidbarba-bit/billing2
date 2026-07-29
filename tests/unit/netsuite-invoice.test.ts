@@ -114,3 +114,22 @@ describe('normalizeRestBase', () => {
     expect(normalizeRestBase('https://x.suitetalk.api.netsuite.com')).toBe('https://x.suitetalk.api.netsuite.com');
   });
 });
+
+describe('buildStandardInvoice — segmentación contable', () => {
+  it('la segmentación de la razón social tiene precedencia sobre la config global', () => {
+    const payload = { ...baseCanonical(), segmentation: { location: '2', department: '3', class: '4' } };
+    const record = buildStandardInvoice(payload, { location: '9', department: '9' }) as Record<string, { id: string }>;
+    expect(record.location).toEqual({ id: '2' });
+    expect(record.department).toEqual({ id: '3' });
+    expect(record.class).toEqual({ id: '4' });
+  });
+
+  it('sin segmentación en la razón social cae al default global; sin nada, no se envía', () => {
+    const withGlobal = buildStandardInvoice({ ...baseCanonical(), segmentation: { location: null, department: null, class: null } }, { location: '9' }) as Record<string, unknown>;
+    expect(withGlobal.location).toEqual({ id: '9' });
+    expect(withGlobal.department).toBeUndefined();
+    expect(withGlobal.class).toBeUndefined();
+    const bare = buildStandardInvoice(baseCanonical(), {}) as Record<string, unknown>;
+    expect(bare.location).toBeUndefined();
+  });
+});
