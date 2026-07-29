@@ -133,3 +133,29 @@ describe('buildStandardInvoice — segmentación contable', () => {
     expect(bare.location).toBeUndefined();
   });
 });
+
+describe('anexo de unidades → custom body field', () => {
+  const annexPayload = () => ({
+    ...baseCanonical(),
+    units_annex: [
+      { external_id: 'GPS-001', label: 'Volvo 32', fees: [{ kind: 'monthly', amount_cents: 5160 }] },
+      { external_id: 'GPS-002', label: null, fees: [{ kind: 'monthly', amount_cents: 40000 }, { kind: 'setup', amount_cents: 10000 }] },
+    ],
+  });
+
+  it('con annexFieldId configurado escribe el texto del anexo en ese campo', async () => {
+    const { buildStandardInvoice } = await import('../../src/services/netsuite-dispatcher.js');
+    const record = buildStandardInvoice(annexPayload(), { annexFieldId: 'custbody_numaris_units_annex' }) as Record<string, unknown>;
+    const text = record.custbody_numaris_units_annex as string;
+    expect(text).toContain('ANEXO DE UNIDADES');
+    expect(text).toContain('Volvo 32 (GPS-001): Renta mensual $51.60 MXN');
+    expect(text).toContain('GPS-002: Renta mensual $400.00 MXN + Instalación $100.00 MXN');
+    expect(text).toContain('2 unidades · Neto $551.60 MXN');
+  });
+
+  it('sin annexFieldId no agrega ningún campo custom', async () => {
+    const { buildStandardInvoice } = await import('../../src/services/netsuite-dispatcher.js');
+    const record = buildStandardInvoice(annexPayload(), {}) as Record<string, unknown>;
+    expect(Object.keys(record).some((k) => k.startsWith('custbody'))).toBe(false);
+  });
+});

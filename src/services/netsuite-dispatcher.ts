@@ -40,6 +40,11 @@ type NetSuiteConfig = {
   // los exige a nivel transacción.
   department?: string;
   location?: string;
+  // Id del custom transaction body field (tipo Long Text) donde se escribe el
+  // anexo de unidades en texto legible (ej. "custbody_numaris_units_annex").
+  // La plantilla Advanced PDF de la factura lo puede renderizar para que el
+  // cliente vea a qué unidades corresponden los cargos. Vacío = no se envía.
+  annexFieldId?: string;
 };
 
 // Shape (parcial) del payload canónico que arman los call sites.
@@ -69,6 +74,11 @@ type CanonicalInvoice = {
     unit_amount_cents?: number;
     amount_cents?: number;
     netsuite_item_code?: string | null;
+  }>;
+  units_annex?: Array<{
+    external_id?: string;
+    label?: string | null;
+    fees?: Array<{ kind?: string; amount_cents?: number }>;
   }>;
   metadata?: Record<string, unknown>;
 };
@@ -263,7 +273,51 @@ export function buildStandardInvoice(
   if (period?.from && period?.to) memoParts.push(`${String(period.from).slice(0, 10)}..${String(period.to).slice(0, 10)}`);
   record.memo = memoParts.join(' · ');
 
+  if (config.annexFieldId && payload.units_annex && payload.units_annex.length > 0) {
+    record[config.annexFieldId] = renderUnitsAnnexText(payload);
+  }
+
   return record;
+}
+
+// Anexo de unidades en texto legible para el custom body field de la factura
+// en NetSuite (y de ahí a la plantilla PDF que ve el cliente). Montos NETOS —
+// los impuestos del CFDI los agrega NetSuite sobre las líneas, no sobre el
+// anexo, que es informativo.
+const ANNEX_KIND_LABELS: Record<string, string> = {
+  monthly: 'Renta mensual',
+  setup: 'Instalación',
+  removal: 'Baja',
+  one_off: 'Paquete prepago',
+  service_addon: 'Add-on de plan',
+  customer_addon: 'Add-on de cliente',
+  catalog_event: 'Evento',
+};
+
+export function renderUnitsAnnexText(payload: CanonicalInvoice): string {
+  const currency = payload.currency ?? '';
+  const money = (cents: number): string =>
+    `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency ? ` ${currency}` : ''}`;
+  const period = payload.billing_period;
+  const header = period?.from && period?.to
+    ? `ANEXO DE UNIDADES · Periodo ${String(period.from).slice(0, 10)} a ${String(period.to).slice(0, 10)}`
+    : 'ANEXO DE UNIDADES';
+  const lines = (payload.units_annex ?? []).map((u) => {
+    const name = u.label ? `${u.label} (${u.external_id ?? '?'})` : (u.external_id ?? '?');
+    const fees = (u.fees ?? [])
+      .map((f) => `${ANNEX_KIND_LABELS[f.kind ?? ''] ?? f.kind ?? 'Cargo'} ${money(f.amount_cents ?? 0)}`)
+      .join(' + ');
+    return `• ${name}: ${fees || 'sin cargos'}`;
+  });
+  const total = (payload.units_annex ?? [])
+    .flatMap((u) => u.fees ?? [])
+    .reduce((acc, f) => acc + (f.amount_cents ?? 0), 0);
+  return [
+    header,
+    `${lines.length} unidad${lines.length === 1 ? '' : 'es'} · Neto ${money(total)} (impuestos por separado)`,
+    '',
+    ...lines,
+  ].join('\n');
 }
 
 // Una diagonal final en la REST base produce URLs con `//` — la firma OAuth

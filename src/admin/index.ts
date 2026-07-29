@@ -2471,6 +2471,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       subsidiaryId?: string; entityRefMode?: string; itemRefMode?: string;
       currencyRef?: Record<string, string>;
       location?: string; department?: string;
+      annexFieldId?: string;
     };
 
     const dispatchOn = deps.config.featureNetsuiteDispatchEnabled;
@@ -2578,8 +2579,9 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
             ${textField('currency_mxn', 'Moneda MXN (internal id)', cfg.currencyRef?.MXN, 'ej. 1', 'Internal id de la moneda MXN en NetSuite. Si lo dejas vacío se intenta por nombre ("MXN").')}
             ${formField({ label: 'Referencia del cliente', hint: '¿Cómo existe el cliente en NetSuite?', input: modeSelect('entity_ref_mode', cfg.entityRefMode, 'internal') })}
             ${formField({ label: 'Referencia de los ítems', hint: '¿Cómo están dados de alta los ítems (códigos de producto) en NetSuite?', input: modeSelect('item_ref_mode', cfg.itemRefMode, 'external') })}
-            ${textField('location_id', 'Ubicación / Location (internal id)', cfg.location, 'ej. 5', 'Solo si tu cuenta exige Ubicación en las transacciones ("Introduzca valores para: Ubicación"). El id está en la URL de la Location (Setup → Company → Locations).')}
-            ${textField('department_id', 'Departamento (internal id)', cfg.department, 'ej. 3', 'Solo si tu cuenta exige Departamento en las transacciones. Vacío = no se envía.')}
+            ${textField('location_id', 'Ubicación / Location (internal id)', cfg.location, 'ej. 5', 'Solo si tu cuenta exige Ubicación en las transacciones ("Introduzca valores para: Ubicación"). El id está en la URL de la Location (Setup → Company → Locations). La razón social puede sobreescribirlo.')}
+            ${textField('department_id', 'Departamento (internal id)', cfg.department, 'ej. 3', 'Solo si tu cuenta exige Departamento en las transacciones. Vacío = no se envía. La razón social puede sobreescribirlo.')}
+            ${textField('annex_field_id', 'Campo del anexo de unidades (script id)', cfg.annexFieldId, 'custbody_numaris_units_annex', 'Custom transaction body field (tipo Long Text) en NetSuite donde se escribe el anexo con el desglose por unidad. Agrégalo a la plantilla PDF de la factura para que el cliente lo vea. Vacío = no se envía.')}
           </div>
           <div class="flex items-center gap-3 pt-4" style="border-top: 1px solid var(--rule);">
             ${primaryButton('Guardar mapeo')}
@@ -2646,6 +2648,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     const mxn = get('currency_mxn'); if (mxn) cfg.currencyRef = { MXN: mxn };
     const locationId = get('location_id'); if (locationId) cfg.location = locationId;
     const departmentId = get('department_id'); if (departmentId) cfg.department = departmentId;
+    const annexFieldId = get('annex_field_id'); if (annexFieldId) cfg.annexFieldId = annexFieldId;
 
     await prisma.organization.update({
       where: { id: org.id },
