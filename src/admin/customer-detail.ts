@@ -279,11 +279,11 @@ function renderResumen(customer: CustomerWithRelations, metrics: DerivedMetrics)
     return `
       <div class="flex flex-wrap gap-2">
         <a href="/admin/customers/${escapeHtml(customer.externalId)}/preview" class="px-4 py-2 rounded bg-white text-gray-700 border text-sm font-medium hover:bg-gray-50 inline-flex items-center">Vista previa del periodo</a>
-        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/invoice" class="inline" onsubmit="return confirm('¿Calcular factura del periodo en curso? Esta acción crea una factura y no se puede deshacer.')">
-          <button type="submit" class="px-4 py-2 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Calcular factura del periodo</button>
+        <form method="post" action="/admin/customers/${escapeHtml(customer.externalId)}/invoice" class="inline" onsubmit="return confirm('¿Emitir la factura del periodo en curso? Se creará la factura y se enviará a NetSuite. No se puede deshacer.')">
+          <button type="submit" class="px-4 py-2 rounded bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">Emitir factura del periodo</button>
         </form>
       </div>
-      <div class="text-xs text-gray-500 mt-2">La factura se calcula sobre el periodo en curso (${metrics.nextCloseAt ? `cierra ${fmtDateOnly(metrics.nextCloseAt)}` : 'sin cierre calculado'}).</div>
+      <div class="text-xs text-gray-500 mt-2">Ambas cubren el periodo en curso (${metrics.nextCloseAt ? `cierra ${fmtDateOnly(metrics.nextCloseAt)}` : 'sin cierre calculado'}). La vista previa solo calcula, sin consecuencias; <strong>Emitir</strong> crea la factura y la envía a NetSuite.</div>
     `;
   })();
 
