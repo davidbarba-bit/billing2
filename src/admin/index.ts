@@ -2504,13 +2504,17 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const isSet = Boolean(value);
       const len = value ? value.length : 0;
       const lenWarn = isSet && expectLen !== null && len !== expectLen;
+      // Huella (primeros 6 chars) para comparar contra la fuente (Postman del
+      // proveedor, Integration Record) sin exponer la llave completa. Es la
+      // única forma de detectar "guardé un juego de llaves distinto".
+      const fingerprint = value ? ` · empieza con <code class="font-mono-pro">${escapeHtml(value.slice(0, 6))}…</code>` : '';
       let hint: string;
       if (!isSet) {
         hint = 'No configurado.';
       } else if (expectLen !== null) {
-        hint = `Configurado · ${len} caracteres${lenWarn ? ` ⚠ se esperan ${expectLen}` : ' ✓'}. Deja vacío para conservarlo.`;
+        hint = `Configurado · ${len} caracteres${lenWarn ? ` ⚠ se esperan ${expectLen}` : ' ✓'}${fingerprint}. Deja vacío para conservarlo.`;
       } else {
-        hint = `Configurado · ${len} caracteres. Deja vacío para conservarlo.`;
+        hint = `Configurado · ${len} caracteres${fingerprint}. Deja vacío para conservarlo.`;
       }
       return formField({
         label,
