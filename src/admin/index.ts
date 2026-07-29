@@ -2574,7 +2574,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       body: `
         <form method="post" action="/admin/netsuite/config" class="space-y-0">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
-            ${textField('subsidiary_id', 'Subsidiaria (internal id)', cfg.subsidiaryId, 'ej. 1', 'Obligatorio en cuentas OneWorld. Déjalo vacío si tu cuenta no usa subsidiarias.')}
+            ${textField('subsidiary_id', 'Subsidiaria (internal id)', cfg.subsidiaryId, '', 'Normalmente déjalo VACÍO: NetSuite deriva la subsidiaria del customer de cada factura. Captura un id solo si NetSuite rechaza explícitamente por subsidiaria faltante.')}
             ${textField('currency_mxn', 'Moneda MXN (internal id)', cfg.currencyRef?.MXN, 'ej. 1', 'Internal id de la moneda MXN en NetSuite. Si lo dejas vacío se intenta por nombre ("MXN").')}
             ${formField({ label: 'Referencia del cliente', hint: '¿Cómo existe el cliente en NetSuite?', input: modeSelect('entity_ref_mode', cfg.entityRefMode, 'internal') })}
             ${formField({ label: 'Referencia de los ítems', hint: '¿Cómo están dados de alta los ítems (códigos de producto) en NetSuite?', input: modeSelect('item_ref_mode', cfg.itemRefMode, 'external') })}
