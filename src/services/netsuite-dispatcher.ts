@@ -138,7 +138,7 @@ export class RealNetSuiteDispatcher implements NetSuiteDispatcher {
       return { status: 'failed', externalId, receivedAt, error: err instanceof Error ? err.message : String(err) };
     }
 
-    const url = `${org.netsuiteRestBase}/services/rest/record/v1/invoice`;
+    const url = `${normalizeRestBase(org.netsuiteRestBase!)}/services/rest/record/v1/invoice`;
     const body = JSON.stringify(record);
     const auth = buildOauthHeader({
       method: 'POST',
@@ -254,6 +254,14 @@ export function buildStandardInvoice(
   return record;
 }
 
+// Una diagonal final en la REST base produce URLs con `//` — la firma OAuth
+// se calcula sobre esa URL pero NetSuite la valida contra la ruta
+// normalizada, y el resultado es un 401 INVALID_LOGIN indistinguible de
+// llaves malas. Se normaliza aquí Y al guardar en el admin.
+export function normalizeRestBase(restBase: string): string {
+  return restBase.trim().replace(/\/+$/, '');
+}
+
 function safeJson(text: string): Record<string, unknown> | null {
   try {
     return JSON.parse(text) as Record<string, unknown>;
@@ -294,7 +302,7 @@ export async function testNetSuiteConnection(
     }
   }
 
-  const url = `${org.netsuiteRestBase}/services/rest/record/v1/invoice?limit=1`;
+  const url = `${normalizeRestBase(org.netsuiteRestBase!)}/services/rest/record/v1/invoice?limit=1`;
   const auth = buildOauthHeader({
     method: 'GET',
     url,

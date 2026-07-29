@@ -24,7 +24,7 @@ import formbody from '@fastify/formbody';
 import type { Organization, Prisma, PrismaClient } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import type { AppConfig } from '../config.js';
-import { testNetSuiteConnection, type NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
+import { normalizeRestBase, testNetSuiteConnection, type NetSuiteDispatcher } from '../services/netsuite-dispatcher.js';
 import { seedNumaris } from './seed.js';
 import { resetOrganizationData } from '../services/reset.js';
 import { createCustomerFull } from '../services/customer.js';
@@ -2603,7 +2603,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
     };
     const data: Record<string, unknown> = {};
     // No-secretos: se actualizan si vienen; vacío conserva el actual.
-    const restBase = get('rest_base'); if (restBase) data.netsuiteRestBase = restBase;
+    const restBase = get('rest_base'); if (restBase) data.netsuiteRestBase = normalizeRestBase(restBase);
     const accountId = get('account_id'); if (accountId) data.netsuiteAccountId = accountId;
     // Secretos: solo se sobreescriben si el usuario escribió algo.
     const ck = get('consumer_key'); if (ck) data.netsuiteConsumerKey = ck;

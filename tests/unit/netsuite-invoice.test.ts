@@ -105,3 +105,12 @@ describe('testNetSuiteConnection — guard de realm vs REST base', () => {
     expect(result.detail).not.toContain('no corresponde al subdominio');
   });
 });
+
+describe('normalizeRestBase', () => {
+  it('quita diagonales finales y espacios', async () => {
+    const { normalizeRestBase } = await import('../../src/services/netsuite-dispatcher.js');
+    expect(normalizeRestBase('https://12267177.suitetalk.api.netsuite.com/')).toBe('https://12267177.suitetalk.api.netsuite.com');
+    expect(normalizeRestBase(' https://x.suitetalk.api.netsuite.com// ')).toBe('https://x.suitetalk.api.netsuite.com');
+    expect(normalizeRestBase('https://x.suitetalk.api.netsuite.com')).toBe('https://x.suitetalk.api.netsuite.com');
+  });
+});
