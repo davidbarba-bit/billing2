@@ -147,6 +147,52 @@ describe('admin — alta de unidades desde el form', () => {
     expect(r.headers.location).toBe('/admin/customers/aditivos-y-vitaminas-mexicanas-2');
   });
 
+  it('el preview pinta el periodo con segundos y el round-trip del form no altera el monto', async () => {
+    // Plan recurrente con una unit activa: el cierre canónico del periodo es
+    // ...T23:59:59 local. Si el form del preview recorta los segundos, el
+    // recálculo pierde el último día del prorrateo y cambia el total.
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/services', headers: h.authHeader(),
+      payload: { service: {
+        code: 's-rec-prev', customer_external_id: 'c-admin', name: 's-rec-prev',
+        pricing_model: 'recurring', monthly_unit_amount_cents: 40000,
+      } },
+    });
+    await h.app.inject({
+      method: 'POST', url: '/api/v1/units', headers: h.authHeader(),
+      payload: { unit: { service_code: 's-rec-prev', external_id: 'u-prev-1' } },
+    });
+
+    const canonical = await h.app.inject({
+      method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
+      payload: { invoice: { customer_external_id: 'c-admin' } },
+    });
+    expect(canonical.statusCode).toBe(200);
+    const base = (canonical.json() as { preview: { period: { from: string; to: string }; fees_amount_cents: number } }).preview;
+    expect(base.fees_amount_cents).toBeGreaterThan(0);
+
+    // La página del admin debe pintar el input con segundos (:59:59).
+    const page = await h.app.inject({
+      method: 'GET', url: '/admin/customers/c-admin/preview',
+      headers: { authorization: ADMIN_AUTH },
+    });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toMatch(/name="period_to" value="[0-9T:-]+:59:59"/);
+
+    // Round-trip como lo manda el form (precisión de segundos): mismo total.
+    const roundTrip = await h.app.inject({
+      method: 'POST', url: '/api/v1/invoices/preview', headers: h.authHeader(),
+      payload: { invoice: {
+        customer_external_id: 'c-admin',
+        period_from: base.period.from.slice(0, 19) + 'Z',
+        period_to: base.period.to.slice(0, 19) + 'Z',
+      } },
+    });
+    expect(roundTrip.statusCode).toBe(200);
+    const rt = (roundTrip.json() as { preview: { fees_amount_cents: number } }).preview;
+    expect(rt.fees_amount_cents).toBe(base.fees_amount_cents);
+  });
+
   it('POST /admin/units/:id/edit actualiza label y billing_starts_at directo a BD', async () => {
     const unit = await h.prisma.unit.findFirstOrThrow({ where: { externalId: 'u-admin-1' } });
     const r = await h.app.inject({

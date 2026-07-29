@@ -923,7 +923,12 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const dd = String(d.getUTCDate()).padStart(2, '0');
       const hh = String(d.getUTCHours()).padStart(2, '0');
       const mi = String(d.getUTCMinutes()).padStart(2, '0');
-      return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+      // Con segundos: el cierre canónico es ...T23:59:59 (fin de día local) y
+      // si el input los recorta, el round-trip del form le quita el último
+      // día al prorrateo (calendarMonthFraction suma 1s al cierre para
+      // detectar el fin de día). Requiere step="1" en el input.
+      const ss = String(d.getUTCSeconds()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`;
     };
     const realNow = new Date();
     const tz = customer.timezone ?? org.timezone ?? 'UTC';
@@ -1018,13 +1023,13 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         <p class="text-xs text-gray-500 mb-3">Dry-run: NO crea invoice, NO marca units como facturadas, NO envía a NetSuite. Re-ejecuta cuantas veces quieras.</p>
         <div class="grid grid-cols-3 gap-3">
           <label class="block text-sm"><span class="text-gray-700">Periodo desde (UTC)</span>
-            <input type="datetime-local" name="period_from" value="${escapeHtml(q.period_from ?? dt(defaultFrom))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            <input type="datetime-local" step="1" name="period_from" value="${escapeHtml(q.period_from ?? dt(defaultFrom))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
           </label>
           <label class="block text-sm"><span class="text-gray-700">Periodo hasta (UTC)</span>
-            <input type="datetime-local" name="period_to" value="${escapeHtml(q.period_to ?? dt(defaultTo))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            <input type="datetime-local" step="1" name="period_to" value="${escapeHtml(q.period_to ?? dt(defaultTo))}" class="mt-1 block w-full rounded border-gray-300 text-sm">
           </label>
           <label class="block text-sm"><span class="text-gray-700">Simular "hoy" (UTC, opcional)</span>
-            <input type="datetime-local" name="now" value="${escapeHtml(q.now ?? '')}" placeholder="${dt(realNow)}" class="mt-1 block w-full rounded border-gray-300 text-sm">
+            <input type="datetime-local" step="1" name="now" value="${escapeHtml(q.now ?? '')}" placeholder="${dt(realNow)}" class="mt-1 block w-full rounded border-gray-300 text-sm">
           </label>
         </div>
         <div class="mt-3 flex gap-2">
