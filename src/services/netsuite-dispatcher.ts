@@ -277,6 +277,23 @@ export async function testNetSuiteConnection(
     if (!org[key]) return { ok: false, detail: `Falta credencial: ${key}` };
   }
 
+  // El account id ES el subdominio de la REST base (sandbox: 123456_SB1 ↔
+  // 123456-sb1). Si no cuadran, NetSuite autentica contra la cuenta del
+  // realm — las llaves de otra cuenta "funcionan" pero los records se crean
+  // ALLÁ, invisibles en la cuenta a la que apunta la URL. Mejor frenar aquí.
+  const subdomainMatch = /^https?:\/\/([a-z0-9_-]+)\.suitetalk/i.exec(org.netsuiteRestBase!);
+  if (subdomainMatch) {
+    const normalize = (s: string): string => s.toLowerCase().replace(/_/g, '-');
+    const fromUrl = normalize(subdomainMatch[1]!);
+    const fromRealm = normalize(org.netsuiteAccountId!);
+    if (fromUrl !== fromRealm) {
+      return {
+        ok: false,
+        detail: `El account id (realm) "${org.netsuiteAccountId}" no corresponde al subdominio de la REST base ("${subdomainMatch[1]}"). Deben ser la misma cuenta — y las llaves TBA deben haberse creado en ella.`,
+      };
+    }
+  }
+
   const url = `${org.netsuiteRestBase}/services/rest/record/v1/invoice?limit=1`;
   const auth = buildOauthHeader({
     method: 'GET',

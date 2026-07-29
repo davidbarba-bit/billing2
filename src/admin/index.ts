@@ -2538,7 +2538,7 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
         <form method="post" action="/admin/netsuite" class="space-y-0">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 mb-6">
             ${textField('rest_base', 'REST base URL', org.netsuiteRestBase, 'https://<account>.suitetalk.api.netsuite.com', 'Dominio SuiteTalk de tu cuenta.')}
-            ${textField('account_id', 'Account ID (realm)', org.netsuiteAccountId, '11098183', 'El id de cuenta tal cual lo da tu proveedor NetSuite (ej. "11098183"). No es el subdominio de la REST base.')}
+            ${textField('account_id', 'Account ID (realm)', org.netsuiteAccountId, '12267177', 'El id de tu cuenta NetSuite — el MISMO número del subdominio de tus URLs (12267177.app.netsuite.com → "12267177"; sandbox: "12267177_SB1"). Las llaves TBA deben haberse creado en esa misma cuenta.')}
             ${secretField('consumer_key', 'Consumer Key', org.netsuiteConsumerKey)}
             ${secretField('consumer_secret', 'Consumer Secret', org.netsuiteConsumerSecret)}
             ${secretField('token_key', 'Token ID / Access Token', org.netsuiteTokenKey)}

@@ -79,3 +79,29 @@ describe('buildStandardInvoice', () => {
     expect(rec.entity).toEqual({ id: 'eid:transportes-marva' });
   });
 });
+
+describe('testNetSuiteConnection — guard de realm vs REST base', () => {
+  const orgWith = (accountId: string, restBase: string) => ({
+    netsuiteAccountId: accountId,
+    netsuiteConsumerKey: 'k'.repeat(64),
+    netsuiteConsumerSecret: 's'.repeat(64),
+    netsuiteTokenKey: 't'.repeat(64),
+    netsuiteTokenSecret: 'x'.repeat(64),
+    netsuiteRestBase: restBase,
+  }) as unknown as import('@prisma/client').Organization;
+
+  it('rechaza realm que no corresponde al subdominio de la REST base', async () => {
+    const { testNetSuiteConnection } = await import('../../src/services/netsuite-dispatcher.js');
+    const result = await testNetSuiteConnection(orgWith('11098183', 'https://12267177.suitetalk.api.netsuite.com'));
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('no corresponde al subdominio');
+  });
+
+  it('acepta sandbox con _SB1 contra subdominio con -sb1 (sin llegar a la red no valida llaves)', async () => {
+    const { testNetSuiteConnection } = await import('../../src/services/netsuite-dispatcher.js');
+    const result = await testNetSuiteConnection(orgWith('12267177_SB1', 'https://12267177-sb1.suitetalk.api.netsuite.com'));
+    // El guard pasa; el resultado depende de la red (aquí fallará al conectar),
+    // pero NO debe fallar por mismatch de realm.
+    expect(result.detail).not.toContain('no corresponde al subdominio');
+  });
+});
