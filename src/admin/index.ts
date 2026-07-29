@@ -2504,10 +2504,14 @@ export async function registerAdmin(app: FastifyInstance, deps: Deps): Promise<v
       const isSet = Boolean(value);
       const len = value ? value.length : 0;
       const lenWarn = isSet && expectLen !== null && len !== expectLen;
-      // Huella (primeros 6 chars) para comparar contra la fuente (Postman del
-      // proveedor, Integration Record) sin exponer la llave completa. Es la
-      // única forma de detectar "guardé un juego de llaves distinto".
-      const fingerprint = value ? ` · empieza con <code class="font-mono-pro">${escapeHtml(value.slice(0, 6))}…</code>` : '';
+      // Huella (primeros y últimos chars) para comparar contra la fuente
+      // (Postman del proveedor, Integration Record) sin exponer la llave
+      // completa. Ambos extremos porque los inputs de otras herramientas
+      // muestran la porción donde quedó el scroll — a veces el inicio, a
+      // veces el final.
+      const fingerprint = value
+        ? ` · <code class="font-mono-pro">${escapeHtml(value.slice(0, 6))}…${escapeHtml(value.slice(-6))}</code>`
+        : '';
       let hint: string;
       if (!isSet) {
         hint = 'No configurado.';
